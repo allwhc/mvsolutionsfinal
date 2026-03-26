@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { getAllDevices, getPendingDevices, approvePendingDevice, registerDevice, updateDevice } from "../../firebase/db";
 import { sendTestCommand, sendRestartCommand } from "../../firebase/rtdb";
 import { QRCodeSVG } from "qrcode.react";
@@ -20,6 +20,18 @@ export default function AdminDevices() {
     firmwareVersion: "1.0.0", deviceName: "", location: "", notes: "",
   });
 
+  // WebSerial state
+  const [serialConnected, setSerialConnected] = useState(false);
+  const [serialLog, setSerialLog] = useState([]);
+  const [serialDeviceCode, setSerialDeviceCode] = useState("");
+  const [serialDeviceInfo, setSerialDeviceInfo] = useState(null);
+  const portRef = useRef(null);
+  const readerRef = useRef(null);
+
+  // Bulk QR print
+  const [selectedForPrint, setSelectedForPrint] = useState(new Set());
+  const [showBulkPrint, setShowBulkPrint] = useState(false);
+
   async function load() {
     const [p, r] = await Promise.all([getPendingDevices(), getAllDevices()]);
     setPending(p);
@@ -29,6 +41,7 @@ export default function AdminDevices() {
 
   useEffect(() => { load(); }, []);
 
+  // ── Pending device approval ──
   async function handleApprove(deviceCode) {
     try {
       const extra = {};
@@ -39,11 +52,15 @@ export default function AdminDevices() {
       setRegisterModal(null);
       setExtraFields({ deviceName: "", location: "", notes: "" });
       await load();
+      // Show QR for newly registered device
+      setQrDevice(deviceCode);
+      setTab("registered");
     } catch (err) {
       alert(err.message);
     }
   }
 
+  // ── Manual registration ──
   async function handleManualRegister(e) {
     e.preventDefault();
     if (!manualForm.deviceCode.trim()) { alert("Device code required"); return; }
@@ -58,18 +75,159 @@ export default function AdminDevices() {
       if (manualForm.location) data.location = manualForm.location;
       if (manualForm.notes) data.notes = manualForm.notes;
       await registerDevice(manualForm.deviceCode.trim(), data);
+      const code = manualForm.deviceCode.trim();
       setShowManualAdd(false);
       setManualForm({ deviceCode: "", deviceClass: 2, sensorType: 1, sensorCount: 4, firmwareVersion: "1.0.0", deviceName: "", location: "", notes: "" });
       await load();
+      setQrDevice(code);
+      setTab("registered");
     } catch (err) {
       alert(err.message);
     }
   }
 
+  // ── Device activate/deactivate ──
   async function handleToggleDeviceActive(deviceCode, currentActive) {
     const isActive = currentActive !== false;
     await updateDevice(deviceCode, { isActive: !isActive });
     await load();
+  }
+
+  // ── WebSerial ──
+  const webSerialSupported = "serial" in navigator;
+
+  async function connectSerial() {
+    if (!webSerialSupported) { alert("WebSerial not supported in this browser. Use Chrome or Edge."); return; }
+    try {
+      const port = await navigator.serial.requestPort();
+      await port.open({ baudRate: 115200 });
+      portRef.current = port;
+      setSerialConnected(true);
+      setSerialLog([]);
+      setSerialDeviceCode("");
+      setSerialDeviceInfo(null);
+      readSerial(port);
+    } catch (err) {
+      if (err.name !== "NotFoundError") alert("Serial error: " + err.message);
+    }
+  }
+
+  async function readSerial(port) {
+    const decoder = new TextDecoderStream();
+    const readableStreamClosed = port.readable.pipeTo(decoder.writable);
+    const reader = decoder.readable.getReader();
+    readerRef.current = reader;
+    let buffer = "";
+
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += value;
+        const lines = buffer.split("\n");
+        buffer = lines.pop(); // keep incomplete line in buffer
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+          setSerialLog((prev) => [...prev.slice(-50), trimmed]);
+
+          // Parse device registration info
+          if (trimmed.startsWith("Code:")) {
+            const code = trimmed.replace("Code:", "").trim();
+            setSerialDeviceCode(code);
+          }
+          if (trimmed.includes("SENSOR (0x02)")) {
+            setSerialDeviceInfo((prev) => ({ ...prev, deviceClass: 2 }));
+          }
+          if (trimmed.includes("VALVE (0x01)")) {
+            setSerialDeviceInfo((prev) => ({ ...prev, deviceClass: 1 }));
+          }
+          if (trimmed.includes("MOTOR (0x03)")) {
+            setSerialDeviceInfo((prev) => ({ ...prev, deviceClass: 3 }));
+          }
+          if (trimmed.includes("DIP (0x01)")) {
+            setSerialDeviceInfo((prev) => ({ ...prev, sensorType: 1 }));
+          }
+          if (trimmed.includes("ULTRASONIC (0x02)")) {
+            setSerialDeviceInfo((prev) => ({ ...prev, sensorType: 2 }));
+          }
+          if (trimmed.startsWith("Sensor Count:")) {
+            const count = parseInt(trimmed.replace("Sensor Count:", "").trim());
+            setSerialDeviceInfo((prev) => ({ ...prev, sensorCount: count }));
+          }
+          if (trimmed.startsWith("Firmware:")) {
+            const fw = trimmed.replace("Firmware:", "").trim();
+            setSerialDeviceInfo((prev) => ({ ...prev, firmwareVersion: fw }));
+          }
+          if (trimmed.startsWith("MAC:")) {
+            const mac = trimmed.replace("MAC:", "").trim();
+            setSerialDeviceInfo((prev) => ({ ...prev, macAddress: mac }));
+          }
+        }
+      }
+    } catch (err) {
+      // Port closed
+    }
+  }
+
+  async function sendSerialCommand(cmd) {
+    if (!portRef.current?.writable) return;
+    const encoder = new TextEncoder();
+    const writer = portRef.current.writable.getWriter();
+    await writer.write(encoder.encode(cmd + "\n"));
+    writer.releaseLock();
+  }
+
+  async function disconnectSerial() {
+    try {
+      if (readerRef.current) {
+        await readerRef.current.cancel();
+        readerRef.current = null;
+      }
+      if (portRef.current) {
+        await portRef.current.close();
+        portRef.current = null;
+      }
+    } catch {}
+    setSerialConnected(false);
+  }
+
+  async function registerSerialDevice() {
+    if (!serialDeviceCode) { alert("No device code detected. Send ADMIN command first."); return; }
+    try {
+      const data = {
+        deviceClass: serialDeviceInfo?.deviceClass || 2,
+        sensorType: serialDeviceInfo?.sensorType || 1,
+        sensorCount: serialDeviceInfo?.sensorCount || 4,
+        firmwareVersion: serialDeviceInfo?.firmwareVersion || "1.0.0",
+        macAddress: serialDeviceInfo?.macAddress || "",
+      };
+      await registerDevice(serialDeviceCode, data);
+      await load();
+      setQrDevice(serialDeviceCode);
+      setTab("registered");
+    } catch (err) {
+      alert(err.message);
+    }
+  }
+
+  // ── Bulk QR ──
+  function togglePrintSelect(code) {
+    setSelectedForPrint((prev) => {
+      const next = new Set(prev);
+      if (next.has(code)) next.delete(code);
+      else next.add(code);
+      return next;
+    });
+  }
+
+  function selectAllForPrint() {
+    if (selectedForPrint.size === registered.length) {
+      setSelectedForPrint(new Set());
+    } else {
+      setSelectedForPrint(new Set(registered.map((d) => d.deviceCode)));
+    }
   }
 
   const subscribeUrl = (code) => `${window.location.origin}/subscribe?code=${code}`;
@@ -82,13 +240,69 @@ export default function AdminDevices() {
     <div>
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-bold text-gray-900">Devices</h1>
-        <button
-          onClick={() => setShowManualAdd(!showManualAdd)}
-          className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700"
-        >
-          + Add Manually
-        </button>
+        <div className="flex gap-2">
+          {webSerialSupported && (
+            <button
+              onClick={serialConnected ? disconnectSerial : connectSerial}
+              className={`px-4 py-2 rounded-lg text-sm font-medium ${
+                serialConnected ? "bg-red-100 text-red-700" : "bg-gray-900 text-white hover:bg-gray-800"
+              }`}
+            >
+              {serialConnected ? "Disconnect Serial" : "Connect Serial"}
+            </button>
+          )}
+          <button
+            onClick={() => setShowManualAdd(!showManualAdd)}
+            className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700"
+          >
+            + Add Manually
+          </button>
+        </div>
       </div>
+
+      {/* WebSerial Panel */}
+      {serialConnected && (
+        <div className="bg-gray-900 rounded-xl p-4 mb-4">
+          <div className="flex items-center justify-between mb-3">
+            <p className="text-green-400 text-sm font-mono">Serial Monitor Connected</p>
+            <div className="flex gap-2">
+              <button onClick={() => sendSerialCommand("ADMIN")}
+                className="px-3 py-1 bg-blue-600 text-white rounded text-xs">Get Device Info</button>
+              <button onClick={() => sendSerialCommand("STATUS")}
+                className="px-3 py-1 bg-gray-700 text-white rounded text-xs">Status</button>
+            </div>
+          </div>
+
+          {/* Serial output */}
+          <div className="bg-black rounded-lg p-3 h-32 overflow-y-auto font-mono text-xs text-green-300 mb-3">
+            {serialLog.length === 0 ? (
+              <p className="text-gray-600">Waiting for data... Press "Get Device Info" to read device code.</p>
+            ) : serialLog.map((line, i) => (
+              <div key={i}>{line}</div>
+            ))}
+          </div>
+
+          {/* Detected device info */}
+          {serialDeviceCode && (
+            <div className="bg-gray-800 rounded-lg p-3 flex items-center justify-between">
+              <div>
+                <p className="text-white font-mono text-sm font-bold">{serialDeviceCode}</p>
+                <p className="text-gray-400 text-xs">
+                  {DEVICE_CLASS[serialDeviceInfo?.deviceClass] || "Sensor"} |{" "}
+                  {SENSOR_TYPE[serialDeviceInfo?.sensorType] || "DIP"} |{" "}
+                  {serialDeviceInfo?.sensorCount || "?"} sensors
+                </p>
+              </div>
+              <button
+                onClick={registerSerialDevice}
+                className="bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-green-700"
+              >
+                Add to Catalog
+              </button>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Manual add form */}
       {showManualAdd && (
@@ -125,16 +339,12 @@ export default function AdminDevices() {
 
       {/* Tabs */}
       <div className="flex gap-2 mb-4">
-        <button
-          onClick={() => setTab("pending")}
-          className={`px-4 py-2 rounded-lg text-sm font-medium ${tab === "pending" ? "bg-yellow-100 text-yellow-800" : "bg-gray-100 text-gray-600"}`}
-        >
+        <button onClick={() => setTab("pending")}
+          className={`px-4 py-2 rounded-lg text-sm font-medium ${tab === "pending" ? "bg-yellow-100 text-yellow-800" : "bg-gray-100 text-gray-600"}`}>
           Pending ({pending.length})
         </button>
-        <button
-          onClick={() => setTab("registered")}
-          className={`px-4 py-2 rounded-lg text-sm font-medium ${tab === "registered" ? "bg-blue-100 text-blue-800" : "bg-gray-100 text-gray-600"}`}
-        >
+        <button onClick={() => setTab("registered")}
+          className={`px-4 py-2 rounded-lg text-sm font-medium ${tab === "registered" ? "bg-blue-100 text-blue-800" : "bg-gray-100 text-gray-600"}`}>
           Registered ({registered.length})
         </button>
       </div>
@@ -154,10 +364,8 @@ export default function AdminDevices() {
                   </p>
                   {d.macAddress && <p className="text-xs text-gray-400">MAC: {d.macAddress}</p>}
                 </div>
-                <button
-                  onClick={() => setRegisterModal(d)}
-                  className="bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-green-700"
-                >
+                <button onClick={() => setRegisterModal(d)}
+                  className="bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-green-700">
                   Register
                 </button>
               </div>
@@ -168,59 +376,66 @@ export default function AdminDevices() {
 
       {/* Registered devices */}
       {tab === "registered" && (
-        <div className="space-y-3">
-          {registered.length === 0 ? (
-            <p className="text-gray-500 text-sm py-10 text-center">No registered devices</p>
-          ) : registered.map((d) => {
-            const devActive = d.isActive !== false;
-            return (
-            <div key={d.deviceCode} className={`bg-white rounded-xl border p-4 ${devActive ? "border-gray-200" : "border-red-200 bg-red-50"}`}>
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="flex items-center gap-2">
-                    <p className="font-semibold text-sm">{d.deviceName || d.deviceCode}</p>
-                    {!devActive && <span className="text-xs bg-red-100 text-red-600 px-2 py-0.5 rounded-full">Inactive</span>}
-                  </div>
-                  <p className="font-mono text-xs text-gray-400">{d.deviceCode}</p>
-                  <p className="text-xs text-gray-500">
-                    {DEVICE_CLASS[d.deviceClass] || "?"} | {SENSOR_TYPE[d.sensorType] || "?"} | {d.sensorCount || 0} sensors
-                  </p>
-                  {d.location && <p className="text-xs text-gray-400">{d.location}</p>}
-                </div>
-                <div className="flex flex-wrap gap-1.5">
-                  <button
-                    onClick={() => sendTestCommand(d.deviceCode)}
-                    className="px-3 py-1.5 bg-green-50 text-green-600 rounded-lg text-xs hover:bg-green-100"
-                  >
-                    Test
-                  </button>
-                  <button
-                    onClick={() => sendRestartCommand(d.deviceCode)}
-                    className="px-3 py-1.5 bg-yellow-50 text-yellow-600 rounded-lg text-xs hover:bg-yellow-100"
-                  >
-                    Restart
-                  </button>
-                  <button
-                    onClick={() => setQrDevice(d.deviceCode)}
-                    className="px-3 py-1.5 bg-blue-50 text-blue-600 rounded-lg text-xs hover:bg-blue-100"
-                  >
-                    QR
-                  </button>
-                  <button
-                    onClick={() => handleToggleDeviceActive(d.deviceCode, d.isActive)}
-                    className={`px-3 py-1.5 rounded-lg text-xs ${devActive ? "bg-red-50 text-red-600 hover:bg-red-100" : "bg-green-50 text-green-600 hover:bg-green-100"}`}
-                  >
-                    {devActive ? "Deactivate" : "Activate"}
-                  </button>
-                </div>
-              </div>
+        <div>
+          {/* Bulk actions */}
+          {registered.length > 0 && (
+            <div className="flex items-center gap-3 mb-3">
+              <label className="flex items-center gap-1.5 text-xs text-gray-500 cursor-pointer">
+                <input type="checkbox" checked={selectedForPrint.size === registered.length && registered.length > 0}
+                  onChange={selectAllForPrint} className="rounded" />
+                Select all
+              </label>
+              {selectedForPrint.size > 0 && (
+                <button onClick={() => setShowBulkPrint(true)}
+                  className="px-3 py-1.5 bg-indigo-600 text-white rounded-lg text-xs font-medium hover:bg-indigo-700">
+                  Print {selectedForPrint.size} QR Sticker{selectedForPrint.size !== 1 ? "s" : ""}
+                </button>
+              )}
             </div>
-          );
-          })}
+          )}
+
+          <div className="space-y-3">
+            {registered.length === 0 ? (
+              <p className="text-gray-500 text-sm py-10 text-center">No registered devices</p>
+            ) : registered.map((d) => {
+              const devActive = d.isActive !== false;
+              return (
+                <div key={d.deviceCode} className={`bg-white rounded-xl border p-4 ${devActive ? "border-gray-200" : "border-red-200 bg-red-50"}`}>
+                  <div className="flex items-center gap-3">
+                    <input type="checkbox" checked={selectedForPrint.has(d.deviceCode)}
+                      onChange={() => togglePrintSelect(d.deviceCode)} className="rounded" />
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2">
+                        <p className="font-semibold text-sm">{d.deviceName || d.deviceCode}</p>
+                        {!devActive && <span className="text-xs bg-red-100 text-red-600 px-2 py-0.5 rounded-full">Inactive</span>}
+                      </div>
+                      <p className="font-mono text-xs text-gray-400">{d.deviceCode}</p>
+                      <p className="text-xs text-gray-500">
+                        {DEVICE_CLASS[d.deviceClass] || "?"} | {SENSOR_TYPE[d.sensorType] || "?"} | {d.sensorCount || 0} sensors
+                      </p>
+                      {d.location && <p className="text-xs text-gray-400">{d.location}</p>}
+                    </div>
+                    <div className="flex flex-wrap gap-1.5">
+                      <button onClick={() => sendTestCommand(d.deviceCode)}
+                        className="px-3 py-1.5 bg-green-50 text-green-600 rounded-lg text-xs hover:bg-green-100">Test</button>
+                      <button onClick={() => sendRestartCommand(d.deviceCode)}
+                        className="px-3 py-1.5 bg-yellow-50 text-yellow-600 rounded-lg text-xs hover:bg-yellow-100">Restart</button>
+                      <button onClick={() => setQrDevice(d.deviceCode)}
+                        className="px-3 py-1.5 bg-blue-50 text-blue-600 rounded-lg text-xs hover:bg-blue-100">QR</button>
+                      <button onClick={() => handleToggleDeviceActive(d.deviceCode, d.isActive)}
+                        className={`px-3 py-1.5 rounded-lg text-xs ${devActive ? "bg-red-50 text-red-600 hover:bg-red-100" : "bg-green-50 text-green-600 hover:bg-green-100"}`}>
+                        {devActive ? "Deactivate" : "Activate"}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
 
-      {/* Register Modal */}
+      {/* Register Modal (from pending) */}
       {registerModal && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-xl p-6 w-full max-w-md">
@@ -229,59 +444,105 @@ export default function AdminDevices() {
               <p className="font-mono font-semibold">{registerModal.deviceCode}</p>
               <p>{DEVICE_CLASS[registerModal.deviceClass]} | {SENSOR_TYPE[registerModal.sensorType]} | {registerModal.sensorCount} sensors</p>
             </div>
-
             <div className="space-y-3 mb-4">
               <p className="text-xs text-gray-500 font-medium">Optional details</p>
-              <input
-                type="text" placeholder="Device Name (e.g. Terrace Tank B3)"
-                value={extraFields.deviceName}
+              <input type="text" placeholder="Device Name (e.g. Terrace Tank B3)" value={extraFields.deviceName}
                 onChange={(e) => setExtraFields({ ...extraFields, deviceName: e.target.value })}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
-              <input
-                type="text" placeholder="Location (e.g. Wing A, Floor 7)"
-                value={extraFields.location}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm" />
+              <input type="text" placeholder="Location (e.g. Wing A, Floor 7)" value={extraFields.location}
                 onChange={(e) => setExtraFields({ ...extraFields, location: e.target.value })}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
-              <textarea
-                placeholder="Notes"
-                value={extraFields.notes}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm" />
+              <textarea placeholder="Notes" value={extraFields.notes}
                 onChange={(e) => setExtraFields({ ...extraFields, notes: e.target.value })}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                rows={2}
-              />
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm" rows={2} />
             </div>
-
             <div className="flex gap-2">
-              <button
-                onClick={() => handleApprove(registerModal.deviceCode)}
-                className="flex-1 bg-green-600 text-white py-2 rounded-lg text-sm font-medium hover:bg-green-700"
-              >
-                Approve & Register
-              </button>
-              <button
-                onClick={() => setRegisterModal(null)}
-                className="px-4 py-2 bg-gray-100 text-gray-600 rounded-lg text-sm"
-              >
-                Cancel
-              </button>
+              <button onClick={() => handleApprove(registerModal.deviceCode)}
+                className="flex-1 bg-green-600 text-white py-2 rounded-lg text-sm font-medium hover:bg-green-700">Approve & Register</button>
+              <button onClick={() => setRegisterModal(null)}
+                className="px-4 py-2 bg-gray-100 text-gray-600 rounded-lg text-sm">Cancel</button>
             </div>
           </div>
         </div>
       )}
 
-      {/* QR Modal */}
+      {/* Single QR Modal with Print */}
       {qrDevice && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={() => setQrDevice(null)}>
-          <div className="bg-white rounded-xl p-6 text-center" onClick={(e) => e.stopPropagation()}>
-            <h3 className="font-bold text-lg mb-2">Device QR Code</h3>
-            <p className="font-mono text-sm text-gray-600 mb-4">{qrDevice}</p>
-            <QRCodeSVG value={subscribeUrl(qrDevice)} size={200} className="mx-auto mb-4" />
+          <div className="bg-white rounded-xl p-6 text-center w-full max-w-sm" onClick={(e) => e.stopPropagation()}>
+            <h3 className="font-bold text-lg mb-1">Device QR Code</h3>
+            {(() => {
+              const dev = registered.find((d) => d.deviceCode === qrDevice);
+              return dev?.deviceName ? <p className="text-sm text-gray-600 mb-1">{dev.deviceName}</p> : null;
+            })()}
+            <p className="font-mono text-sm text-gray-500 mb-4">{qrDevice}</p>
+            <div id="qr-print-single" className="inline-block bg-white p-4 border border-gray-200 rounded-lg mb-4">
+              <QRCodeSVG value={subscribeUrl(qrDevice)} size={180} />
+              <p className="font-mono text-xs mt-2 text-gray-700">{qrDevice}</p>
+              {(() => {
+                const dev = registered.find((d) => d.deviceCode === qrDevice);
+                return dev?.deviceName ? <p className="text-xs text-gray-500">{dev.deviceName}</p> : null;
+              })()}
+            </div>
             <p className="text-xs text-gray-400 break-all mb-4">{subscribeUrl(qrDevice)}</p>
-            <button onClick={() => setQrDevice(null)} className="px-4 py-2 bg-gray-100 text-gray-600 rounded-lg text-sm">
-              Close
-            </button>
+            <div className="flex gap-2">
+              <button onClick={() => {
+                const content = document.getElementById("qr-print-single");
+                const win = window.open("", "_blank");
+                win.document.write(`<html><head><title>QR - ${qrDevice}</title><style>body{display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;font-family:monospace}div{text-align:center}</style></head><body>`);
+                win.document.write(content.innerHTML);
+                win.document.write("</body></html>");
+                win.document.close();
+                win.print();
+              }} className="flex-1 bg-blue-600 text-white py-2 rounded-lg text-sm font-medium hover:bg-blue-700">
+                Print Sticker
+              </button>
+              <button onClick={() => setQrDevice(null)} className="px-4 py-2 bg-gray-100 text-gray-600 rounded-lg text-sm">Close</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Bulk QR Print Modal */}
+      {showBulkPrint && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={() => setShowBulkPrint(false)}>
+          <div className="bg-white rounded-xl p-6 w-full max-w-3xl max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="font-bold text-lg">Print QR Stickers ({selectedForPrint.size})</h3>
+              <div className="flex gap-2">
+                <button onClick={() => {
+                  const content = document.getElementById("qr-print-bulk");
+                  const win = window.open("", "_blank");
+                  win.document.write(`<html><head><title>QR Stickers</title>
+                    <style>
+                      body{margin:0;padding:10mm;font-family:monospace}
+                      .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:5mm}
+                      .sticker{border:1px solid #ccc;padding:4mm;text-align:center;page-break-inside:avoid;border-radius:2mm}
+                      .sticker svg{display:block;margin:0 auto 2mm}
+                      .code{font-size:9px;font-weight:bold;margin-top:2mm}
+                      .name{font-size:8px;color:#666}
+                      @media print{body{padding:5mm}.sticker{border:1px solid #ddd}}
+                    </style></head><body>`);
+                  win.document.write(content.innerHTML);
+                  win.document.write("</body></html>");
+                  win.document.close();
+                  setTimeout(() => win.print(), 300);
+                }} className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700">
+                  Print All
+                </button>
+                <button onClick={() => setShowBulkPrint(false)} className="px-4 py-2 bg-gray-100 text-gray-600 rounded-lg text-sm">Close</button>
+              </div>
+            </div>
+
+            <div id="qr-print-bulk" className="grid grid-cols-3 gap-4">
+              {registered.filter((d) => selectedForPrint.has(d.deviceCode)).map((d) => (
+                <div key={d.deviceCode} className="border border-gray-200 rounded-lg p-3 text-center">
+                  <QRCodeSVG value={subscribeUrl(d.deviceCode)} size={120} />
+                  <p className="font-mono text-xs font-bold mt-2">{d.deviceCode}</p>
+                  {d.deviceName && <p className="text-xs text-gray-500">{d.deviceName}</p>}
+                </div>
+              ))}
+            </div>
           </div>
         </div>
       )}
