@@ -23,6 +23,7 @@
 #include <Firebase_ESP_Client.h>
 #include <addons/TokenHelper.h>
 #include <MvsConnect.h>
+#include <Adafruit_NeoPixel.h>
 
 // ══════════════════════════════════════════════════
 //  CONFIGURATION — CHANGE THESE PER DEPLOYMENT
@@ -226,46 +227,14 @@ void printRegistrationInfo() {
 }
 
 // ══════════════════════════════════════════════════
-//  ADDRESSABLE LED (WS2812B via bit-bang on GPIO15)
+//  ADDRESSABLE LED (WS2812B via Adafruit NeoPixel)
 // ══════════════════════════════════════════════════
 
-// Simple WS2812B driver — single LED, no library needed
-static uint8_t ledR = 0, ledG = 0, ledB = 0;
-
-void IRAM_ATTR sendWS2812(uint8_t r, uint8_t g, uint8_t b) {
-  uint8_t data[3] = {g, r, b};  // WS2812B is GRB
-  portDISABLE_INTERRUPTS();
-  for (int i = 0; i < 3; i++) {
-    for (int bit = 7; bit >= 0; bit--) {
-      if (data[i] & (1 << bit)) {
-        // 1 bit: ~0.8us high, ~0.45us low
-        GPIO.out_w1ts = (1 << LED_PIN);
-        __asm__ __volatile__("nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;"
-                             "nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;"
-                             "nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;"
-                             "nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;");
-        GPIO.out_w1tc = (1 << LED_PIN);
-        __asm__ __volatile__("nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;"
-                             "nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;");
-      } else {
-        // 0 bit: ~0.4us high, ~0.85us low
-        GPIO.out_w1ts = (1 << LED_PIN);
-        __asm__ __volatile__("nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;");
-        GPIO.out_w1tc = (1 << LED_PIN);
-        __asm__ __volatile__("nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;"
-                             "nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;"
-                             "nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;"
-                             "nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;");
-      }
-    }
-  }
-  portENABLE_INTERRUPTS();
-  delayMicroseconds(80);  // Reset
-}
+Adafruit_NeoPixel pixel(1, LED_PIN, NEO_GRB + NEO_KHZ800);
 
 void setLED(uint8_t r, uint8_t g, uint8_t b) {
-  ledR = r; ledG = g; ledB = b;
-  sendWS2812(r, g, b);
+  pixel.setPixelColor(0, pixel.Color(r, g, b));
+  pixel.show();
 }
 
 void setLEDOff() { setLED(0, 0, 0); }
@@ -809,8 +778,9 @@ void setup() {
   delay(500);
   Serial.println("\n\n=== SenseFlow Firebase Sensor v" FIRMWARE_VERSION " ===\n");
 
-  // LED pin
-  pinMode(LED_PIN, OUTPUT);
+  // LED
+  pixel.begin();
+  pixel.setBrightness(50);
   setLED(255, 100, 0);  // Orange on boot
 
   // Load or generate device code

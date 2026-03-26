@@ -21,6 +21,7 @@
 #include <Firebase_ESP_Client.h>
 #include <addons/TokenHelper.h>
 #include <MvsConnect.h>
+#include <Adafruit_NeoPixel.h>
 
 // ══════════════════════════════════════════════════
 //  FIREBASE CONFIG
@@ -158,36 +159,12 @@ void printRegistrationInfo() {
 //  LED (same as real firmware)
 // ══════════════════════════════════════════════════
 
-void IRAM_ATTR sendWS2812(uint8_t r, uint8_t g, uint8_t b) {
-  uint8_t data[3] = {g, r, b};
-  portDISABLE_INTERRUPTS();
-  for (int i = 0; i < 3; i++) {
-    for (int bit = 7; bit >= 0; bit--) {
-      if (data[i] & (1 << bit)) {
-        GPIO.out_w1ts = (1 << LED_PIN);
-        __asm__ __volatile__("nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;"
-                             "nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;"
-                             "nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;"
-                             "nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;");
-        GPIO.out_w1tc = (1 << LED_PIN);
-        __asm__ __volatile__("nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;"
-                             "nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;");
-      } else {
-        GPIO.out_w1ts = (1 << LED_PIN);
-        __asm__ __volatile__("nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;");
-        GPIO.out_w1tc = (1 << LED_PIN);
-        __asm__ __volatile__("nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;"
-                             "nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;"
-                             "nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;"
-                             "nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;");
-      }
-    }
-  }
-  portENABLE_INTERRUPTS();
-  delayMicroseconds(80);
-}
+Adafruit_NeoPixel pixel(1, LED_PIN, NEO_GRB + NEO_KHZ800);
 
-void setLED(uint8_t r, uint8_t g, uint8_t b) { sendWS2812(r, g, b); }
+void setLED(uint8_t r, uint8_t g, uint8_t b) {
+  pixel.setPixelColor(0, pixel.Color(r, g, b));
+  pixel.show();
+}
 void setLEDOff() { setLED(0, 0, 0); }
 
 void setLevelColor(uint8_t pct) {
@@ -537,7 +514,8 @@ void setup() {
   delay(500);
   Serial.println("\n=== SenseFlow Simulator v" FIRMWARE_VERSION " ===\n");
 
-  pinMode(LED_PIN, OUTPUT);
+  pixel.begin();
+  pixel.setBrightness(50);
   setLED(255, 100, 0);
 
   loadOrCreateDeviceCode();
