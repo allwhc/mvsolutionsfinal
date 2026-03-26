@@ -334,7 +334,7 @@ void updateDeviceInfo(bool online) {
 void checkCommands() {
   String path = "devices/" + deviceCode + "/commands";
   if (!Firebase.RTDB.getJSON(&fbdo, path.c_str())) return;
-  FirebaseJson& json = fbdo.jsonData();
+  FirebaseJson json = fbdo.jsonData();
   FirebaseJsonData result;
   if (json.get(result, "refreshRequested") && result.boolValue) {
     pushLiveData();
