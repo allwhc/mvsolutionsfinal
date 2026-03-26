@@ -28,6 +28,11 @@ export default function AdminDevices() {
   const portRef = useRef(null);
   const readerRef = useRef(null);
 
+  // QR Scanner for registration
+  const [showQrScanner, setShowQrScanner] = useState(false);
+  const [scannedCode, setScannedCode] = useState("");
+  const qrScannerRef = useRef(null);
+
   // Bulk QR print
   const [selectedForPrint, setSelectedForPrint] = useState(new Set());
   const [showBulkPrint, setShowBulkPrint] = useState(false);
@@ -230,6 +235,44 @@ export default function AdminDevices() {
     }
   }
 
+  // ── QR Scanner for device registration ──
+  async function startQrScanner() {
+    setShowQrScanner(true);
+    setScannedCode("");
+    try {
+      const { Html5Qrcode } = await import("html5-qrcode");
+      const scanner = new Html5Qrcode("admin-qr-reader");
+      qrScannerRef.current = scanner;
+      await scanner.start(
+        { facingMode: "environment" },
+        { fps: 10, qrbox: 250 },
+        (text) => {
+          let code = text;
+          try {
+            const url = new URL(text);
+            code = url.searchParams.get("code") || text;
+          } catch {}
+          setScannedCode(code);
+          stopQrScanner();
+          // Pre-fill manual form with scanned code
+          setManualForm((prev) => ({ ...prev, deviceCode: code }));
+          setShowManualAdd(true);
+        }
+      );
+    } catch (err) {
+      alert("Camera error: " + err.message);
+      setShowQrScanner(false);
+    }
+  }
+
+  async function stopQrScanner() {
+    if (qrScannerRef.current) {
+      try { await qrScannerRef.current.stop(); } catch {}
+      qrScannerRef.current = null;
+    }
+    setShowQrScanner(false);
+  }
+
   const subscribeUrl = (code) => `${window.location.origin}/subscribe?code=${code}`;
 
   if (loading) {
@@ -240,7 +283,7 @@ export default function AdminDevices() {
     <div>
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-bold text-gray-900">Devices</h1>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           {webSerialSupported && (
             <button
               onClick={serialConnected ? disconnectSerial : connectSerial}
@@ -252,6 +295,14 @@ export default function AdminDevices() {
             </button>
           )}
           <button
+            onClick={showQrScanner ? stopQrScanner : startQrScanner}
+            className={`px-4 py-2 rounded-lg text-sm font-medium ${
+              showQrScanner ? "bg-red-100 text-red-700" : "bg-purple-600 text-white hover:bg-purple-700"
+            }`}
+          >
+            {showQrScanner ? "Stop Scanner" : "Scan QR"}
+          </button>
+          <button
             onClick={() => setShowManualAdd(!showManualAdd)}
             className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700"
           >
@@ -259,6 +310,18 @@ export default function AdminDevices() {
           </button>
         </div>
       </div>
+
+      {/* QR Scanner */}
+      {showQrScanner && (
+        <div className="bg-white rounded-xl border border-purple-200 p-4 mb-4">
+          <p className="text-sm font-semibold text-gray-700 mb-3">Scan device QR code to register</p>
+          <div id="admin-qr-reader" className="mb-3" />
+          <button onClick={stopQrScanner}
+            className="w-full bg-red-500 text-white py-2 rounded-lg text-sm font-medium">
+            Cancel
+          </button>
+        </div>
+      )}
 
       {/* WebSerial Panel */}
       {serialConnected && (
