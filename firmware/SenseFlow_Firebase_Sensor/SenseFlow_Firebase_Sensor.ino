@@ -578,6 +578,13 @@ void updateDeviceInfo(bool online) {
   json.set("online", online);
   json.set("lastSeen/.sv", "timestamp");
   json.set("firmwareVersion", FIRMWARE_VERSION);
+  json.set("deviceClass", CLS_SENSOR);
+  #if USE_ULTRASONIC
+    json.set("sensorType", SNS_ULTRASONIC);
+  #else
+    json.set("sensorType", SNS_DIP);
+  #endif
+  json.set("sensorCount", SENSOR_COUNT);
 
   Firebase.RTDB.setJSON(&fbdo, path.c_str(), &json);
 }

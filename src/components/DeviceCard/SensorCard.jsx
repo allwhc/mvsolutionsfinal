@@ -3,9 +3,9 @@ import UltrasonicBar from "./UltrasonicBar";
 import { sendRefreshCommand } from "../../firebase/rtdb";
 
 // sensorType: 0=none, 1=DIP, 2=ultrasonic
-export default function SensorCard({ deviceCode, deviceName, live, catalog, isOnline }) {
-  const sensorType = catalog?.sensorType ?? 1;
-  const sensorCount = catalog?.sensorCount ?? 4;
+export default function SensorCard({ deviceCode, deviceName, live, info, catalog, isOnline }) {
+  const sensorType = info?.sensorType ?? catalog?.sensorType ?? 1;
+  const sensorCount = info?.sensorCount ?? catalog?.sensorCount ?? 4;
   const sensorBits = live?.sensorBits ?? 0;
   const confirmedPct = live?.confirmedPct ?? 0;
   const flags = live?.flags ?? 0;

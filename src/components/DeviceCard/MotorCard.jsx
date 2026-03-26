@@ -11,9 +11,9 @@ const MOTOR_STATES = {
   5: { label: "Overload", color: "text-red-700" },
 };
 
-export default function MotorCard({ deviceCode, deviceName, live, catalog, isOnline }) {
-  const sensorType = catalog?.sensorType ?? 0;
-  const sensorCount = catalog?.sensorCount ?? 0;
+export default function MotorCard({ deviceCode, deviceName, live, info, catalog, isOnline }) {
+  const sensorType = info?.sensorType ?? catalog?.sensorType ?? 0;
+  const sensorCount = info?.sensorCount ?? catalog?.sensorCount ?? 0;
   const sensorBits = live?.sensorBits ?? 0;
   const confirmedPct = live?.confirmedPct ?? 0;
   const flags = live?.flags ?? 0;

@@ -50,6 +50,7 @@ export default function DeviceDetail() {
         deviceCode={code}
         deviceName={catalog.deviceName || code}
         live={live}
+        info={info}
         catalog={catalog}
         isOnline={isOnline}
       />

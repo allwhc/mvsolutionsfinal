@@ -12,9 +12,9 @@ const VALVE_STATES = {
   6: { label: "LS Error", color: "text-purple-600" },
 };
 
-export default function ValveCard({ deviceCode, deviceName, live, catalog, isOnline }) {
-  const sensorType = catalog?.sensorType ?? 1;
-  const sensorCount = catalog?.sensorCount ?? 4;
+export default function ValveCard({ deviceCode, deviceName, live, info, catalog, isOnline }) {
+  const sensorType = info?.sensorType ?? catalog?.sensorType ?? 1;
+  const sensorCount = info?.sensorCount ?? catalog?.sensorCount ?? 4;
   const sensorBits = live?.sensorBits ?? 0;
   const confirmedPct = live?.confirmedPct ?? 0;
   const flags = live?.flags ?? 0;

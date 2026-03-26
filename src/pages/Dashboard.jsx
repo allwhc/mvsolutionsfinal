@@ -151,6 +151,7 @@ export default function Dashboard() {
                 deviceCode={d.deviceCode}
                 deviceName={d.deviceName}
                 live={d.live}
+                info={d.info}
                 catalog={d.catalog}
                 isOnline={isDeviceOnline(d)}
               />
