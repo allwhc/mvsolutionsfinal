@@ -40,6 +40,7 @@ export default function OrgRegisterForm() {
       await updateUserDoc(user.uid, {
         role: "orgAdmin",
         orgId,
+        orgName,
       });
 
       navigate("/dashboard");

@@ -1,4 +1,4 @@
-import { ref, onValue, set, update, get, off } from "firebase/database";
+import { ref, onValue, set, update, get, off, push, query, orderByKey, limitToLast, remove } from "firebase/database";
 import { rtdb } from "./config";
 
 // ── Live Data Listener ──
@@ -54,6 +54,34 @@ export async function sendTestCommand(deviceCode) {
 export async function getDeviceCommands(deviceCode) {
   const snap = await get(ref(rtdb, `devices/${deviceCode}/commands`));
   return snap.val();
+}
+
+// ── History (3-day) ──
+export async function getDeviceHistory(deviceCode, limitCount = 864) {
+  // 864 = 288 per day × 3 days (at 5-min intervals)
+  const histRef = query(
+    ref(rtdb, `devices/${deviceCode}/history`),
+    orderByKey(),
+    limitToLast(limitCount)
+  );
+  const snap = await get(histRef);
+  if (!snap.exists()) return [];
+  const data = snap.val();
+  return Object.entries(data).map(([key, val]) => ({ key, ...val }));
+}
+
+export function listenToDeviceHistory(deviceCode, callback, limitCount = 864) {
+  const histRef = query(
+    ref(rtdb, `devices/${deviceCode}/history`),
+    orderByKey(),
+    limitToLast(limitCount)
+  );
+  onValue(histRef, (snap) => {
+    if (!snap.exists()) { callback([]); return; }
+    const data = snap.val();
+    callback(Object.entries(data).map(([key, val]) => ({ key, ...val })));
+  });
+  return () => off(histRef);
 }
 
 // ── Check device online status ──

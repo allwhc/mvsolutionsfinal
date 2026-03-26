@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
-import { getDevice, isSubscribed, subscribeToDevice } from "../firebase/db";
+import { getDevice, isSubscribed, subscribeToDevice, getOrgGroups, updateOrgGroup } from "../firebase/db";
 
 export default function Subscribe() {
   const [searchParams] = useSearchParams();
@@ -11,12 +11,25 @@ export default function Subscribe() {
   const [success, setSuccess] = useState("");
   const [loading, setLoading] = useState(false);
   const [deviceInfo, setDeviceInfo] = useState(null);
+  const [subType, setSubType] = useState("personal"); // "personal" | "org"
+  const [selectedGroup, setSelectedGroup] = useState("");
+  const [groups, setGroups] = useState([]);
   const scannerRef = useRef(null);
-  const { user } = useAuth();
+  const { user, userData, isOrgAdmin, isOrgMember } = useAuth();
   const navigate = useNavigate();
+
+  const isOrg = isOrgAdmin || isOrgMember;
+  const orgId = userData?.orgId;
 
   const DEVICE_CLASS = { 1: "Valve", 2: "Sensor", 3: "Motor" };
   const SENSOR_TYPE = { 0: "None", 1: "DIP", 2: "Ultrasonic" };
+
+  // Load org groups
+  useEffect(() => {
+    if (isOrg && orgId) {
+      getOrgGroups(orgId).then(setGroups);
+    }
+  }, [isOrg, orgId]);
 
   // Auto-lookup if code came from URL
   useEffect(() => {
@@ -44,7 +57,22 @@ export default function Subscribe() {
     setLoading(true);
     setError("");
     try {
-      await subscribeToDevice(user.uid, code.trim(), deviceInfo.deviceName || code.trim());
+      const deviceName = deviceInfo.deviceName || code.trim();
+      await subscribeToDevice(user.uid, code.trim(), deviceName);
+
+      // If subscribing to org group, add device to group's deviceCodes
+      if (subType === "org" && selectedGroup && orgId) {
+        const group = groups.find((g) => g.groupId === selectedGroup);
+        if (group) {
+          const codes = group.deviceCodes || [];
+          if (!codes.includes(code.trim())) {
+            await updateOrgGroup(orgId, selectedGroup, {
+              deviceCodes: [...codes, code.trim()],
+            });
+          }
+        }
+      }
+
       setSuccess("Subscribed successfully!");
       setTimeout(() => navigate("/dashboard"), 1500);
     } catch (err) {
@@ -64,7 +92,6 @@ export default function Subscribe() {
         { facingMode: "environment" },
         { fps: 10, qrbox: 250 },
         (text) => {
-          // Extract code from URL or raw text
           let deviceCode = text;
           try {
             const url = new URL(text);
@@ -139,7 +166,7 @@ export default function Subscribe() {
         {error && <p className="text-red-500 text-sm mt-3">{error}</p>}
         {success && <p className="text-green-600 text-sm mt-3">{success}</p>}
 
-        {/* Device preview */}
+        {/* Device preview + subscribe options */}
         {deviceInfo && (
           <div className="mt-4 border-t border-gray-100 pt-4">
             <h3 className="font-semibold text-sm text-gray-900 mb-2">Device Found</h3>
@@ -153,6 +180,53 @@ export default function Subscribe() {
               <span className="text-gray-500">Firmware</span>
               <span>{deviceInfo.firmwareVersion || "N/A"}</span>
             </div>
+
+            {/* Personal vs Org choice */}
+            {isOrg && (
+              <div className="mb-4">
+                <p className="text-xs text-gray-500 font-medium mb-2">Subscribe as</p>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => { setSubType("personal"); setSelectedGroup(""); }}
+                    className={`flex-1 py-2 rounded-lg text-xs font-medium border transition-colors ${
+                      subType === "personal"
+                        ? "bg-green-50 border-green-300 text-green-700"
+                        : "bg-white border-gray-200 text-gray-500 hover:bg-gray-50"
+                    }`}
+                  >
+                    My Device
+                  </button>
+                  <button
+                    onClick={() => setSubType("org")}
+                    className={`flex-1 py-2 rounded-lg text-xs font-medium border transition-colors ${
+                      subType === "org"
+                        ? "bg-blue-50 border-blue-300 text-blue-700"
+                        : "bg-white border-gray-200 text-gray-500 hover:bg-gray-50"
+                    }`}
+                  >
+                    {userData?.orgName || orgId}
+                  </button>
+                </div>
+
+                {/* Group selection */}
+                {subType === "org" && groups.length > 0 && (
+                  <div className="mt-3">
+                    <p className="text-xs text-gray-500 mb-1">Assign to group (optional)</p>
+                    <select
+                      value={selectedGroup}
+                      onChange={(e) => setSelectedGroup(e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    >
+                      <option value="">No group</option>
+                      {groups.map((g) => (
+                        <option key={g.groupId} value={g.groupId}>{g.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+              </div>
+            )}
+
             <button
               onClick={handleSubscribe}
               disabled={loading}
