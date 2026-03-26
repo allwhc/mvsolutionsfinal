@@ -32,8 +32,8 @@
 #define FIREBASE_PROJECT_ID   "senseflow-5a9bb"
 
 #define DEVICE_NAME       "SenseFlow-Sim"
-#define FIRMWARE_VERSION  "1.0.0-sim"
-#define FIRMWARE_CODE     "SF-SIM-2026-01"
+#define FIRMWARE_VERSION  "16.0.0"
+#define FIRMWARE_CODE     "SF-SIM-2026-16"
 #define AP_PASSWORD       "mvstech9867"
 
 // Device classes

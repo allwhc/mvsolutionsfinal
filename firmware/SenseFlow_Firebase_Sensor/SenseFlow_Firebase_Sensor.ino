@@ -42,8 +42,8 @@
 
 // Device info
 #define DEVICE_NAME       "SenseFlow-Sensor"
-#define FIRMWARE_VERSION  "1.0.0"
-#define FIRMWARE_CODE     "SF-SNS-2026-01"
+#define FIRMWARE_VERSION  "14.0.0"
+#define FIRMWARE_CODE     "SF-FBS-2026-14"
 #define AP_PASSWORD       "mvstech9867"
 
 // ══════════════════════════════════════════════════
