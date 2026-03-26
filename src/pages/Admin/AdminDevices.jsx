@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { getAllDevices, getPendingDevices, approvePendingDevice } from "../../firebase/db";
+import { getAllDevices, getPendingDevices, approvePendingDevice, registerDevice, updateDevice } from "../../firebase/db";
 import { sendTestCommand, sendRestartCommand } from "../../firebase/rtdb";
 import { QRCodeSVG } from "qrcode.react";
 
@@ -14,6 +14,11 @@ export default function AdminDevices() {
   const [registerModal, setRegisterModal] = useState(null);
   const [extraFields, setExtraFields] = useState({ deviceName: "", location: "", notes: "" });
   const [qrDevice, setQrDevice] = useState(null);
+  const [showManualAdd, setShowManualAdd] = useState(false);
+  const [manualForm, setManualForm] = useState({
+    deviceCode: "", deviceClass: 2, sensorType: 1, sensorCount: 4,
+    firmwareVersion: "1.0.0", deviceName: "", location: "", notes: "",
+  });
 
   async function load() {
     const [p, r] = await Promise.all([getPendingDevices(), getAllDevices()]);
@@ -39,6 +44,34 @@ export default function AdminDevices() {
     }
   }
 
+  async function handleManualRegister(e) {
+    e.preventDefault();
+    if (!manualForm.deviceCode.trim()) { alert("Device code required"); return; }
+    try {
+      const data = {
+        deviceClass: parseInt(manualForm.deviceClass),
+        sensorType: parseInt(manualForm.sensorType),
+        sensorCount: parseInt(manualForm.sensorCount),
+        firmwareVersion: manualForm.firmwareVersion,
+      };
+      if (manualForm.deviceName) data.deviceName = manualForm.deviceName;
+      if (manualForm.location) data.location = manualForm.location;
+      if (manualForm.notes) data.notes = manualForm.notes;
+      await registerDevice(manualForm.deviceCode.trim(), data);
+      setShowManualAdd(false);
+      setManualForm({ deviceCode: "", deviceClass: 2, sensorType: 1, sensorCount: 4, firmwareVersion: "1.0.0", deviceName: "", location: "", notes: "" });
+      await load();
+    } catch (err) {
+      alert(err.message);
+    }
+  }
+
+  async function handleToggleDeviceActive(deviceCode, currentActive) {
+    const isActive = currentActive !== false;
+    await updateDevice(deviceCode, { isActive: !isActive });
+    await load();
+  }
+
   const subscribeUrl = (code) => `${window.location.origin}/subscribe?code=${code}`;
 
   if (loading) {
@@ -47,7 +80,48 @@ export default function AdminDevices() {
 
   return (
     <div>
-      <h1 className="text-2xl font-bold text-gray-900 mb-6">Devices</h1>
+      <div className="flex items-center justify-between mb-6">
+        <h1 className="text-2xl font-bold text-gray-900">Devices</h1>
+        <button
+          onClick={() => setShowManualAdd(!showManualAdd)}
+          className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700"
+        >
+          + Add Manually
+        </button>
+      </div>
+
+      {/* Manual add form */}
+      {showManualAdd && (
+        <form onSubmit={handleManualRegister} className="bg-white rounded-xl border border-blue-200 p-4 mb-4 space-y-3">
+          <p className="text-sm font-semibold text-gray-700">Manual Device Registration</p>
+          <input type="text" placeholder="Device Code (e.g. SF-XXXXXXXX-SN)" value={manualForm.deviceCode}
+            onChange={(e) => setManualForm({ ...manualForm, deviceCode: e.target.value.toUpperCase() })}
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono" required />
+          <div className="grid grid-cols-3 gap-2">
+            <select value={manualForm.deviceClass} onChange={(e) => setManualForm({ ...manualForm, deviceClass: e.target.value })}
+              className="px-3 py-2 border border-gray-300 rounded-lg text-sm">
+              <option value={1}>Valve</option><option value={2}>Sensor</option><option value={3}>Motor</option>
+            </select>
+            <select value={manualForm.sensorType} onChange={(e) => setManualForm({ ...manualForm, sensorType: e.target.value })}
+              className="px-3 py-2 border border-gray-300 rounded-lg text-sm">
+              <option value={0}>No Sensor</option><option value={1}>DIP</option><option value={2}>Ultrasonic</option>
+            </select>
+            <input type="number" min="0" max="6" placeholder="Count" value={manualForm.sensorCount}
+              onChange={(e) => setManualForm({ ...manualForm, sensorCount: e.target.value })}
+              className="px-3 py-2 border border-gray-300 rounded-lg text-sm" />
+          </div>
+          <input type="text" placeholder="Device Name (optional)" value={manualForm.deviceName}
+            onChange={(e) => setManualForm({ ...manualForm, deviceName: e.target.value })}
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm" />
+          <input type="text" placeholder="Location (optional)" value={manualForm.location}
+            onChange={(e) => setManualForm({ ...manualForm, location: e.target.value })}
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm" />
+          <div className="flex gap-2">
+            <button type="submit" className="bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-medium">Register</button>
+            <button type="button" onClick={() => setShowManualAdd(false)} className="bg-gray-100 text-gray-600 px-4 py-2 rounded-lg text-sm">Cancel</button>
+          </div>
+        </form>
+      )}
 
       {/* Tabs */}
       <div className="flex gap-2 mb-4">
@@ -97,18 +171,23 @@ export default function AdminDevices() {
         <div className="space-y-3">
           {registered.length === 0 ? (
             <p className="text-gray-500 text-sm py-10 text-center">No registered devices</p>
-          ) : registered.map((d) => (
-            <div key={d.deviceCode} className="bg-white rounded-xl border border-gray-200 p-4">
+          ) : registered.map((d) => {
+            const devActive = d.isActive !== false;
+            return (
+            <div key={d.deviceCode} className={`bg-white rounded-xl border p-4 ${devActive ? "border-gray-200" : "border-red-200 bg-red-50"}`}>
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="font-semibold text-sm">{d.deviceName || d.deviceCode}</p>
+                  <div className="flex items-center gap-2">
+                    <p className="font-semibold text-sm">{d.deviceName || d.deviceCode}</p>
+                    {!devActive && <span className="text-xs bg-red-100 text-red-600 px-2 py-0.5 rounded-full">Inactive</span>}
+                  </div>
                   <p className="font-mono text-xs text-gray-400">{d.deviceCode}</p>
                   <p className="text-xs text-gray-500">
                     {DEVICE_CLASS[d.deviceClass] || "?"} | {SENSOR_TYPE[d.sensorType] || "?"} | {d.sensorCount || 0} sensors
                   </p>
                   {d.location && <p className="text-xs text-gray-400">{d.location}</p>}
                 </div>
-                <div className="flex gap-2">
+                <div className="flex flex-wrap gap-1.5">
                   <button
                     onClick={() => sendTestCommand(d.deviceCode)}
                     className="px-3 py-1.5 bg-green-50 text-green-600 rounded-lg text-xs hover:bg-green-100"
@@ -127,10 +206,17 @@ export default function AdminDevices() {
                   >
                     QR
                   </button>
+                  <button
+                    onClick={() => handleToggleDeviceActive(d.deviceCode, d.isActive)}
+                    className={`px-3 py-1.5 rounded-lg text-xs ${devActive ? "bg-red-50 text-red-600 hover:bg-red-100" : "bg-green-50 text-green-600 hover:bg-green-100"}`}
+                  >
+                    {devActive ? "Deactivate" : "Activate"}
+                  </button>
                 </div>
               </div>
             </div>
-          ))}
+          );
+          })}
         </div>
       )}
 

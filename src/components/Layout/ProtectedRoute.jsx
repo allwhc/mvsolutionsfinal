@@ -1,8 +1,9 @@
 import { Navigate } from "react-router-dom";
 import { useAuth } from "../../context/AuthContext";
+import DeactivatedScreen from "../DeactivatedScreen";
 
 export default function ProtectedRoute({ children, roles }) {
-  const { isAuthenticated, loading, role } = useAuth();
+  const { isAuthenticated, loading, role, isDeactivated, isSuperAdmin } = useAuth();
 
   if (loading) {
     return (
@@ -13,6 +14,10 @@ export default function ProtectedRoute({ children, roles }) {
   }
 
   if (!isAuthenticated) return <Navigate to="/login" replace />;
+
+  // Deactivated users see the deactivation screen (superadmin never deactivated)
+  if (isDeactivated && !isSuperAdmin) return <DeactivatedScreen />;
+
   if (roles && !roles.includes(role)) return <Navigate to="/dashboard" replace />;
 
   return children;

@@ -128,6 +128,25 @@ export async function approvePendingDevice(deviceCode, extraData = {}) {
   return deviceData;
 }
 
+// ── Plans ──
+export async function getPlan(planId) {
+  const snap = await getDoc(doc(db, "plans", planId));
+  return snap.exists() ? { planId, ...snap.data() } : null;
+}
+
+export async function getAllPlans() {
+  const snap = await getDocs(collection(db, "plans"));
+  return snap.docs.map((d) => ({ planId: d.id, ...d.data() }));
+}
+
+export async function createPlan(planId, data) {
+  await setDoc(doc(db, "plans", planId), data);
+}
+
+export async function updatePlan(planId, data) {
+  await updateDoc(doc(db, "plans", planId), data);
+}
+
 // ── Subscriptions ──
 export async function subscribeToDevice(uid, deviceCode, deviceName) {
   const batch = writeBatch(db);

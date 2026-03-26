@@ -1,5 +1,5 @@
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
-import { AuthProvider } from "./context/AuthContext";
+import { AuthProvider, useAuth } from "./context/AuthContext";
 import ProtectedRoute from "./components/Layout/ProtectedRoute";
 import AppLayout from "./components/Layout/AppLayout";
 import LoginForm from "./components/Auth/LoginForm";
@@ -14,10 +14,18 @@ import AdminDashboard from "./pages/Admin/AdminDashboard";
 import AdminDevices from "./pages/Admin/AdminDevices";
 import AdminUsers from "./pages/Admin/AdminUsers";
 import AdminOrgs from "./pages/Admin/AdminOrgs";
+import AdminPlans from "./pages/Admin/AdminPlans";
 import OrgDashboard from "./pages/Org/OrgDashboard";
 import OrgMembers from "./pages/Org/OrgMembers";
 import OrgGroups from "./pages/Org/OrgGroups";
 import OrgInvite from "./pages/Org/OrgInvite";
+
+// Redirect superadmin to /admin, others to /dashboard
+function HomeRedirect() {
+  const { isSuperAdmin, loading } = useAuth();
+  if (loading) return null;
+  return <Navigate to={isSuperAdmin ? "/admin" : "/dashboard"} replace />;
+}
 
 export default function App() {
   return (
@@ -42,6 +50,7 @@ export default function App() {
             <Route path="/admin/devices" element={<ProtectedRoute roles={["superadmin"]}><AdminDevices /></ProtectedRoute>} />
             <Route path="/admin/users" element={<ProtectedRoute roles={["superadmin"]}><AdminUsers /></ProtectedRoute>} />
             <Route path="/admin/orgs" element={<ProtectedRoute roles={["superadmin"]}><AdminOrgs /></ProtectedRoute>} />
+            <Route path="/admin/plans" element={<ProtectedRoute roles={["superadmin"]}><AdminPlans /></ProtectedRoute>} />
 
             {/* Org routes */}
             <Route path="/org" element={<ProtectedRoute roles={["orgAdmin"]}><OrgDashboard /></ProtectedRoute>} />
@@ -50,9 +59,9 @@ export default function App() {
             <Route path="/org/invite" element={<ProtectedRoute roles={["orgAdmin"]}><OrgInvite /></ProtectedRoute>} />
           </Route>
 
-          {/* Redirect root */}
-          <Route path="/" element={<Navigate to="/dashboard" replace />} />
-          <Route path="*" element={<Navigate to="/dashboard" replace />} />
+          {/* Redirect root — superadmin goes to /admin, others to /dashboard */}
+          <Route path="/" element={<ProtectedRoute><HomeRedirect /></ProtectedRoute>} />
+          <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </AuthProvider>
     </BrowserRouter>
