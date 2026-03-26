@@ -45,7 +45,7 @@ export default function Navbar() {
       <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
         <Link to="/dashboard" className="flex items-center gap-2">
           <img src="/favicon-32x32.png" alt="" className="w-7 h-7" />
-          <span className="text-xl font-bold text-blue-600">SenseFlow</span>
+          <span className="text-xl font-bold" style={{ color: "#1a2e5a" }}>SenseFlow</span>
         </Link>
 
         {/* Desktop nav */}

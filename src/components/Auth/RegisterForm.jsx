@@ -41,7 +41,11 @@ export default function RegisterForm() {
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-50">
       <div className="bg-white p-8 rounded-lg shadow-md w-full max-w-md">
-        <h1 className="text-2xl font-bold text-center mb-6">Create Account</h1>
+        <div className="flex items-center justify-center gap-2 mb-2">
+          <img src="/favicon-32x32.png" alt="" className="w-8 h-8" />
+          <h1 className="text-2xl font-bold" style={{ color: "#1a2e5a" }}>SenseFlow</h1>
+        </div>
+        <p className="text-center text-sm text-gray-500 mb-6">Create Account</p>
 
         <button
           onClick={handleGoogle}
