@@ -1,12 +1,13 @@
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { loginWithEmail, loginWithGoogle } from "../../firebase/auth";
+import { loginWithEmail, loginWithGoogle, resetPassword } from "../../firebase/auth";
 
 export default function LoginForm() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [resetSent, setResetSent] = useState(false);
   const navigate = useNavigate();
 
   async function handleSubmit(e) {
@@ -81,6 +82,7 @@ export default function LoginForm() {
           />
 
           {error && <p className="text-red-500 text-sm">{error}</p>}
+          {resetSent && <p className="text-green-600 text-sm">Password reset email sent! Check your inbox.</p>}
 
           <button
             type="submit"
@@ -91,7 +93,26 @@ export default function LoginForm() {
           </button>
         </form>
 
-        <div className="mt-4 text-center text-sm text-gray-600">
+        <div className="mt-3 text-center">
+          <button
+            type="button"
+            onClick={async () => {
+              if (!email) { setError("Enter your email first"); return; }
+              setError(""); setResetSent(false);
+              try {
+                await resetPassword(email);
+                setResetSent(true);
+              } catch (err) {
+                setError(err.message);
+              }
+            }}
+            className="text-sm text-gray-500 hover:text-blue-600"
+          >
+            Forgot password?
+          </button>
+        </div>
+
+        <div className="mt-3 text-center text-sm text-gray-600">
           <Link to="/register" className="text-blue-600 hover:underline">
             Create account
           </Link>
