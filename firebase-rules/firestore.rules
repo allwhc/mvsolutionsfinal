@@ -1,0 +1,66 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Users — own doc read/write, superadmin reads all
+    match /users/{uid} {
+      allow read: if request.auth != null && (request.auth.uid == uid || isSuperAdmin());
+      allow write: if request.auth != null && (request.auth.uid == uid || isSuperAdmin());
+    }
+
+    // Orgs — members can read, orgAdmin/superadmin can write
+    match /orgs/{orgId} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null && (isOrgAdmin(orgId) || isSuperAdmin());
+    }
+
+    // Org Members
+    match /orgMembers/{orgId}/members/{uid} {
+      allow read: if request.auth != null && (isOrgMember(orgId) || isSuperAdmin());
+      allow write: if request.auth != null && (isOrgAdmin(orgId) || isSuperAdmin());
+    }
+
+    // Org Groups
+    match /orgGroups/{orgId}/groups/{groupId} {
+      allow read: if request.auth != null && (isOrgMember(orgId) || isSuperAdmin());
+      allow write: if request.auth != null && (isOrgAdmin(orgId) || isSuperAdmin());
+    }
+
+    // Device Catalog — all authenticated can read (needed for subscribe), superadmin writes
+    match /deviceCatalog/{deviceCode} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null && isSuperAdmin();
+    }
+
+    // Pending Devices — ESP32 writes (anonymous), superadmin reads/deletes
+    match /pendingDevices/{deviceCode} {
+      allow read: if request.auth != null && isSuperAdmin();
+      allow write: if true; // ESP32 anonymous auth writes here
+    }
+
+    // Subscriptions — user manages own subscriptions
+    match /subscriptions/{uid}/devices/{deviceCode} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+    }
+
+    // Device Subscribers — read by superadmin, written during subscribe/unsubscribe
+    match /deviceSubscribers/{deviceCode}/subscribers/{uid} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null && request.auth.uid == uid;
+    }
+
+    // Helper functions
+    function isSuperAdmin() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == "superadmin";
+    }
+
+    function isOrgAdmin(orgId) {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == "orgAdmin"
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.orgId == orgId;
+    }
+
+    function isOrgMember(orgId) {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.orgId == orgId;
+    }
+  }
+}

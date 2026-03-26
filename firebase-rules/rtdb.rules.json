@@ -1,0 +1,26 @@
+{
+  "rules": {
+    "devices": {
+      "$deviceCode": {
+        "live": {
+          ".read": "auth != null",
+          ".write": "true"
+        },
+        "commands": {
+          ".read": "true",
+          ".write": "auth != null"
+        },
+        "info": {
+          ".read": "auth != null",
+          ".write": "true"
+        }
+      }
+    },
+    "pendingDevices": {
+      "$deviceCode": {
+        ".read": "auth != null",
+        ".write": "true"
+      }
+    }
+  }
+}
