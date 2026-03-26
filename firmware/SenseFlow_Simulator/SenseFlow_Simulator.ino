@@ -21,7 +21,7 @@
 #include <Firebase_ESP_Client.h>
 #include <addons/TokenHelper.h>
 #include <MvsConnect.h>
-#include <Adafruit_NeoPixel.h>
+#include <FastLED_min.h>
 
 // ══════════════════════════════════════════════════
 //  FIREBASE CONFIG
@@ -159,11 +159,11 @@ void printRegistrationInfo() {
 //  LED (same as real firmware)
 // ══════════════════════════════════════════════════
 
-Adafruit_NeoPixel pixel(1, LED_PIN, NEO_GRB + NEO_KHZ800);
+CRGB rgbLeds[1];
 
 void setLED(uint8_t r, uint8_t g, uint8_t b) {
-  pixel.setPixelColor(0, pixel.Color(r, g, b));
-  pixel.show();
+  rgbLeds[0] = CRGB(r, g, b);
+  FastLED_min<LED_PIN>.show();
 }
 void setLEDOff() { setLED(0, 0, 0); }
 
@@ -514,8 +514,8 @@ void setup() {
   delay(500);
   Serial.println("\n=== SenseFlow Simulator v" FIRMWARE_VERSION " ===\n");
 
-  pixel.begin();
-  pixel.setBrightness(50);
+  FastLED_min<LED_PIN>.init(rgbLeds, 1);
+  FastLED_min<LED_PIN>.setBrightness(80);
   setLED(255, 100, 0);
 
   loadOrCreateDeviceCode();
