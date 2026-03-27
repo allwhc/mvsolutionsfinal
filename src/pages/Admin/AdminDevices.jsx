@@ -114,7 +114,6 @@ export default function AdminDevices() {
       await port.setSignals({ dataTerminalReady: false, requestToSend: false });
 
       const reader = port.readable.getReader();
-      console.log("Serial: reader ready (DTR disabled)");
 
       serialRef.current = { port, reader, writer: null, active: true, buffer: "" };
       setSerialConnected(true);
@@ -127,14 +126,12 @@ export default function AdminDevices() {
       const textDecoder = new TextDecoder();
       (async function readLoop() {
         const s = serialRef.current;
-        console.log("Serial: readLoop started");
         try {
           while (s.active && s.reader) {
             const { value, done } = await s.reader.read();
             if (done) break;
             if (!value) continue;
             const text = textDecoder.decode(value, { stream: true });
-            console.log("Serial: got", text.length, "chars");
             s.buffer += text;
             let idx;
             while ((idx = s.buffer.indexOf("\n")) !== -1) {
@@ -160,10 +157,8 @@ export default function AdminDevices() {
             }
           }
         } catch (err) {
-          console.error("Serial readLoop error:", err);
           if (s.active) logTerminal("Read error: " + err.message);
         }
-        console.log("Serial: readLoop ended");
       })();
 
       // Auto-send ADMIN after boot
@@ -182,7 +177,6 @@ export default function AdminDevices() {
       const writer = s.port.writable.getWriter();
       await writer.write(new TextEncoder().encode(cmd + "\n"));
       writer.releaseLock();
-      console.log("Serial: wrote", cmd);
       logTerminal("Sent: " + cmd);
       // Re-start reading
       s.reader = s.port.readable.getReader();
@@ -218,11 +212,9 @@ export default function AdminDevices() {
             }
           }
         } catch (err) {
-          if (s.active) console.log("Serial: read after write ended");
         }
       })();
     } catch (err) {
-      console.error("Serial write error:", err);
       logTerminal("Send error: " + err.message);
     }
   }
