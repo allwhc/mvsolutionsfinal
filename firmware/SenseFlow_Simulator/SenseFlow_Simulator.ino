@@ -528,7 +528,7 @@ void setup() {
   // MvsConnect
   mvs.setCustomHTML([](){ return buildCustomHTML(); });
 
-  mvs.onWiFiCredentialsReceived([](String ssid, String password) {
+  mvs.onWiFiCredentialsReceived([](const String& ssid) {
     Serial.println("WiFi credentials received: " + ssid);
   });
 
