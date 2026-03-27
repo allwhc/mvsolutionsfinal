@@ -100,6 +100,7 @@ export default function AdminDevices() {
 
   // ── WebSerial ──
   const webSerialSupported = "serial" in navigator;
+  const keepReadingRef = useRef(true);
 
   async function connectSerial() {
     if (!webSerialSupported) { alert("WebSerial not supported in this browser. Use Chrome or Edge."); return; }
@@ -107,6 +108,7 @@ export default function AdminDevices() {
       const port = await navigator.serial.requestPort();
       await port.open({ baudRate: 115200 });
       portRef.current = port;
+      keepReadingRef.current = true;
       setSerialConnected(true);
       setSerialLog([]);
       setSerialDeviceCode("");
@@ -118,73 +120,68 @@ export default function AdminDevices() {
   }
 
   async function readSerial(port) {
-    const decoder = new TextDecoderStream();
-    const readableStreamClosed = port.readable.pipeTo(decoder.writable);
-    const reader = decoder.readable.getReader();
-    readerRef.current = reader;
+    const textDecoder = new TextDecoder();
     let buffer = "";
 
-    try {
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buffer += value;
-        const lines = buffer.split("\n");
-        buffer = lines.pop(); // keep incomplete line in buffer
+    while (port.readable && keepReadingRef.current) {
+      const reader = port.readable.getReader();
+      readerRef.current = reader;
+      try {
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += textDecoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop();
 
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed) continue;
-          setSerialLog((prev) => [...prev.slice(-50), trimmed]);
-
-          // Parse device registration info
-          if (trimmed.startsWith("Code:")) {
-            const code = trimmed.replace("Code:", "").trim();
-            setSerialDeviceCode(code);
-          }
-          if (trimmed.includes("SENSOR (0x02)")) {
-            setSerialDeviceInfo((prev) => ({ ...prev, deviceClass: 2 }));
-          }
-          if (trimmed.includes("VALVE (0x01)")) {
-            setSerialDeviceInfo((prev) => ({ ...prev, deviceClass: 1 }));
-          }
-          if (trimmed.includes("MOTOR (0x03)")) {
-            setSerialDeviceInfo((prev) => ({ ...prev, deviceClass: 3 }));
-          }
-          if (trimmed.includes("DIP (0x01)")) {
-            setSerialDeviceInfo((prev) => ({ ...prev, sensorType: 1 }));
-          }
-          if (trimmed.includes("ULTRASONIC (0x02)")) {
-            setSerialDeviceInfo((prev) => ({ ...prev, sensorType: 2 }));
-          }
-          if (trimmed.startsWith("Sensor Count:")) {
-            const count = parseInt(trimmed.replace("Sensor Count:", "").trim());
-            setSerialDeviceInfo((prev) => ({ ...prev, sensorCount: count }));
-          }
-          if (trimmed.startsWith("Firmware:")) {
-            const fw = trimmed.replace("Firmware:", "").trim();
-            setSerialDeviceInfo((prev) => ({ ...prev, firmwareVersion: fw }));
-          }
-          if (trimmed.startsWith("MAC:")) {
-            const mac = trimmed.replace("MAC:", "").trim();
-            setSerialDeviceInfo((prev) => ({ ...prev, macAddress: mac }));
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed) continue;
+            setSerialLog((prev) => [...prev.slice(-50), trimmed]);
+            parseSerialLine(trimmed);
           }
         }
+      } catch (err) {
+        // Reader was cancelled or port closed
+      } finally {
+        reader.releaseLock();
       }
-    } catch (err) {
-      // Port closed
+    }
+  }
+
+  function parseSerialLine(trimmed) {
+    if (trimmed.includes("Code:") && trimmed.includes("SF-")) {
+      const match = trimmed.match(/SF-[A-Z0-9]{8}-SN/);
+      if (match) setSerialDeviceCode(match[0]);
+    }
+    if (trimmed.includes("SENSOR (0x02)")) setSerialDeviceInfo((prev) => ({ ...prev, deviceClass: 2 }));
+    if (trimmed.includes("VALVE (0x01)")) setSerialDeviceInfo((prev) => ({ ...prev, deviceClass: 1 }));
+    if (trimmed.includes("MOTOR (0x03)")) setSerialDeviceInfo((prev) => ({ ...prev, deviceClass: 3 }));
+    if (trimmed.includes("DIP (0x01)")) setSerialDeviceInfo((prev) => ({ ...prev, sensorType: 1 }));
+    if (trimmed.includes("ULTRASONIC (0x02)")) setSerialDeviceInfo((prev) => ({ ...prev, sensorType: 2 }));
+    if (trimmed.includes("Sensor Count:")) {
+      const match = trimmed.match(/Sensor Count:\s*(\d+)/);
+      if (match) setSerialDeviceInfo((prev) => ({ ...prev, sensorCount: parseInt(match[1]) }));
+    }
+    if (trimmed.includes("Firmware:")) {
+      const match = trimmed.match(/Firmware:\s*(\S+)/);
+      if (match) setSerialDeviceInfo((prev) => ({ ...prev, firmwareVersion: match[1] }));
+    }
+    if (trimmed.includes("MAC:")) {
+      const match = trimmed.match(/MAC:\s*(\S+)/);
+      if (match) setSerialDeviceInfo((prev) => ({ ...prev, macAddress: match[1] }));
     }
   }
 
   async function sendSerialCommand(cmd) {
     if (!portRef.current?.writable) return;
-    const encoder = new TextEncoder();
     const writer = portRef.current.writable.getWriter();
-    await writer.write(encoder.encode(cmd + "\n"));
+    await writer.write(new TextEncoder().encode(cmd + "\n"));
     writer.releaseLock();
   }
 
   async function disconnectSerial() {
+    keepReadingRef.current = false;
     try {
       if (readerRef.current) {
         await readerRef.current.cancel();
