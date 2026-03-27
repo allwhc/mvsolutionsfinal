@@ -110,34 +110,30 @@ export default function AdminDevices() {
       const port = await navigator.serial.requestPort();
       await port.open({ baudRate: 115200 });
 
-      const decStream = new TextDecoderStream();
-      const readableClosed = port.readable.pipeTo(decStream.writable).catch(e => console.error("pipeTo readable error:", e));
-      const reader = decStream.readable.getReader();
+      // Direct reader + writer — no pipeTo (causes issues in React/Vite)
+      const reader = port.readable.getReader();
+      console.log("Serial: reader ready");
 
-      const encStream = new TextEncoderStream();
-      const writableClosed = encStream.readable.pipeTo(port.writable).catch(e => console.error("pipeTo writable error:", e));
-      const writer = encStream.writable.getWriter();
-      console.log("Serial: pipes set up, reader and writer ready");
-
-      serialRef.current = { port, reader, writer, active: true, buffer: "" };
+      serialRef.current = { port, reader, writer: null, active: true, buffer: "" };
       setSerialConnected(true);
       setSerialDeviceCode("");
       setSerialDeviceInfo(null);
       if (terminalRef.current) terminalRef.current.innerHTML = "";
       logTerminal("Connected to ESP32");
 
-      // Background read — uses DOM, not setState for each line
+      // Background read — raw bytes, decode manually
+      const textDecoder = new TextDecoder();
       (async function readLoop() {
         const s = serialRef.current;
-        console.log("Serial: readLoop started, active:", s.active);
+        console.log("Serial: readLoop started");
         try {
           while (s.active && s.reader) {
-            console.log("Serial: waiting for read...");
             const { value, done } = await s.reader.read();
-            console.log("Serial: got data, done:", done, "value:", value?.substring(0, 50));
             if (done) break;
             if (!value) continue;
-            s.buffer += value;
+            const text = textDecoder.decode(value, { stream: true });
+            console.log("Serial: got", text.length, "chars");
+            s.buffer += text;
             let idx;
             while ((idx = s.buffer.indexOf("\n")) !== -1) {
               const line = s.buffer.substring(0, idx).trim();
@@ -177,12 +173,52 @@ export default function AdminDevices() {
 
   async function sendSerialCmd(cmd) {
     const s = serialRef.current;
-    console.log("Serial sendCmd:", cmd, "active:", s.active, "writer:", !!s.writer);
-    if (!s.active || !s.writer) return;
+    if (!s.active || !s.port?.writable) return;
     try {
-      await s.writer.write(cmd + "\n");
-      console.log("Serial: write success");
+      // Release reader, write raw bytes, re-acquire reader
+      if (s.reader) { await s.reader.cancel(); s.reader = null; }
+      const writer = s.port.writable.getWriter();
+      await writer.write(new TextEncoder().encode(cmd + "\n"));
+      writer.releaseLock();
+      console.log("Serial: wrote", cmd);
       logTerminal("Sent: " + cmd);
+      // Re-start reading
+      s.reader = s.port.readable.getReader();
+      const td = new TextDecoder();
+      (async () => {
+        try {
+          while (s.active && s.reader) {
+            const { value, done } = await s.reader.read();
+            if (done) break;
+            if (!value) continue;
+            const text = td.decode(value, { stream: true });
+            s.buffer += text;
+            let idx;
+            while ((idx = s.buffer.indexOf("\n")) !== -1) {
+              const line = s.buffer.substring(0, idx).trim();
+              s.buffer = s.buffer.substring(idx + 1);
+              if (line.length > 0) {
+                logTerminal("ESP32: " + line);
+                const cm = line.match(/SF-[A-Z0-9]{8}-SN/);
+                if (cm) setSerialDeviceCode(cm[0]);
+                if (line.includes("SENSOR (0x02)")) setSerialDeviceInfo(p => ({...p, deviceClass: 2}));
+                if (line.includes("VALVE (0x01)")) setSerialDeviceInfo(p => ({...p, deviceClass: 1}));
+                if (line.includes("MOTOR (0x03)")) setSerialDeviceInfo(p => ({...p, deviceClass: 3}));
+                if (line.includes("DIP (0x01)")) setSerialDeviceInfo(p => ({...p, sensorType: 1}));
+                if (line.includes("ULTRASONIC (0x02)")) setSerialDeviceInfo(p => ({...p, sensorType: 2}));
+                const cnt = line.match(/Sensor Count:\s*(\d+)/);
+                if (cnt) setSerialDeviceInfo(p => ({...p, sensorCount: parseInt(cnt[1])}));
+                const fw = line.match(/Firmware:\s*(\S+)/);
+                if (fw) setSerialDeviceInfo(p => ({...p, firmwareVersion: fw[1]}));
+                const mac = line.match(/MAC:\s*(\S+)/);
+                if (mac) setSerialDeviceInfo(p => ({...p, macAddress: mac[1]}));
+              }
+            }
+          }
+        } catch (err) {
+          if (s.active) console.log("Serial: read after write ended");
+        }
+      })();
     } catch (err) {
       console.error("Serial write error:", err);
       logTerminal("Send error: " + err.message);
@@ -193,9 +229,8 @@ export default function AdminDevices() {
     const s = serialRef.current;
     s.active = false;
     try {
-      if (s.reader) await s.reader.cancel();
-      if (s.writer) await s.writer.close();
-      if (s.port) await s.port.close();
+      if (s.reader) { await s.reader.cancel(); s.reader = null; }
+      if (s.port) { await s.port.close(); s.port = null; }
     } catch {}
     serialRef.current = { port: null, reader: null, writer: null, active: false, buffer: "" };
     setSerialConnected(false);
