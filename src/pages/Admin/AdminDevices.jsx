@@ -111,12 +111,13 @@ export default function AdminDevices() {
       await port.open({ baudRate: 115200 });
 
       const decStream = new TextDecoderStream();
-      port.readable.pipeTo(decStream.writable);
+      const readableClosed = port.readable.pipeTo(decStream.writable).catch(e => console.error("pipeTo readable error:", e));
       const reader = decStream.readable.getReader();
 
       const encStream = new TextEncoderStream();
-      encStream.readable.pipeTo(port.writable);
+      const writableClosed = encStream.readable.pipeTo(port.writable).catch(e => console.error("pipeTo writable error:", e));
       const writer = encStream.writable.getWriter();
+      console.log("Serial: pipes set up, reader and writer ready");
 
       serialRef.current = { port, reader, writer, active: true, buffer: "" };
       setSerialConnected(true);
@@ -128,9 +129,12 @@ export default function AdminDevices() {
       // Background read — uses DOM, not setState for each line
       (async function readLoop() {
         const s = serialRef.current;
+        console.log("Serial: readLoop started, active:", s.active);
         try {
           while (s.active && s.reader) {
+            console.log("Serial: waiting for read...");
             const { value, done } = await s.reader.read();
+            console.log("Serial: got data, done:", done, "value:", value?.substring(0, 50));
             if (done) break;
             if (!value) continue;
             s.buffer += value;
@@ -158,8 +162,10 @@ export default function AdminDevices() {
             }
           }
         } catch (err) {
+          console.error("Serial readLoop error:", err);
           if (s.active) logTerminal("Read error: " + err.message);
         }
+        console.log("Serial: readLoop ended");
       })();
 
       // Auto-send ADMIN after boot
@@ -171,11 +177,16 @@ export default function AdminDevices() {
 
   async function sendSerialCmd(cmd) {
     const s = serialRef.current;
+    console.log("Serial sendCmd:", cmd, "active:", s.active, "writer:", !!s.writer);
     if (!s.active || !s.writer) return;
     try {
       await s.writer.write(cmd + "\n");
+      console.log("Serial: write success");
       logTerminal("Sent: " + cmd);
-    } catch (err) { logTerminal("Send error: " + err.message); }
+    } catch (err) {
+      console.error("Serial write error:", err);
+      logTerminal("Send error: " + err.message);
+    }
   }
 
   async function disconnectSerial() {
