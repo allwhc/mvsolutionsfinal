@@ -20,6 +20,8 @@
 
 #include <WiFi.h>
 #include <Preferences.h>
+// Only enable RTDB — saves ~300-400KB flash
+#define ENABLE_RTDB
 #include <Firebase_ESP_Client.h>
 #include <addons/TokenHelper.h>
 #include <MvsConnect.h>
