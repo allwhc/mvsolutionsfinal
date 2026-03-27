@@ -332,21 +332,25 @@ void updateDeviceInfo(bool online) {
 }
 
 void checkCommands() {
-  String path = "devices/" + deviceCode + "/commands";
-  if (!Firebase.RTDB.getJSON(&fbdo, path.c_str())) return;
-  FirebaseJson json = fbdo.jsonData();
-  FirebaseJsonData result;
-  if (json.get(result, "refreshRequested") && result.boolValue) {
-    pushLiveData();
-    Firebase.RTDB.setBool(&fbdo, (path + "/refreshRequested").c_str(), false);
+  String basePath = "devices/" + deviceCode + "/commands/";
+
+  if (Firebase.RTDB.getBool(&fbdo, (basePath + "refreshRequested").c_str())) {
+    if (fbdo.boolData()) {
+      pushLiveData();
+      Firebase.RTDB.setBool(&fbdo, (basePath + "refreshRequested").c_str(), false);
+    }
   }
-  if (json.get(result, "testRequested") && result.boolValue) {
-    testBlinkActive = true; testBlinkStart = millis();
-    Firebase.RTDB.setBool(&fbdo, (path + "/testRequested").c_str(), false);
+  if (Firebase.RTDB.getBool(&fbdo, (basePath + "testRequested").c_str())) {
+    if (fbdo.boolData()) {
+      testBlinkActive = true; testBlinkStart = millis();
+      Firebase.RTDB.setBool(&fbdo, (basePath + "testRequested").c_str(), false);
+    }
   }
-  if (json.get(result, "restartRequested") && result.boolValue) {
-    Firebase.RTDB.setBool(&fbdo, (path + "/restartRequested").c_str(), false);
-    updateDeviceInfo(false); delay(500); ESP.restart();
+  if (Firebase.RTDB.getBool(&fbdo, (basePath + "restartRequested").c_str())) {
+    if (fbdo.boolData()) {
+      Firebase.RTDB.setBool(&fbdo, (basePath + "restartRequested").c_str(), false);
+      updateDeviceInfo(false); delay(500); ESP.restart();
+    }
   }
 }
 

@@ -560,35 +560,31 @@ void updateDeviceInfo(bool online) {
 
 // Check commands node
 void checkCommands() {
-  String path = "devices/" + deviceCode + "/commands";
+  String basePath = "devices/" + deviceCode + "/commands/";
 
-  if (!Firebase.RTDB.getJSON(&fbdo, path.c_str())) return;
-
-  FirebaseJson json = fbdo.jsonData();
-  FirebaseJsonData result;
-
-  // refreshRequested
-  if (json.get(result, "refreshRequested") && result.boolValue) {
-    Serial.println("Refresh requested — force pushing data");
-    pushLiveData();
-    Firebase.RTDB.setBool(&fbdo, (path + "/refreshRequested").c_str(), false);
+  if (Firebase.RTDB.getBool(&fbdo, (basePath + "refreshRequested").c_str())) {
+    if (fbdo.boolData()) {
+      Serial.println("Refresh requested — force pushing data");
+      pushLiveData();
+      Firebase.RTDB.setBool(&fbdo, (basePath + "refreshRequested").c_str(), false);
+    }
   }
-
-  // testRequested
-  if (json.get(result, "testRequested") && result.boolValue) {
-    Serial.println("Test requested — blinking LED");
-    testBlinkActive = true;
-    testBlinkStart = millis();
-    Firebase.RTDB.setBool(&fbdo, (path + "/testRequested").c_str(), false);
+  if (Firebase.RTDB.getBool(&fbdo, (basePath + "testRequested").c_str())) {
+    if (fbdo.boolData()) {
+      Serial.println("Test requested — blinking LED");
+      testBlinkActive = true;
+      testBlinkStart = millis();
+      Firebase.RTDB.setBool(&fbdo, (basePath + "testRequested").c_str(), false);
+    }
   }
-
-  // restartRequested
-  if (json.get(result, "restartRequested") && result.boolValue) {
-    Serial.println("Restart requested — rebooting...");
-    Firebase.RTDB.setBool(&fbdo, (path + "/restartRequested").c_str(), false);
-    updateDeviceInfo(false);
-    delay(500);
-    ESP.restart();
+  if (Firebase.RTDB.getBool(&fbdo, (basePath + "restartRequested").c_str())) {
+    if (fbdo.boolData()) {
+      Serial.println("Restart requested — rebooting...");
+      Firebase.RTDB.setBool(&fbdo, (basePath + "restartRequested").c_str(), false);
+      updateDeviceInfo(false);
+      delay(500);
+      ESP.restart();
+    }
   }
 }
 
