@@ -711,11 +711,11 @@ h2{font-size:14px;font-weight:600;color:#666;margin-bottom:8px}
   html += "<p class='code'>" + deviceCode + "</p>";
   html += "</div>";
 
-  // Subscribe button
-  String subscribeUrl = "https://mysenseflow.netlify.app/subscribe?code=" + deviceCode;
+  // Device code for admin reference
   html += "<div class='card' style='text-align:center'>";
-  html += "<h2>Subscribe to this Device</h2>";
-  html += "<a href='" + subscribeUrl + "' target='_blank'><button class='btn btn-blue' style='width:90%;padding:12px;font-size:14px'>Subscribe</button></a>";
+  html += "<h2>Device Code</h2>";
+  html += "<p class='code' style='font-size:20px;margin:10px 0;user-select:all'>" + deviceCode + "</p>";
+  html += "<p style='font-size:10px;color:#888'>Register this code in admin panel to generate QR</p>";
   html += "</div>";
 
   // Details Card
