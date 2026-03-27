@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+// Note: WebSerial runs in standalone /serial.html to avoid React render conflicts
 import { getAllDevices, getPendingDevices, approvePendingDevice, registerDevice, updateDevice } from "../../firebase/db";
 import { sendTestCommand, sendRestartCommand } from "../../firebase/rtdb";
 import { QRCodeSVG } from "qrcode.react";
@@ -20,13 +21,8 @@ export default function AdminDevices() {
     firmwareVersion: "1.0.0", deviceName: "", location: "", notes: "",
   });
 
-  // WebSerial state
-  const [serialConnected, setSerialConnected] = useState(false);
-  const [serialLog, setSerialLog] = useState([]);
-  const [serialDeviceCode, setSerialDeviceCode] = useState("");
-  const [serialDeviceInfo, setSerialDeviceInfo] = useState(null);
-  const portRef = useRef(null);
-  const readerRef = useRef(null);
+  // WebSerial — opens standalone page (React + WebSerial causes page freeze)
+  const webSerialSupported = "serial" in navigator;
 
   // QR Scanner for registration
   const [showQrScanner, setShowQrScanner] = useState(false);
@@ -98,104 +94,7 @@ export default function AdminDevices() {
     await load();
   }
 
-  // ── WebSerial ──
-  const webSerialSupported = "serial" in navigator;
-
-  async function connectSerial() {
-    if (!webSerialSupported) { alert("WebSerial not supported in this browser. Use Chrome or Edge."); return; }
-    try {
-      const port = await navigator.serial.requestPort();
-      await port.open({ baudRate: 115200 });
-      portRef.current = port;
-      setSerialConnected(true);
-      setSerialLog(["Connected. Waiting for data..."]);
-      setSerialDeviceCode("");
-      setSerialDeviceInfo(null);
-
-      // Start background read loop
-      readLoop(port);
-
-      // Auto-request device info after ESP32 finishes boot
-      setTimeout(() => writeToSerial(port, "ADMIN"), 3500);
-    } catch (err) {
-      if (err.name !== "NotFoundError") alert("Serial error: " + err.message);
-    }
-  }
-
-  async function readLoop(port) {
-    const decoder = new TextDecoder();
-    let buffer = "";
-    while (port.readable) {
-      const reader = port.readable.getReader();
-      readerRef.current = reader;
-      try {
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          const text = decoder.decode(value, { stream: true });
-          buffer += text;
-          let idx;
-          while ((idx = buffer.indexOf("\n")) !== -1) {
-            const line = buffer.substring(0, idx).trim();
-            buffer = buffer.substring(idx + 1);
-            if (line.length > 0) {
-              setSerialLog((prev) => [...prev.slice(-50), line]);
-              parseSerialLine(line);
-            }
-          }
-        }
-      } catch (err) {
-        // reader.cancel() was called — expected during write or disconnect
-      } finally {
-        reader.releaseLock();
-      }
-      // If we reach here and port is still open, the reader was cancelled for a write — loop again
-      if (!port.readable) break;
-    }
-  }
-
-  function parseSerialLine(line) {
-    if (line.includes("SF-") && line.includes("-SN")) {
-      const match = line.match(/SF-[A-Z0-9]{8}-SN/);
-      if (match) setSerialDeviceCode(match[0]);
-    }
-    if (line.includes("SENSOR (0x02)")) setSerialDeviceInfo((prev) => ({ ...prev, deviceClass: 2 }));
-    if (line.includes("VALVE (0x01)")) setSerialDeviceInfo((prev) => ({ ...prev, deviceClass: 1 }));
-    if (line.includes("MOTOR (0x03)")) setSerialDeviceInfo((prev) => ({ ...prev, deviceClass: 3 }));
-    if (line.includes("DIP (0x01)")) setSerialDeviceInfo((prev) => ({ ...prev, sensorType: 1 }));
-    if (line.includes("ULTRASONIC (0x02)")) setSerialDeviceInfo((prev) => ({ ...prev, sensorType: 2 }));
-    const countMatch = line.match(/Sensor Count:\s*(\d+)/);
-    if (countMatch) setSerialDeviceInfo((prev) => ({ ...prev, sensorCount: parseInt(countMatch[1]) }));
-    const fwMatch = line.match(/Firmware:\s*(\S+)/);
-    if (fwMatch) setSerialDeviceInfo((prev) => ({ ...prev, firmwareVersion: fwMatch[1] }));
-    const macMatch = line.match(/MAC:\s*(\S+)/);
-    if (macMatch) setSerialDeviceInfo((prev) => ({ ...prev, macAddress: macMatch[1] }));
-  }
-
-  async function writeToSerial(port, cmd) {
-    if (!port?.writable) return;
-    // Cancel reader to free the port, write, reader restarts from readLoop
-    if (readerRef.current) {
-      try { await readerRef.current.cancel(); } catch {}
-      readerRef.current = null;
-    }
-    const writer = port.writable.getWriter();
-    await writer.write(new TextEncoder().encode(cmd + "\n"));
-    writer.releaseLock();
-  }
-
-  async function sendSerialCommand(cmd) {
-    if (!portRef.current) return;
-    await writeToSerial(portRef.current, cmd);
-  }
-
-  async function disconnectSerial() {
-    try {
-      if (readerRef.current) { await readerRef.current.cancel(); readerRef.current = null; }
-      if (portRef.current) { await portRef.current.close(); portRef.current = null; }
-    } catch {}
-    setSerialConnected(false);
-  }
+  // WebSerial opens in standalone page to avoid React freezing
 
   async function registerSerialDevice() {
     if (!serialDeviceCode) { alert("No device code detected. Send ADMIN command first."); return; }
@@ -284,14 +183,10 @@ export default function AdminDevices() {
         <h1 className="text-2xl font-bold text-gray-900">Devices</h1>
         <div className="flex flex-wrap gap-2">
           {webSerialSupported && (
-            <button
-              onClick={serialConnected ? disconnectSerial : connectSerial}
-              className={`px-4 py-2 rounded-lg text-sm font-medium ${
-                serialConnected ? "bg-red-100 text-red-700" : "bg-gray-900 text-white hover:bg-gray-800"
-              }`}
-            >
-              {serialConnected ? "Disconnect Serial" : "Connect Serial"}
-            </button>
+            <a href="/serial.html" target="_blank"
+              className="px-4 py-2 rounded-lg text-sm font-medium bg-gray-900 text-white hover:bg-gray-800 inline-block">
+              Connect Serial
+            </a>
           )}
           <button
             onClick={showQrScanner ? stopQrScanner : startQrScanner}
@@ -319,50 +214,6 @@ export default function AdminDevices() {
             className="w-full bg-red-500 text-white py-2 rounded-lg text-sm font-medium">
             Cancel
           </button>
-        </div>
-      )}
-
-      {/* WebSerial Panel */}
-      {serialConnected && (
-        <div className="bg-gray-900 rounded-xl p-4 mb-4">
-          <div className="flex items-center justify-between mb-3">
-            <p className="text-green-400 text-sm font-mono">Serial Monitor Connected</p>
-            <div className="flex gap-2">
-              <button onClick={() => sendSerialCommand("ADMIN")}
-                className="px-3 py-1 bg-blue-600 text-white rounded text-xs">Get Device Info</button>
-              <button onClick={() => sendSerialCommand("STATUS")}
-                className="px-3 py-1 bg-gray-700 text-white rounded text-xs">Status</button>
-            </div>
-          </div>
-
-          {/* Serial output */}
-          <div className="bg-black rounded-lg p-3 h-32 overflow-y-auto font-mono text-xs text-green-300 mb-3">
-            {serialLog.length === 0 ? (
-              <p className="text-gray-600">Waiting for data... Press "Get Device Info" to read device code.</p>
-            ) : serialLog.map((line, i) => (
-              <div key={i}>{line}</div>
-            ))}
-          </div>
-
-          {/* Detected device info */}
-          {serialDeviceCode && (
-            <div className="bg-gray-800 rounded-lg p-3 flex items-center justify-between">
-              <div>
-                <p className="text-white font-mono text-sm font-bold">{serialDeviceCode}</p>
-                <p className="text-gray-400 text-xs">
-                  {DEVICE_CLASS[serialDeviceInfo?.deviceClass] || "Sensor"} |{" "}
-                  {SENSOR_TYPE[serialDeviceInfo?.sensorType] || "DIP"} |{" "}
-                  {serialDeviceInfo?.sensorCount || "?"} sensors
-                </p>
-              </div>
-              <button
-                onClick={registerSerialDevice}
-                className="bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-green-700"
-              >
-                Add to Catalog
-              </button>
-            </div>
-          )}
         </div>
       )}
 

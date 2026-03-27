@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SenseFlow - Serial Device Registration</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:system-ui;background:#f8fafc;color:#334155;padding:16px;max-width:700px;margin:0 auto}
+h1{font-size:20px;color:#1a2e5a;margin-bottom:4px}
+.subtitle{font-size:12px;color:#94a3b8;margin-bottom:16px}
+.card{background:#fff;border-radius:12px;padding:16px;margin-bottom:12px;border:1px solid #e2e8f0}
+.btn{padding:10px 20px;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;margin:4px}
+.btn-green{background:#16a34a;color:#fff}
+.btn-red{background:#dc2626;color:#fff}
+.btn-blue{background:#2563eb;color:#fff}
+.btn-gray{background:#e2e8f0;color:#475569}
+.btn:disabled{opacity:0.4;cursor:not-allowed}
+.terminal{background:#0f172a;color:#4ade80;font-family:monospace;font-size:11px;padding:12px;border-radius:8px;height:200px;overflow-y:auto;margin:8px 0;white-space:pre-wrap;word-break:break-all}
+.status{display:flex;align-items:center;gap:8px;margin-bottom:12px;font-size:13px}
+.dot{width:10px;height:10px;border-radius:50%}
+.dot.on{background:#22c55e}
+.dot.off{background:#94a3b8}
+.device-info{display:none}
+.info-grid{display:grid;grid-template-columns:120px 1fr;gap:6px;font-size:13px}
+.info-grid .label{color:#94a3b8}
+.info-grid .value{color:#1e293b;font-weight:600;font-family:monospace}
+.reg-form{display:none;margin-top:12px;padding-top:12px;border-top:1px solid #e2e8f0}
+.reg-form input{width:100%;padding:8px 12px;border:1px solid #e2e8f0;border-radius:6px;font-size:13px;margin-bottom:8px}
+.code-display{font-size:24px;font-weight:bold;color:#2563eb;font-family:monospace;letter-spacing:2px;text-align:center;padding:12px;background:#eff6ff;border-radius:8px;margin:8px 0}
+.success-box{background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:12px;text-align:center;display:none}
+.success-box h3{color:#16a34a;margin-bottom:4px}
+</style>
+</head>
+<body>
+
+<h1>SenseFlow Serial Registration</h1>
+<p class="subtitle">Connect ESP32 via USB to register device</p>
+
+<!-- Connection -->
+<div class="card">
+  <div class="status">
+    <div class="dot" id="statusDot"></div>
+    <span id="statusText">Disconnected</span>
+  </div>
+  <button class="btn btn-green" id="connectBtn" onclick="connectESP32()">Connect ESP32</button>
+  <button class="btn btn-red" id="disconnectBtn" onclick="disconnectESP32()" disabled>Disconnect</button>
+  <button class="btn btn-blue" id="getInfoBtn" onclick="sendCommand('ADMIN')" disabled>Get Device Info</button>
+</div>
+
+<!-- Terminal -->
+<div class="card">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+    <span style="font-size:12px;font-weight:600;color:#64748b">Serial Output</span>
+    <button class="btn btn-gray" style="padding:4px 10px;font-size:11px" onclick="document.getElementById('terminal').innerHTML=''">Clear</button>
+  </div>
+  <div class="terminal" id="terminal"></div>
+</div>
+
+<!-- Device Info -->
+<div class="card device-info" id="deviceInfoCard">
+  <h3 style="font-size:14px;color:#1e293b;margin-bottom:8px">Device Detected</h3>
+  <div id="codeDisplay" class="code-display"></div>
+  <div class="info-grid">
+    <span class="label">Class</span><span class="value" id="infoClass">--</span>
+    <span class="label">Sensor Type</span><span class="value" id="infoSensor">--</span>
+    <span class="label">Sensor Count</span><span class="value" id="infoCount">--</span>
+    <span class="label">Firmware</span><span class="value" id="infoFW">--</span>
+    <span class="label">MAC</span><span class="value" id="infoMAC">--</span>
+  </div>
+
+  <!-- Registration form -->
+  <div class="reg-form" id="regForm">
+    <p style="font-size:12px;color:#64748b;margin-bottom:8px">Optional details (can add later from admin panel)</p>
+    <input type="text" id="regName" placeholder="Device Name (e.g. Terrace Tank B3)">
+    <input type="text" id="regLocation" placeholder="Location (e.g. Wing A, Floor 7)">
+    <button class="btn btn-green" onclick="copyDeviceCode()" style="width:100%">Copy Device Code</button>
+    <p style="font-size:11px;color:#94a3b8;margin-top:8px;text-align:center">Register this code in the admin panel at mysenseflow.netlify.app/admin/devices</p>
+  </div>
+</div>
+
+<!-- Success -->
+<div class="success-box" id="successBox">
+  <h3>Device Code Copied!</h3>
+  <p style="font-size:12px;color:#16a34a" id="successMsg"></p>
+</div>
+
+<script>
+let serialPort = null;
+let reader = null;
+let writer = null;
+let isConnected = false;
+let lineBuffer = '';
+let deviceData = {};
+
+async function connectESP32() {
+  try {
+    serialPort = await navigator.serial.requestPort();
+    await serialPort.open({ baudRate: 115200 });
+
+    const textDecoder = new TextDecoderStream();
+    serialPort.readable.pipeTo(textDecoder.writable);
+    reader = textDecoder.readable.getReader();
+
+    const textEncoder = new TextEncoderStream();
+    textEncoder.readable.pipeTo(serialPort.writable);
+    writer = textEncoder.writable.getWriter();
+
+    isConnected = true;
+    updateStatus(true);
+    startReading();
+    log('Connected to ESP32');
+
+    // Auto-request info after boot
+    setTimeout(() => sendCommand('ADMIN'), 3000);
+  } catch (err) {
+    log('Connection failed: ' + err.message);
+  }
+}
+
+async function disconnectESP32() {
+  isConnected = false;
+  try {
+    if (reader) { await reader.cancel(); reader = null; }
+    if (writer) { await writer.close(); writer = null; }
+    if (serialPort) { await serialPort.close(); serialPort = null; }
+  } catch {}
+  updateStatus(false);
+  log('Disconnected');
+}
+
+function updateStatus(connected) {
+  document.getElementById('statusDot').className = 'dot ' + (connected ? 'on' : 'off');
+  document.getElementById('statusText').textContent = connected ? 'Connected' : 'Disconnected';
+  document.getElementById('connectBtn').disabled = connected;
+  document.getElementById('disconnectBtn').disabled = !connected;
+  document.getElementById('getInfoBtn').disabled = !connected;
+}
+
+async function startReading() {
+  try {
+    while (reader && isConnected) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (value) {
+        lineBuffer += value;
+        let idx;
+        while ((idx = lineBuffer.indexOf('\n')) !== -1) {
+          const line = lineBuffer.substring(0, idx).trim();
+          lineBuffer = lineBuffer.substring(idx + 1);
+          if (line.length > 0) {
+            log('ESP32: ' + line);
+            parseLine(line);
+          }
+        }
+      }
+    }
+  } catch (err) {
+    if (isConnected) log('Read error: ' + err.message);
+  }
+}
+
+async function sendCommand(cmd) {
+  if (!isConnected || !writer) return;
+  try {
+    await writer.write(cmd + '\n');
+    log('Sent: ' + cmd);
+  } catch (err) {
+    log('Send error: ' + err.message);
+  }
+}
+
+function parseLine(line) {
+  // Device code
+  const codeMatch = line.match(/SF-[A-Z0-9]{8}-SN/);
+  if (codeMatch) {
+    deviceData.code = codeMatch[0];
+    document.getElementById('codeDisplay').textContent = codeMatch[0];
+    document.getElementById('deviceInfoCard').style.display = 'block';
+    document.getElementById('regForm').style.display = 'block';
+  }
+  // Class
+  if (line.includes('SENSOR (0x02)')) { deviceData.deviceClass = 2; document.getElementById('infoClass').textContent = 'Sensor'; }
+  if (line.includes('VALVE (0x01)')) { deviceData.deviceClass = 1; document.getElementById('infoClass').textContent = 'Valve'; }
+  if (line.includes('MOTOR (0x03)')) { deviceData.deviceClass = 3; document.getElementById('infoClass').textContent = 'Motor'; }
+  // Sensor type
+  if (line.includes('DIP (0x01)')) { deviceData.sensorType = 1; document.getElementById('infoSensor').textContent = 'DIP'; }
+  if (line.includes('ULTRASONIC (0x02)')) { deviceData.sensorType = 2; document.getElementById('infoSensor').textContent = 'Ultrasonic'; }
+  // Count
+  const countMatch = line.match(/Sensor Count:\s*(\d+)/);
+  if (countMatch) { deviceData.sensorCount = parseInt(countMatch[1]); document.getElementById('infoCount').textContent = countMatch[1]; }
+  // Firmware
+  const fwMatch = line.match(/Firmware:\s*(\S+)/);
+  if (fwMatch) { deviceData.firmwareVersion = fwMatch[1]; document.getElementById('infoFW').textContent = fwMatch[1]; }
+  // MAC
+  const macMatch = line.match(/MAC:\s*(\S+)/);
+  if (macMatch) { deviceData.macAddress = macMatch[1]; document.getElementById('infoMAC').textContent = macMatch[1]; }
+}
+
+function copyDeviceCode() {
+  if (!deviceData.code) { alert('No device code detected'); return; }
+  navigator.clipboard.writeText(deviceData.code);
+  const box = document.getElementById('successBox');
+  document.getElementById('successMsg').textContent = deviceData.code + ' copied to clipboard. Paste in admin panel to register.';
+  box.style.display = 'block';
+  setTimeout(() => { box.style.display = 'none'; }, 5000);
+}
+
+function log(msg) {
+  const t = document.getElementById('terminal');
+  const ts = new Date().toLocaleTimeString();
+  t.innerHTML += '[' + ts + '] ' + msg + '\n';
+  t.scrollTop = t.scrollHeight;
+}
+
+// Check support
+if (!('serial' in navigator)) {
+  log('WebSerial not supported. Use Chrome or Edge.');
+  document.getElementById('connectBtn').disabled = true;
+}
+</script>
+</body>
+</html>
