@@ -810,15 +810,19 @@ void setup() {
     Serial.println("WiFi credentials received: " + ssid);
   });
 
-  // Restart endpoint
-  mvs.addEndpoint("/restart", [](WebServer& server) {
-    server.send(200, "text/html", "<html><body><h2>Restarting...</h2><script>setTimeout(()=>history.back(),3000)</script></body></html>");
+  // begin() MUST be called before addEndpoint()
+  mvs.begin();
+
+  // API endpoints — use mvs.getServer() inside handlers
+  mvs.addEndpoint("/restart", []() {
+    WebServer* srv = mvs.getServer();
+    srv->send(200, "text/html", "<html><body><h2>Restarting...</h2><script>setTimeout(()=>history.back(),3000)</script></body></html>");
     delay(1000);
     ESP.restart();
   });
 
-  // Status JSON endpoint
-  mvs.addEndpoint("/sstatus", [](WebServer& server) {
+  mvs.addEndpoint("/sstatus", []() {
+    WebServer* srv = mvs.getServer();
     String json = "{";
     json += "\"code\":\"" + deviceCode + "\",";
     json += "\"level\":" + String(confirmedPct) + ",";
@@ -829,10 +833,8 @@ void setup() {
     json += "\"wifi\":\"" + mvs.getWiFiStatus() + "\",";
     json += "\"firebase\":" + String(firebaseReady ? "true" : "false");
     json += "}";
-    server.send(200, "application/json", json);
+    srv->send(200, "application/json", json);
   });
-
-  mvs.begin();
 
   // Try connecting to saved WiFi
   if (mvs.hasSavedWiFi()) {

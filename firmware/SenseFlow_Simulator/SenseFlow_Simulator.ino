@@ -532,57 +532,66 @@ void setup() {
     Serial.println("WiFi credentials received: " + ssid);
   });
 
-  // API endpoints
-  mvs.addEndpoint("/restart", [](WebServer& server) {
-    server.send(200, "text/html", "<html><body style='background:#1a1a2e;color:#fff;text-align:center;padding:40px'><h2>Restarting...</h2></body></html>");
+  // begin() MUST be called before addEndpoint()
+  mvs.begin();
+
+  // API endpoints — use mvs.getServer() inside handlers
+  mvs.addEndpoint("/restart", []() {
+    WebServer* srv = mvs.getServer();
+    srv->send(200, "text/html", "<html><body style='background:#1a1a2e;color:#fff;text-align:center;padding:40px'><h2>Restarting...</h2></body></html>");
     delay(1000); ESP.restart();
   });
 
-  mvs.addEndpoint("/api/toggle-dip", [](WebServer& server) {
-    int bit = server.arg("bit").toInt();
+  mvs.addEndpoint("/api/toggle-dip", []() {
+    WebServer* srv = mvs.getServer();
+    int bit = srv->arg("bit").toInt();
     if (bit >= 0 && bit < 6) simSensorBits ^= (1 << bit);
-    server.sendHeader("Location", "/"); server.send(302);
+    srv->sendHeader("Location", "/"); srv->send(302);
   });
 
-  mvs.addEndpoint("/api/set-level", [](WebServer& server) {
-    simUltrasonicPct = constrain(server.arg("pct").toInt(), 0, 100);
-    server.sendHeader("Location", "/"); server.send(302);
+  mvs.addEndpoint("/api/set-level", []() {
+    WebServer* srv = mvs.getServer();
+    simUltrasonicPct = constrain(srv->arg("pct").toInt(), 0, 100);
+    srv->sendHeader("Location", "/"); srv->send(302);
   });
 
-  mvs.addEndpoint("/api/set-mode", [](WebServer& server) {
-    simSensorType = constrain(server.arg("type").toInt(), 1, 2);
-    simSensorCount = constrain(server.arg("count").toInt(), 1, 6);
-    // Reset bits when changing mode
+  mvs.addEndpoint("/api/set-mode", []() {
+    WebServer* srv = mvs.getServer();
+    simSensorType = constrain(srv->arg("type").toInt(), 1, 2);
+    simSensorCount = constrain(srv->arg("count").toInt(), 1, 6);
     simSensorBits = 0;
     simUltrasonicPct = 50;
     simUltrasonicOffline = false;
-    server.sendHeader("Location", "/"); server.send(302);
+    srv->sendHeader("Location", "/"); srv->send(302);
   });
 
-  mvs.addEndpoint("/api/set-error", [](WebServer& server) {
-    String type = server.arg("type");
+  mvs.addEndpoint("/api/set-error", []() {
+    WebServer* srv = mvs.getServer();
+    String type = srv->arg("type");
     if (type == "dip") {
-      // Set non-consecutive: sensor 0 and 2 ON, sensor 1 OFF
       simSensorBits = 0b00000101;
     } else if (type == "offline") {
       simUltrasonicOffline = true;
     }
-    server.sendHeader("Location", "/"); server.send(302);
+    srv->sendHeader("Location", "/"); srv->send(302);
   });
 
-  mvs.addEndpoint("/api/clear-error", [](WebServer& server) {
+  mvs.addEndpoint("/api/clear-error", []() {
+    WebServer* srv = mvs.getServer();
     simSensorBits = 0;
     simUltrasonicOffline = false;
-    server.sendHeader("Location", "/"); server.send(302);
+    srv->sendHeader("Location", "/"); srv->send(302);
   });
 
-  mvs.addEndpoint("/api/force-push", [](WebServer& server) {
+  mvs.addEndpoint("/api/force-push", []() {
+    WebServer* srv = mvs.getServer();
     processSimulatedSensors();
     if (firebaseReady) { pushLiveData(); updateDeviceInfo(true); }
-    server.sendHeader("Location", "/"); server.send(302);
+    srv->sendHeader("Location", "/"); srv->send(302);
   });
 
-  mvs.addEndpoint("/api/status", [](WebServer& server) {
+  mvs.addEndpoint("/api/status", []() {
+    WebServer* srv = mvs.getServer();
     String json = "{";
     json += "\"code\":\"" + deviceCode + "\",";
     json += "\"sensorType\":" + String(simSensorType) + ",";
@@ -593,10 +602,8 @@ void setup() {
     json += "\"error\":" + String(sensorError ? "true" : "false") + ",";
     json += "\"firebase\":" + String(firebaseReady ? "true" : "false");
     json += "}";
-    server.send(200, "application/json", json);
+    srv->send(200, "application/json", json);
   });
-
-  mvs.begin();
 
   if (mvs.hasSavedWiFi()) {
     setLED(0, 0, 255);
