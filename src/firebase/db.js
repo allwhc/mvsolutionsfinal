@@ -148,18 +148,36 @@ export async function updatePlan(planId, data) {
 }
 
 // ── Subscriptions ──
-export async function subscribeToDevice(uid, deviceCode, deviceName) {
+export async function subscribeToDevice(uid, deviceCode, deviceName, isOwner = false) {
   const batch = writeBatch(db);
 
   batch.set(doc(db, "subscriptions", uid, "devices", deviceCode), {
     subscribedAt: serverTimestamp(),
     deviceName: deviceName || deviceCode,
+    isOwner,
   });
 
   batch.set(doc(db, "deviceSubscribers", deviceCode, "subscribers", uid), {
     subscribedAt: serverTimestamp(),
     uid,
+    isOwner,
   });
+
+  // If owner, update catalog with ownership info
+  if (isOwner) {
+    batch.update(doc(db, "deviceCatalog", deviceCode), {
+      ownerUid: uid,
+      subscriberCount: 1,
+    });
+  } else {
+    // Increment subscriber count
+    const device = await getDevice(deviceCode);
+    if (device) {
+      batch.update(doc(db, "deviceCatalog", deviceCode), {
+        subscriberCount: (device.subscriberCount || 0) + 1,
+      });
+    }
+  }
 
   await batch.commit();
 }
@@ -168,7 +186,43 @@ export async function unsubscribeFromDevice(uid, deviceCode) {
   const batch = writeBatch(db);
   batch.delete(doc(db, "subscriptions", uid, "devices", deviceCode));
   batch.delete(doc(db, "deviceSubscribers", deviceCode, "subscribers", uid));
+
+  // Check if this user was the owner
+  const subSnap = await getDoc(doc(db, "subscriptions", uid, "devices", deviceCode));
+  const wasOwner = subSnap.exists() && subSnap.data().isOwner;
+
   await batch.commit();
+
+  // Transfer ownership if owner left
+  if (wasOwner) {
+    const remaining = await getDeviceSubscribers(deviceCode);
+    if (remaining.length > 0) {
+      // Oldest subscriber becomes new owner
+      const sorted = remaining.sort((a, b) => (a.subscribedAt?.seconds || 0) - (b.subscribedAt?.seconds || 0));
+      const newOwner = sorted[0];
+      await updateDoc(doc(db, "subscriptions", newOwner.uid, "devices", deviceCode), { isOwner: true });
+      await updateDoc(doc(db, "deviceSubscribers", deviceCode, "subscribers", newOwner.uid), { isOwner: true });
+      await updateDevice(deviceCode, { ownerUid: newOwner.uid });
+    } else {
+      // No subscribers left — clear owner
+      await updateDevice(deviceCode, { ownerUid: null, accessMode: "open", accessPin: null });
+    }
+  }
+
+  // Decrement subscriber count
+  const device = await getDevice(deviceCode);
+  if (device && device.subscriberCount > 0) {
+    await updateDevice(deviceCode, { subscriberCount: device.subscriberCount - 1 });
+  }
+}
+
+export async function removeSubscriber(deviceCode, targetUid) {
+  await deleteDoc(doc(db, "subscriptions", targetUid, "devices", deviceCode));
+  await deleteDoc(doc(db, "deviceSubscribers", deviceCode, "subscribers", targetUid));
+  const device = await getDevice(deviceCode);
+  if (device && device.subscriberCount > 0) {
+    await updateDevice(deviceCode, { subscriberCount: device.subscriberCount - 1 });
+  }
 }
 
 export async function getUserSubscriptions(uid) {
@@ -184,4 +238,47 @@ export async function getDeviceSubscribers(deviceCode) {
 export async function isSubscribed(uid, deviceCode) {
   const snap = await getDoc(doc(db, "subscriptions", uid, "devices", deviceCode));
   return snap.exists();
+}
+
+export async function isDeviceOwner(uid, deviceCode) {
+  const snap = await getDoc(doc(db, "subscriptions", uid, "devices", deviceCode));
+  return snap.exists() && snap.data().isOwner === true;
+}
+
+// ── Device Access Control ──
+export async function setDeviceAccess(deviceCode, accessMode, accessPin = null) {
+  const update = { accessMode };
+  if (accessPin !== null) update.accessPin = accessPin;
+  else if (accessMode !== "pin") update.accessPin = null;
+  await updateDevice(deviceCode, update);
+}
+
+export async function createDeviceInvite(deviceCode, createdBy, maxUses = 5, expiryHours = 48) {
+  const inviteId = Math.random().toString(36).substring(2, 10);
+  await setDoc(doc(db, "deviceInvites", deviceCode, "invites", inviteId), {
+    createdBy,
+    createdAt: serverTimestamp(),
+    expiresAt: new Date(Date.now() + expiryHours * 60 * 60 * 1000),
+    maxUses,
+    usedCount: 0,
+  });
+  return inviteId;
+}
+
+export async function validateDeviceInvite(deviceCode, inviteId) {
+  const snap = await getDoc(doc(db, "deviceInvites", deviceCode, "invites", inviteId));
+  if (!snap.exists()) return false;
+  const data = snap.data();
+  if (data.usedCount >= data.maxUses) return false;
+  if (data.expiresAt && data.expiresAt.toDate() < new Date()) return false;
+  // Increment used count
+  await updateDoc(doc(db, "deviceInvites", deviceCode, "invites", inviteId), {
+    usedCount: data.usedCount + 1,
+  });
+  return true;
+}
+
+export async function getDeviceInvites(deviceCode) {
+  const snap = await getDocs(collection(db, "deviceInvites", deviceCode, "invites"));
+  return snap.docs.map((d) => ({ inviteId: d.id, ...d.data() }));
 }

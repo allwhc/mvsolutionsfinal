@@ -2,34 +2,77 @@ import { useParams, useNavigate } from "react-router-dom";
 import { useState, useEffect } from "react";
 import { useAuth } from "../context/AuthContext";
 import { useDevice } from "../hooks/useDevice";
-import { getDevice, unsubscribeFromDevice } from "../firebase/db";
+import {
+  getDevice, unsubscribeFromDevice, isDeviceOwner, getDeviceSubscribers,
+  setDeviceAccess, removeSubscriber, createDeviceInvite, getDeviceInvites,
+} from "../firebase/db";
 import { sendRefreshCommand, sendRestartCommand, sendTestCommand } from "../firebase/rtdb";
 import DeviceCard from "../components/DeviceCard/DeviceCard";
 
 export default function DeviceDetail() {
   const { code } = useParams();
-  const { user } = useAuth();
+  const { user, isSuperAdmin } = useAuth();
   const { live, info, isOnline } = useDevice(code);
   const [catalog, setCatalog] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [isOwner, setIsOwner] = useState(false);
+  const [subscribers, setSubscribers] = useState([]);
+  const [showAccess, setShowAccess] = useState(false);
+  const [accessMode, setAccessMode] = useState("open");
+  const [accessPin, setAccessPin] = useState("");
+  const [inviteLink, setInviteLink] = useState("");
   const navigate = useNavigate();
 
   useEffect(() => {
-    getDevice(code).then((d) => { setCatalog(d); setLoading(false); });
+    async function load() {
+      const d = await getDevice(code);
+      setCatalog(d);
+      if (d) {
+        const owner = await isDeviceOwner(user.uid, code);
+        setIsOwner(owner);
+        setAccessMode(d.accessMode || "open");
+        setAccessPin(d.accessPin || "");
+        const subs = await getDeviceSubscribers(code);
+        setSubscribers(subs);
+      }
+      setLoading(false);
+    }
+    load();
   }, [code]);
 
   async function handleUnsubscribe() {
-    if (!confirm("Unsubscribe from this device?")) return;
+    const msg = isOwner
+      ? "You are the owner. If you unsubscribe, ownership transfers to the next subscriber. Continue?"
+      : "Unsubscribe from this device?";
+    if (!confirm(msg)) return;
     await unsubscribeFromDevice(user.uid, code);
     navigate("/dashboard");
   }
 
+  async function handleSaveAccess() {
+    if (accessMode === "pin" && (!accessPin || accessPin.length < 4)) {
+      alert("PIN must be at least 4 characters");
+      return;
+    }
+    await setDeviceAccess(code, accessMode, accessMode === "pin" ? accessPin : null);
+    setCatalog({ ...catalog, accessMode, accessPin: accessMode === "pin" ? accessPin : null });
+    setShowAccess(false);
+  }
+
+  async function handleGenerateInvite() {
+    const inviteId = await createDeviceInvite(code, user.uid);
+    const url = `${window.location.origin}/subscribe?code=${code}&token=${inviteId}`;
+    setInviteLink(url);
+  }
+
+  async function handleRemoveSubscriber(uid) {
+    if (!confirm("Remove this subscriber?")) return;
+    await removeSubscriber(code, uid);
+    setSubscribers(subscribers.filter((s) => s.uid !== uid));
+  }
+
   if (loading) {
-    return (
-      <div className="flex items-center justify-center py-20">
-        <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-blue-600"></div>
-      </div>
-    );
+    return <div className="flex items-center justify-center py-20"><div className="animate-spin rounded-full h-10 w-10 border-b-2 border-blue-600"></div></div>;
   }
 
   if (!catalog) {
@@ -38,6 +81,7 @@ export default function DeviceDetail() {
 
   const DEVICE_CLASS = { 1: "Valve", 2: "Sensor", 3: "Motor" };
   const SENSOR_TYPE = { 0: "None", 1: "DIP", 2: "Ultrasonic" };
+  const ACCESS_LABELS = { open: "Open", pin: "PIN Protected", invite: "Invite Only" };
 
   return (
     <div className="max-w-2xl mx-auto">
@@ -45,17 +89,10 @@ export default function DeviceDetail() {
         &larr; Back to Dashboard
       </button>
 
-      {/* Device card */}
-      <DeviceCard
-        deviceCode={code}
-        deviceName={catalog.deviceName || code}
-        live={live}
-        info={info}
-        catalog={catalog}
-        isOnline={isOnline}
-      />
+      <DeviceCard deviceCode={code} deviceName={catalog.deviceName || code}
+        live={live} info={info} catalog={catalog} isOnline={isOnline} />
 
-      {/* Device info table */}
+      {/* Device info */}
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 mt-4 p-4">
         <h3 className="font-semibold text-gray-900 mb-3">Device Info</h3>
         <div className="grid grid-cols-2 gap-2 text-sm">
@@ -65,20 +102,16 @@ export default function DeviceDetail() {
           <span className="text-gray-900">{DEVICE_CLASS[catalog.deviceClass] || "Unknown"}</span>
           <span className="text-gray-500">Sensor Type</span>
           <span className="text-gray-900">{SENSOR_TYPE[catalog.sensorType] || "Unknown"}</span>
-          <span className="text-gray-500">Sensor Count</span>
-          <span className="text-gray-900">{catalog.sensorCount || "N/A"}</span>
           <span className="text-gray-500">Firmware</span>
           <span className="text-gray-900">{catalog.firmwareVersion || "Unknown"}</span>
           <span className="text-gray-500">RSSI</span>
           <span className="text-gray-900">{live?.rssi ? `${live.rssi} dBm` : "N/A"}</span>
           <span className="text-gray-500">Status</span>
-          <span className={isOnline ? "text-green-600" : "text-gray-400"}>
-            {isOnline ? "Online" : "Offline"}
-          </span>
-          <span className="text-gray-500">Last Seen</span>
-          <span className="text-gray-900">
-            {info?.lastSeen ? new Date(info.lastSeen * 1000).toLocaleString() : "Never"}
-          </span>
+          <span className={isOnline ? "text-green-600" : "text-gray-400"}>{isOnline ? "Online" : "Offline"}</span>
+          <span className="text-gray-500">Subscribers</span>
+          <span className="text-gray-900">{subscribers.length}</span>
+          <span className="text-gray-500">Access</span>
+          <span className="text-gray-900">{ACCESS_LABELS[catalog.accessMode] || "Open"}</span>
         </div>
       </div>
 
@@ -86,32 +119,94 @@ export default function DeviceDetail() {
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 mt-4 p-4">
         <h3 className="font-semibold text-gray-900 mb-3">Actions</h3>
         <div className="flex flex-wrap gap-2">
-          <button
-            onClick={() => sendRefreshCommand(code)}
-            className="px-4 py-2 bg-blue-50 text-blue-600 rounded-lg text-sm hover:bg-blue-100"
-          >
-            Force Refresh
-          </button>
-          <button
-            onClick={() => sendTestCommand(code)}
-            className="px-4 py-2 bg-green-50 text-green-600 rounded-lg text-sm hover:bg-green-100"
-          >
-            Test LED
-          </button>
-          <button
-            onClick={() => sendRestartCommand(code)}
-            className="px-4 py-2 bg-yellow-50 text-yellow-600 rounded-lg text-sm hover:bg-yellow-100"
-          >
-            Restart Device
-          </button>
-          <button
-            onClick={handleUnsubscribe}
-            className="px-4 py-2 bg-red-50 text-red-600 rounded-lg text-sm hover:bg-red-100"
-          >
-            Unsubscribe
-          </button>
+          <button onClick={() => sendRefreshCommand(code)}
+            className="px-4 py-2 bg-blue-50 text-blue-600 rounded-lg text-sm hover:bg-blue-100">Force Refresh</button>
+          <button onClick={() => sendTestCommand(code)}
+            className="px-4 py-2 bg-green-50 text-green-600 rounded-lg text-sm hover:bg-green-100">Test LED</button>
+          <button onClick={() => sendRestartCommand(code)}
+            className="px-4 py-2 bg-yellow-50 text-yellow-600 rounded-lg text-sm hover:bg-yellow-100">Restart</button>
+          <button onClick={handleUnsubscribe}
+            className="px-4 py-2 bg-red-50 text-red-600 rounded-lg text-sm hover:bg-red-100">Unsubscribe</button>
         </div>
       </div>
+
+      {/* Owner controls */}
+      {(isOwner || isSuperAdmin) && (
+        <div className="bg-white rounded-xl shadow-sm border border-blue-200 mt-4 p-4">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="font-semibold text-gray-900">
+              {isOwner ? "Owner Controls" : "Admin Controls"}
+            </h3>
+            <span className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full">
+              {isOwner ? "Owner" : "Admin"}
+            </span>
+          </div>
+
+          {/* Access control */}
+          <button onClick={() => setShowAccess(!showAccess)}
+            className="w-full text-left px-3 py-2 bg-gray-50 rounded-lg text-sm text-gray-700 hover:bg-gray-100 mb-3">
+            Access: <strong>{ACCESS_LABELS[accessMode]}</strong> — tap to change
+          </button>
+
+          {showAccess && (
+            <div className="bg-gray-50 rounded-lg p-3 mb-3 space-y-2">
+              {["open", "pin", "invite"].map((mode) => (
+                <label key={mode} className="flex items-center gap-2 text-sm cursor-pointer">
+                  <input type="radio" name="access" value={mode} checked={accessMode === mode}
+                    onChange={(e) => setAccessMode(e.target.value)} />
+                  <span>{ACCESS_LABELS[mode]}</span>
+                </label>
+              ))}
+              {accessMode === "pin" && (
+                <input type="text" placeholder="Set PIN (4-6 chars)" value={accessPin}
+                  onChange={(e) => setAccessPin(e.target.value)} maxLength={6}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono tracking-widest" />
+              )}
+              <button onClick={handleSaveAccess}
+                className="bg-blue-600 text-white px-4 py-1.5 rounded-lg text-xs font-medium">Save</button>
+            </div>
+          )}
+
+          {/* Generate invite link */}
+          {accessMode === "invite" && (
+            <div className="mb-3">
+              <button onClick={handleGenerateInvite}
+                className="px-4 py-2 bg-green-50 text-green-600 rounded-lg text-sm hover:bg-green-100">
+                Generate Invite Link
+              </button>
+              {inviteLink && (
+                <div className="mt-2 bg-gray-50 rounded-lg p-2">
+                  <p className="text-xs text-gray-400 mb-1">Share this link (expires in 48h, max 5 uses)</p>
+                  <p className="text-xs font-mono break-all text-blue-600">{inviteLink}</p>
+                  <button onClick={() => { navigator.clipboard.writeText(inviteLink); }}
+                    className="mt-1 text-xs text-blue-600 hover:underline">Copy</button>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Subscribers list */}
+          <div>
+            <p className="text-xs text-gray-500 font-medium mb-2">
+              Subscribers ({subscribers.length})
+            </p>
+            <div className="space-y-1.5">
+              {subscribers.map((s) => (
+                <div key={s.uid} className="flex items-center justify-between bg-gray-50 rounded-lg px-3 py-2">
+                  <div>
+                    <span className="text-xs text-gray-700">{s.uid.substring(0, 12)}...</span>
+                    {s.isOwner && <span className="text-xs bg-blue-100 text-blue-600 px-1.5 py-0.5 rounded ml-2">Owner</span>}
+                  </div>
+                  {!s.isOwner && s.uid !== user.uid && (
+                    <button onClick={() => handleRemoveSubscriber(s.uid)}
+                      className="text-xs text-red-500 hover:text-red-700">Remove</button>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
