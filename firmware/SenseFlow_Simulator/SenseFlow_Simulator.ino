@@ -498,12 +498,12 @@ select,input[type=number]{background:#1e293b;color:#e2e8f0;border:1px solid #334
   html += "<a href='/restart'><button class='btn btn-red'>Restart</button></a>";
   html += "</div>";
 
-  // QR
+  // Subscribe
   String subscribeUrl = "https://mysenseflow.netlify.app/subscribe?code=" + deviceCode;
-  html += "<div class='card qr'>";
-  html += "<h2>Subscribe QR</h2>";
-  html += "<img src='https://api.qrserver.com/v1/create-qr-code/?size=160x160&data=" + subscribeUrl + "&bgcolor=16213e&color=38bdf8' width='160' height='160'>";
-  html += "<a class='link' href='" + subscribeUrl + "'>" + subscribeUrl + "</a>";
+  html += "<div class='card' style='text-align:center'>";
+  html += "<h2>Subscribe to this Device</h2>";
+  html += "<p class='code' style='margin:10px 0'>" + deviceCode + "</p>";
+  html += "<a href='" + subscribeUrl + "' target='_blank'><button class='btn btn-green' style='width:90%;padding:12px;font-size:14px'>Subscribe</button></a>";
   html += "</div>";
 
   html += "<script>setTimeout(()=>location.reload(),3000)</script>";

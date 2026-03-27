@@ -711,12 +711,11 @@ h2{font-size:14px;font-weight:600;color:#666;margin-bottom:8px}
   html += "<p class='code'>" + deviceCode + "</p>";
   html += "</div>";
 
-  // QR Code Card (using Google Chart API for simplicity in AP mode)
-  String subscribeUrl = "https://senseflow.netlify.app/subscribe?code=" + deviceCode;
-  html += "<div class='card qr'>";
-  html += "<h2>Scan to Subscribe</h2>";
-  html += "<img src='https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=" + subscribeUrl + "' width='180' height='180'>";
-  html += "<a class='link' href='" + subscribeUrl + "'>" + subscribeUrl + "</a>";
+  // Subscribe button
+  String subscribeUrl = "https://mysenseflow.netlify.app/subscribe?code=" + deviceCode;
+  html += "<div class='card' style='text-align:center'>";
+  html += "<h2>Subscribe to this Device</h2>";
+  html += "<a href='" + subscribeUrl + "' target='_blank'><button class='btn btn-blue' style='width:90%;padding:12px;font-size:14px'>Subscribe</button></a>";
   html += "</div>";
 
   // Details Card
