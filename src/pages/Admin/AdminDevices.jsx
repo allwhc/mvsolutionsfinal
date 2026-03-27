@@ -113,7 +113,10 @@ export default function AdminDevices() {
       setSerialLog([]);
       setSerialDeviceCode("");
       setSerialDeviceInfo(null);
+      // Start reading first, then ESP32 resets from DTR and boot output gets captured
       readSerial(port);
+      // Also send ADMIN after boot completes (~3s)
+      setTimeout(() => sendSerialCommand("ADMIN"), 3000);
     } catch (err) {
       if (err.name !== "NotFoundError") alert("Serial error: " + err.message);
     }
@@ -174,10 +177,22 @@ export default function AdminDevices() {
   }
 
   async function sendSerialCommand(cmd) {
-    if (!portRef.current?.writable) return;
-    const writer = portRef.current.writable.getWriter();
-    await writer.write(new TextEncoder().encode(cmd + "\n"));
-    writer.releaseLock();
+    const port = portRef.current;
+    if (!port?.writable) return;
+    try {
+      // Cancel reader to release readable lock, then write, then restart reading
+      if (readerRef.current) {
+        await readerRef.current.cancel();
+        readerRef.current = null;
+      }
+      const writer = port.writable.getWriter();
+      await writer.write(new TextEncoder().encode(cmd + "\n"));
+      writer.releaseLock();
+      // Restart reading
+      readSerial(port);
+    } catch (err) {
+      console.error("Serial write error:", err);
+    }
   }
 
   async function disconnectSerial() {
