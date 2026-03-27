@@ -38,7 +38,9 @@ export default function AdminDevices() {
 
   async function load() {
     const [p, r] = await Promise.all([getPendingDevices(), getAllDevices()]);
-    setPending(p);
+    // Filter out pending devices that are already registered in catalog
+    const registeredCodes = new Set(r.map(d => d.deviceCode));
+    setPending(p.filter(d => !registeredCodes.has(d.deviceCode)));
     setRegistered(r);
     setLoading(false);
   }
