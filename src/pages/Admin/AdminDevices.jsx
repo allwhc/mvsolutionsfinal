@@ -98,9 +98,11 @@ export default function AdminDevices() {
     await load();
   }
 
-  // ── WebSerial ──
+  // ── WebSerial (same pattern as working admin.html) ──
   const webSerialSupported = "serial" in navigator;
-  const keepReadingRef = useRef(true);
+  const writerRef = useRef(null);
+  const serialConnectedRef = useRef(false);
+  const lineBufferRef = useRef("");
 
   async function connectSerial() {
     if (!webSerialSupported) { alert("WebSerial not supported in this browser. Use Chrome or Edge."); return; }
@@ -108,52 +110,60 @@ export default function AdminDevices() {
       const port = await navigator.serial.requestPort();
       await port.open({ baudRate: 115200 });
       portRef.current = port;
-      keepReadingRef.current = true;
+
+      // Reader pipe
+      const textDecoder = new TextDecoderStream();
+      port.readable.pipeTo(textDecoder.writable);
+      const reader = textDecoder.readable.getReader();
+      readerRef.current = reader;
+
+      // Writer pipe
+      const textEncoder = new TextEncoderStream();
+      textEncoder.readable.pipeTo(port.writable);
+      const writer = textEncoder.writable.getWriter();
+      writerRef.current = writer;
+
+      serialConnectedRef.current = true;
       setSerialConnected(true);
       setSerialLog([]);
       setSerialDeviceCode("");
       setSerialDeviceInfo(null);
-      // Start reading first, then ESP32 resets from DTR and boot output gets captured
-      readSerial(port);
-      // Also send ADMIN after boot completes (~3s)
+
+      // Start reading loop
+      startReading();
+
+      // Auto-send ADMIN after boot
       setTimeout(() => sendSerialCommand("ADMIN"), 3000);
     } catch (err) {
       if (err.name !== "NotFoundError") alert("Serial error: " + err.message);
     }
   }
 
-  async function readSerial(port) {
-    const textDecoder = new TextDecoder();
-    let buffer = "";
-
-    while (port.readable && keepReadingRef.current) {
-      const reader = port.readable.getReader();
-      readerRef.current = reader;
-      try {
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          buffer += textDecoder.decode(value, { stream: true });
-          const lines = buffer.split("\n");
-          buffer = lines.pop();
-
-          for (const line of lines) {
-            const trimmed = line.trim();
-            if (!trimmed) continue;
-            setSerialLog((prev) => [...prev.slice(-50), trimmed]);
-            parseSerialLine(trimmed);
+  async function startReading() {
+    try {
+      while (readerRef.current && serialConnectedRef.current) {
+        const { value, done } = await readerRef.current.read();
+        if (done) break;
+        if (value) {
+          lineBufferRef.current += value;
+          let newlineIndex;
+          while ((newlineIndex = lineBufferRef.current.indexOf("\n")) !== -1) {
+            const completeLine = lineBufferRef.current.substring(0, newlineIndex).trim();
+            lineBufferRef.current = lineBufferRef.current.substring(newlineIndex + 1);
+            if (completeLine.length > 0) {
+              setSerialLog((prev) => [...prev.slice(-50), completeLine]);
+              parseSerialLine(completeLine);
+            }
           }
         }
-      } catch (err) {
-        // Reader was cancelled or port closed
-      } finally {
-        reader.releaseLock();
       }
+    } catch (err) {
+      if (serialConnectedRef.current) console.error("Read error:", err);
     }
   }
 
   function parseSerialLine(trimmed) {
-    if (trimmed.includes("Code:") && trimmed.includes("SF-")) {
+    if (trimmed.includes("SF-") && trimmed.includes("-SN")) {
       const match = trimmed.match(/SF-[A-Z0-9]{8}-SN/);
       if (match) setSerialDeviceCode(match[0]);
     }
@@ -177,37 +187,23 @@ export default function AdminDevices() {
   }
 
   async function sendSerialCommand(cmd) {
-    const port = portRef.current;
-    if (!port?.writable) return;
+    if (!serialConnectedRef.current || !writerRef.current) return;
     try {
-      // Cancel reader to release readable lock, then write, then restart reading
-      if (readerRef.current) {
-        await readerRef.current.cancel();
-        readerRef.current = null;
-      }
-      const writer = port.writable.getWriter();
-      await writer.write(new TextEncoder().encode(cmd + "\n"));
-      writer.releaseLock();
-      // Restart reading
-      readSerial(port);
+      await writerRef.current.write(cmd + "\n");
     } catch (err) {
-      console.error("Serial write error:", err);
+      console.error("Send error:", err);
     }
   }
 
   async function disconnectSerial() {
-    keepReadingRef.current = false;
+    serialConnectedRef.current = false;
     try {
-      if (readerRef.current) {
-        await readerRef.current.cancel();
-        readerRef.current = null;
-      }
-      if (portRef.current) {
-        await portRef.current.close();
-        portRef.current = null;
-      }
+      if (readerRef.current) { await readerRef.current.cancel(); readerRef.current = null; }
+      if (writerRef.current) { await writerRef.current.close(); writerRef.current = null; }
+      if (portRef.current) { await portRef.current.close(); portRef.current = null; }
     } catch {}
     setSerialConnected(false);
+    lineBufferRef.current = "";
   }
 
   async function registerSerialDevice() {
