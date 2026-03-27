@@ -779,7 +779,7 @@ void setup() {
   Serial.println("\n\n=== SenseFlow Firebase Sensor v" FIRMWARE_VERSION " ===\n");
 
   // LED
-  FastLED_min<LED_PIN>.init(rgbLeds, 1);
+  FastLED_min<LED_PIN>.addLeds(rgbLeds, 1);
   FastLED_min<LED_PIN>.setBrightness(80);
   setLED(255, 100, 0);  // Orange on boot
 

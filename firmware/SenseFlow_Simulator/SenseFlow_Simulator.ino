@@ -514,7 +514,7 @@ void setup() {
   delay(500);
   Serial.println("\n=== SenseFlow Simulator v" FIRMWARE_VERSION " ===\n");
 
-  FastLED_min<LED_PIN>.init(rgbLeds, 1);
+  FastLED_min<LED_PIN>.addLeds(rgbLeds, 1);
   FastLED_min<LED_PIN>.setBrightness(80);
   setLED(255, 100, 0);
 
