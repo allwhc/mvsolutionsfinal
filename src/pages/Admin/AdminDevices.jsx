@@ -110,9 +110,11 @@ export default function AdminDevices() {
       const port = await navigator.serial.requestPort();
       await port.open({ baudRate: 115200 });
 
-      // Direct reader + writer — no pipeTo (causes issues in React/Vite)
+      // Prevent ESP32 reset by disabling DTR/RTS
+      await port.setSignals({ dataTerminalReady: false, requestToSend: false });
+
       const reader = port.readable.getReader();
-      console.log("Serial: reader ready");
+      console.log("Serial: reader ready (DTR disabled)");
 
       serialRef.current = { port, reader, writer: null, active: true, buffer: "" };
       setSerialConnected(true);

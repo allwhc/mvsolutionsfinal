@@ -98,6 +98,9 @@ async function connectESP32() {
     serialPort = await navigator.serial.requestPort();
     await serialPort.open({ baudRate: 115200 });
 
+    // Prevent ESP32 reset
+    await serialPort.setSignals({ dataTerminalReady: false, requestToSend: false });
+
     const textDecoder = new TextDecoderStream();
     serialPort.readable.pipeTo(textDecoder.writable);
     reader = textDecoder.readable.getReader();
