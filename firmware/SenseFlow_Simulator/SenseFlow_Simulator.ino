@@ -169,16 +169,19 @@ void setLED(uint8_t r, uint8_t g, uint8_t b) {
 }
 void setLEDOff() { setLED(0, 0, 0); }
 
+// Level colors matching LED sticker spec
 void setLevelColor(uint8_t pct) {
-  if (pct == 0)       setLED(255, 0, 0);
-  else if (pct <= 25) setLED(255, 100, 0);
-  else if (pct <= 50) setLED(255, 255, 0);
-  else if (pct <= 75) setLED(100, 255, 0);
-  else                setLED(0, 255, 0);
+  if (pct == 0)       setLED(255, 0, 0);       // Red - Empty
+  else if (pct <= 25) setLED(255, 80, 0);       // Orange - Low
+  else if (pct <= 50) setLED(255, 200, 0);      // Yellow - Half
+  else if (pct <= 75) setLED(0, 229, 255);      // Cyan - Good
+  else                setLED(0, 230, 118);      // Green - Full
 }
 
 void handleLED() {
   unsigned long now = millis();
+
+  // Priority 1: Test blink (Firebase command)
   if (testBlinkActive) {
     unsigned long elapsed = now - testBlinkStart;
     if (elapsed < 1800) {
@@ -189,21 +192,27 @@ void handleLED() {
     } else { testBlinkActive = false; }
     return;
   }
-  if (sensorError || (simSensorType == SNS_ULTRASONIC && simUltrasonicOffline)) {
-    setLED(128, 0, 128); return;
-  }
+
+  // LED cycle: 30s level color → 2s WiFi status blink → repeat
   unsigned long cycleElapsed = now - ledCycleStart;
-  if (cycleElapsed >= 31500) { ledCycleStart = now; ledShowingWifi = false; }
-  if (cycleElapsed < 30000) {
-    setLevelColor(confirmedPct);
-    ledShowingWifi = false;
-  } else {
+  if (cycleElapsed >= 32000) { ledCycleStart = now; ledShowingWifi = false; }
+
+  if (cycleElapsed >= 30000) {
+    // Stage 2: WiFi status blink (2s) — HIGHEST PRIORITY, overrides sensor error
     if (!ledShowingWifi) { ledShowingWifi = true; wifiBlinkStart = now; }
     int blinkPhase = ((now - wifiBlinkStart) / 250) % 2;
     if (WiFi.status() == WL_CONNECTED) {
-      if (blinkPhase == 0) setLED(0, 0, 255); else setLEDOff();
+      if (blinkPhase == 0) setLED(0, 0, 255); else setLEDOff();  // Blue blink
     } else {
-      if (blinkPhase == 0) setLED(255, 255, 255); else setLEDOff();
+      if (blinkPhase == 0) setLED(255, 255, 255); else setLEDOff();  // White blink
+    }
+  } else {
+    // Stage 1: Tank level color (30s)
+    ledShowingWifi = false;
+    if (sensorError || (simSensorType == SNS_ULTRASONIC && simUltrasonicOffline)) {
+      setLED(148, 51, 234);  // Purple - sensor error
+    } else {
+      setLevelColor(confirmedPct);
     }
   }
 }
@@ -502,6 +511,19 @@ select,input[type=number]{background:#1e293b;color:#e2e8f0;border:1px solid #334
   html += "<a href='/restart'><button class='btn btn-red'>Restart</button></a>";
   html += "</div>";
 
+  // Manual WiFi entry
+  html += "<div class='card'>";
+  html += "<h2>WiFi Setup</h2>";
+  html += "<form action='/setwifi' method='GET'>";
+  html += "<input type='text' name='ssid' placeholder='WiFi SSID' style='width:100%;margin-bottom:6px;padding:8px;background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:6px;font-size:12px' required>";
+  html += "<div style='position:relative'>";
+  html += "<input type='password' id='wpass' name='pass' placeholder='Password' style='width:100%;padding:8px;background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:6px;font-size:12px;padding-right:40px'>";
+  html += "<button type='button' onclick=\"var p=document.getElementById('wpass');p.type=p.type==='password'?'text':'password'\" style='position:absolute;right:6px;top:50%;transform:translateY(-50%);background:none;border:none;color:#64748b;font-size:14px;cursor:pointer'>&#128065;</button>";
+  html += "</div>";
+  html += "<button class='btn btn-green' type='submit' style='width:100%;margin-top:8px'>Connect WiFi</button>";
+  html += "</form>";
+  html += "</div>";
+
   // Device code for admin reference
   html += "<div class='card' style='text-align:center'>";
   html += "<h2>Device Code</h2>";
@@ -539,10 +561,36 @@ void setup() {
 
   mvs.onWiFiCredentialsReceived([](const String& ssid) {
     Serial.println("WiFi credentials received: " + ssid);
+    // Fix: disconnect first to avoid "sta is connecting, cannot set config"
+    WiFi.disconnect(false);
+    delay(200);
   });
 
   // begin() MUST be called before addEndpoint()
   mvs.begin();
+
+  // Manual WiFi entry endpoint
+  mvs.addEndpoint("/setwifi", []() {
+    WebServer* srv = mvs.getServer();
+    String ssid = srv->arg("ssid");
+    String pass = srv->arg("pass");
+    if (ssid.length() == 0) {
+      srv->send(400, "text/html", "<html><body style='background:#1a1a2e;color:#fff;text-align:center;padding:40px'><h2>SSID required</h2></body></html>");
+      return;
+    }
+    srv->send(200, "text/html", "<html><body style='background:#1a1a2e;color:#fff;text-align:center;padding:40px'><h2>Connecting to " + ssid + "...</h2><p style='color:#94a3b8;margin-top:8px'>Page will reload in 10s</p><script>setTimeout(()=>location.href='/',10000)</script></body></html>");
+    Serial.println("Manual WiFi: " + ssid);
+    WiFi.disconnect(false);
+    delay(200);
+    WiFi.begin(ssid.c_str(), pass.c_str());
+    // Save to NVS so it persists
+    Preferences wifiPrefs;
+    wifiPrefs.begin("mvsconnect", false);
+    wifiPrefs.putString("ssid", ssid);
+    wifiPrefs.putString("password", pass);
+    wifiPrefs.putBool("valid", true);
+    wifiPrefs.end();
+  });
 
   // API endpoints — use mvs.getServer() inside handlers
   mvs.addEndpoint("/restart", []() {
