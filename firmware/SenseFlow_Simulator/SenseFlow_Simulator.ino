@@ -418,6 +418,20 @@ select,input[type=number]{background:#1e293b;color:#e2e8f0;border:1px solid #334
 </style></head><body>
 )rawliteral";
 
+  // WiFi status banner
+  bool wifiOk = (WiFi.status() == WL_CONNECTED);
+  if (wifiOk) {
+    html += "<div style='background:#064e3b;border:1px solid #059669;border-radius:10px;padding:10px 14px;margin-bottom:10px;display:flex;align-items:center;gap:8px'>";
+    html += "<div style='width:10px;height:10px;border-radius:50%;background:#34d399;box-shadow:0 0 6px #34d399'></div>";
+    html += "<div><div style='font-size:12px;font-weight:700;color:#ecfdf5'>WiFi Connected</div>";
+    html += "<div style='font-size:10px;color:#6ee7b7'>" + WiFi.SSID() + " &bull; " + WiFi.localIP().toString() + " &bull; RSSI " + String(WiFi.RSSI()) + "dBm</div></div></div>";
+  } else {
+    html += "<div style='background:#451a03;border:1px solid #92400e;border-radius:10px;padding:10px 14px;margin-bottom:10px;display:flex;align-items:center;gap:8px'>";
+    html += "<div style='width:10px;height:10px;border-radius:50%;background:#f87171;box-shadow:0 0 6px #f87171'></div>";
+    html += "<div><div style='font-size:12px;font-weight:700;color:#fef2f2'>WiFi Not Connected</div>";
+    html += "<div style='font-size:10px;color:#fca5a5'>Enter credentials below or use MvsConnect app</div></div></div>";
+  }
+
   // Header
   html += "<div class='card'>";
   html += "<h1>SenseFlow Simulator</h1>";

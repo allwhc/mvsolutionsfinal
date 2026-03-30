@@ -685,6 +685,20 @@ h2{font-size:14px;font-weight:600;color:#666;margin-bottom:8px}
 </head><body>
 )rawliteral";
 
+  // WiFi status banner
+  bool wifiOk = (WiFi.status() == WL_CONNECTED);
+  if (wifiOk) {
+    html += "<div style='background:#f0fdf4;border:1px solid #86efac;border-radius:10px;padding:10px 14px;margin-bottom:12px;display:flex;align-items:center;gap:8px'>";
+    html += "<div style='width:10px;height:10px;border-radius:50%;background:#22c55e;box-shadow:0 0 6px #22c55e'></div>";
+    html += "<div><div style='font-size:12px;font-weight:700;color:#166534'>WiFi Connected</div>";
+    html += "<div style='font-size:10px;color:#15803d'>" + WiFi.SSID() + " &bull; " + WiFi.localIP().toString() + " &bull; RSSI " + String(WiFi.RSSI()) + "dBm</div></div></div>";
+  } else {
+    html += "<div style='background:#fef2f2;border:1px solid #fca5a5;border-radius:10px;padding:10px 14px;margin-bottom:12px;display:flex;align-items:center;gap:8px'>";
+    html += "<div style='width:10px;height:10px;border-radius:50%;background:#ef4444;box-shadow:0 0 6px #ef4444'></div>";
+    html += "<div><div style='font-size:12px;font-weight:700;color:#991b1b'>WiFi Not Connected</div>";
+    html += "<div style='font-size:10px;color:#dc2626'>Enter credentials below or use MvsConnect app</div></div></div>";
+  }
+
   // Device Info Card
   html += "<div class='card'>";
   html += "<h1>SenseFlow Device</h1>";
