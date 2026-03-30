@@ -470,16 +470,17 @@ void initFirebase() {
   fbConfig.api_key = FIREBASE_API_KEY;
   fbConfig.database_url = FIREBASE_DB_URL;
 
-  // Anonymous auth
-  fbAuth.user.email = "";
-  fbAuth.user.password = "";
-
   fbConfig.token_status_callback = tokenStatusCallback;
 
   Firebase.begin(&fbConfig, &fbAuth);
   Firebase.reconnectNetwork(true);
 
-  Serial.println("Firebase initialized, signing in anonymously...");
+  // Anonymous sign-up (empty email + password = anonymous)
+  if (Firebase.signUp(&fbConfig, &fbAuth, "", "")) {
+    Serial.println("Firebase anonymous auth OK");
+  } else {
+    Serial.println("Firebase auth failed: " + String(fbConfig.signer.signupError.message.c_str()));
+  }
 }
 
 bool checkFirebaseReady() {
