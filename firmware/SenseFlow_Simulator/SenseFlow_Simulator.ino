@@ -17,6 +17,7 @@
  */
 
 #include <WiFi.h>
+#include <ESPmDNS.h>
 #include <Preferences.h>
 #include <Firebase_ESP_Client.h>
 #include <addons/TokenHelper.h>
@@ -104,6 +105,10 @@ uint8_t lastSentSensorCount = 0xFF;
 unsigned long lastHeartbeat = 0;
 unsigned long lastCommandCheck = 0;
 
+// mDNS
+bool mdnsStarted = false;
+String mdnsName = "";
+
 // Push fail tracking
 int consecutiveFailCount = 0;
 bool pushFailFlash = false;
@@ -145,6 +150,10 @@ void loadOrCreateDeviceCode() {
   apName += "-";
   apName += deviceCode.substring(3, 7);
   apName += "_mvstech";
+
+  // mDNS name (lowercase, no underscores)
+  mdnsName = "senseflow-sim-" + deviceCode.substring(3, 7);
+  mdnsName.toLowerCase();
 }
 
 void printRegistrationInfo() {
@@ -757,6 +766,17 @@ void loop() {
   mvs.handle();
   processSimulatedSensors();
   handleLED();
+
+  // Start mDNS once WiFi connects
+  if (WiFi.status() == WL_CONNECTED && !mdnsStarted) {
+    if (MDNS.begin(mdnsName.c_str())) {
+      MDNS.addService("http", "tcp", 7689);
+      mdnsStarted = true;
+      Serial.println("mDNS started: http://" + mdnsName + ".local:7689");
+    }
+  } else if (WiFi.status() != WL_CONNECTED && mdnsStarted) {
+    mdnsStarted = false;  // Reset so it restarts when WiFi reconnects
+  }
 
   // Internet check — only when Firebase not ready (saves bandwidth once connected)
   if (firebaseReady) {
