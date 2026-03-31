@@ -734,8 +734,17 @@ void loop() {
     String cmd = Serial.readStringUntil('\n');
     cmd.trim(); cmd.toUpperCase();
     if (cmd == "STATUS" || cmd == "S") {
-      Serial.printf("\nSimulator Status: type=%s count=%d bits=%d pct=%d flags=0x%02X error=%s\n",
-        simSensorType == SNS_DIP ? "DIP" : "US", simSensorCount, sensorBits, confirmedPct, flags, sensorError ? "YES" : "No");
+      Serial.println("\n--- Simulator Status ---");
+      Serial.println("Code:       " + deviceCode);
+      Serial.println("WiFi:       " + mvs.getWiFiStatus());
+      Serial.println("IP:         " + WiFi.localIP().toString());
+      Serial.println("RSSI:       " + String(WiFi.RSSI()) + " dBm");
+      Serial.println("Firebase:   " + String(firebaseReady ? "Ready" : "Not ready"));
+      Serial.printf("Sensor:     type=%s count=%d\n", simSensorType == SNS_DIP ? "DIP" : "US", simSensorCount);
+      Serial.printf("Level:      %d%% bits=%d flags=0x%02X error=%s\n", confirmedPct, sensorBits, flags, sensorError ? "YES" : "No");
+      Serial.println("Uptime:     " + String(millis() / 1000) + "s");
+      Serial.println("Free Heap:  " + String(ESP.getFreeHeap()));
+      Serial.println("------------------------\n");
     } else if (cmd == "ADMIN") {
       printRegistrationInfo();
     } else if (cmd == "RESTART") {
