@@ -282,14 +282,14 @@ void setLevelColor(uint8_t pct) {
 
 void initDipSensors() {
   for (int i = 0; i < SENSOR_COUNT; i++) {
-    pinMode(DIP_PINS[i], INPUT_PULLUP);
+    pinMode(DIP_PINS[i], INPUT_PULLDOWN);
   }
 }
 
 uint8_t readDipRaw() {
   uint8_t bits = 0;
   for (int i = 0; i < SENSOR_COUNT; i++) {
-    if (digitalRead(DIP_PINS[i]) == LOW) {  // Active low
+    if (digitalRead(DIP_PINS[i]) == HIGH) {  // Active high — HIGH = water touching
       bits |= (1 << i);
     }
   }
