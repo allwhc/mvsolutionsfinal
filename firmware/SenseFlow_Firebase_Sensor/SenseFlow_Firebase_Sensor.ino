@@ -320,13 +320,12 @@ bool checkSensorError(uint8_t bits, int count) {
 }
 
 uint8_t bitsToPercent(uint8_t bits, int count) {
-  int totalOn = 0;
-  for (int i = 0; i < count; i++) {
-    if (bits & (1 << i)) totalOn++;
-  }
-  if (totalOn == 0) return 0;
+  // Count consecutive ON sensors from bottom (bit 0 = GPIO 32 = bottom)
+  // 0001 = 25%, 0011 = 50%, 0111 = 75%, 1111 = 100%
+  int consecutive = countConsecutive(bits, count);
+  if (consecutive == 0) return 0;
   if (count >= 1 && count <= 6) {
-    return DIP_PCT_TABLE[count][totalOn - 1];
+    return DIP_PCT_TABLE[count][consecutive - 1];
   }
   return 0;
 }
