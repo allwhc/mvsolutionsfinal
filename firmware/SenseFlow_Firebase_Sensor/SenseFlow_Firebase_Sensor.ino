@@ -148,6 +148,12 @@ unsigned long lastUsRead = 0;
 // Timing
 unsigned long lastHeartbeat = 0;
 unsigned long lastCommandCheck = 0;
+
+// Push fail tracking
+int consecutiveFailCount = 0;
+bool pushFailFlash = false;
+unsigned long pushFailFlashStart = 0;
+unsigned long lastSuccessfulPush = 0;
 unsigned long lastDataPush = 0;
 
 // LED state
@@ -554,9 +560,20 @@ bool pushLiveData() {
     lastSentPct = confirmedPct;
     lastSentFlags = flags;
     lastDataPush = millis();
+    consecutiveFailCount = 0;
+    lastSuccessfulPush = millis();
     return true;
   } else {
-    Serial.println("Data push failed: " + fbdo.errorReason());
+    consecutiveFailCount++;
+    pushFailFlash = true;
+    pushFailFlashStart = millis();
+    Serial.printf("Push FAILED (%d): %s\n", consecutiveFailCount, fbdo.errorReason().c_str());
+    if (consecutiveFailCount >= 5) {
+      Serial.println("[FB] 5 consecutive fails — resetting Firebase auth");
+      firebaseReady = false;
+      internetAvailable = false;
+      consecutiveFailCount = 0;
+    }
     return false;
   }
 }
@@ -627,6 +644,13 @@ bool hasDataChanged() {
 void handleLED() {
   unsigned long now = millis();
 
+  // Push fail red flash
+  if (pushFailFlash) {
+    if (now - pushFailFlashStart < 500) {
+      setLED(255, 0, 0);
+      return;
+    } else { pushFailFlash = false; }
+  }
   // Priority 1: Test blink (Firebase command)
   if (testBlinkActive) {
     unsigned long elapsed = now - testBlinkStart;

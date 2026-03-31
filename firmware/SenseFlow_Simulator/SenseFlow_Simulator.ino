@@ -104,6 +104,12 @@ uint8_t lastSentSensorCount = 0xFF;
 unsigned long lastHeartbeat = 0;
 unsigned long lastCommandCheck = 0;
 
+// Push fail tracking
+int consecutiveFailCount = 0;
+bool pushFailFlash = false;
+unsigned long pushFailFlashStart = 0;
+unsigned long lastSuccessfulPush = 0;
+
 // LED
 unsigned long ledCycleStart = 0;
 bool ledShowingWifi = false;
@@ -191,6 +197,12 @@ void handleLED() {
   unsigned long now = millis();
 
   // Priority 1: Test blink (Firebase command)
+  if (pushFailFlash) {
+    if (now - pushFailFlashStart < 500) {
+      setLED(255, 0, 0);  // Red flash for push fail
+      return;
+    } else { pushFailFlash = false; }
+  }
   if (testBlinkActive) {
     unsigned long elapsed = now - testBlinkStart;
     if (elapsed < 1800) {
@@ -352,11 +364,25 @@ bool pushLiveData() {
     lastSentFlags = flags;
     lastSentSensorType = simSensorType;
     lastSentSensorCount = simSensorCount;
+    consecutiveFailCount = 0;
+    lastSuccessfulPush = millis();
     Serial.printf("Pushed: bits=%d pct=%d flags=0x%02X type=%d count=%d\n",
       sensorBits, confirmedPct, flags, simSensorType, simSensorCount);
     return true;
   }
-  Serial.println("Push failed: " + fbdo.errorReason());
+  // Push failed
+  consecutiveFailCount++;
+  pushFailFlash = true;
+  pushFailFlashStart = millis();
+  Serial.printf("Push FAILED (%d): %s\n", consecutiveFailCount, fbdo.errorReason().c_str());
+
+  // After 5 consecutive failures, reset Firebase auth
+  if (consecutiveFailCount >= 5) {
+    Serial.println("[FB] 5 consecutive fails — resetting Firebase auth");
+    firebaseReady = false;
+    internetAvailable = false;
+    consecutiveFailCount = 0;
+  }
   return false;
 }
 
@@ -541,6 +567,10 @@ select,input[type=number]{background:#1e293b;color:#e2e8f0;border:1px solid #334
   html += "<div class='row'><span class='label'>WiFi</span><span class='val'>" + mvs.getWiFiStatus() + "</span></div>";
   html += "<div class='row'><span class='label'>RSSI</span><span class='val'>" + String(WiFi.RSSI()) + " dBm</span></div>";
   html += "<div class='row'><span class='label'>Firebase</span><span class='val'>" + String(firebaseReady ? "Ready" : "Not ready") + "</span></div>";
+  html += "<div class='row'><span class='label'>Last Push</span><span class='val'>" +
+    (lastSuccessfulPush > 0 ? String((millis() - lastSuccessfulPush) / 1000) + "s ago" : "Never") + "</span></div>";
+  html += "<div class='row'><span class='label'>Push Fails</span><span class='val" +
+    String(consecutiveFailCount > 0 ? "' style='color:#f87171" : "") + "'>" + String(consecutiveFailCount) + "</span></div>";
   html += "<div class='row'><span class='label'>Flags</span><span class='val'>0x" + String(flags, HEX) + "</span></div>";
   html += "<div class='row'><span class='label'>Uptime</span><span class='val'>" + String(millis() / 1000) + "s</span></div>";
   html += "</div>";
