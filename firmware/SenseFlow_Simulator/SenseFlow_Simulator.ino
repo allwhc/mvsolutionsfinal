@@ -728,13 +728,13 @@ void loop() {
   processSimulatedSensors();
   handleLED();
 
-  // Internet check every 30s
-  if (WiFi.status() == WL_CONNECTED && (now - lastInternetCheck > 30000)) {
+  // Internet check — only when Firebase not ready (saves bandwidth once connected)
+  if (firebaseReady) {
+    internetAvailable = true;  // Firebase is working = internet is fine
+  } else if (WiFi.status() == WL_CONNECTED && (now - lastInternetCheck > 30000)) {
     lastInternetCheck = now;
     internetAvailable = checkInternet();
-
-    // Firebase retry if connected to internet but Firebase not ready
-    if (internetAvailable && !firebaseReady) {
+    if (internetAvailable) {
       Serial.println("Internet OK, retrying Firebase...");
       initFirebase();
     }
