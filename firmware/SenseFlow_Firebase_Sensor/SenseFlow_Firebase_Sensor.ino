@@ -88,6 +88,8 @@ const int DIP_PINS[] = {32, 33, 14, 27, 34, 35};
 #define US_HYSTERESIS     10.0    // cm
 #define US_FAIL_LIMIT     10
 #define US_OFFLINE_TIMEOUT 60000  // ms
+#define US_MIN_CHANGE_CM  5       // Only push if distance changed by 5cm+
+#define US_MIN_CHANGE_PCT 5       // Or level changed by 5%+
 
 // ══════════════════════════════════════════════════
 //  DIP PERCENT TABLE (same as RS485 version)
@@ -141,7 +143,9 @@ bool debouncing = false;
 // Ultrasonic
 float usRawDistance = 0;
 float usFilteredDistance = 0;
-float usTankHeight = 100.0;  // cm, configurable
+float usLastSentDistance = 0;  // For min change threshold
+uint8_t usLastSentPct = 0xFF;
+float usTankHeight = 100.0;   // cm, configurable from AP page
 int   usFailCount = 0;
 bool  usSensorOffline = false;
 unsigned long lastUsRead = 0;
@@ -470,7 +474,7 @@ void processUltrasonic() {
 
   // Apply hysteresis
   if (abs(filtered - usFilteredDistance) < US_HYSTERESIS) {
-    // No significant change
+    // No significant change in raw reading
   } else {
     usFilteredDistance = filtered;
   }
@@ -482,7 +486,21 @@ void processUltrasonic() {
   if (waterHeight < 0) waterHeight = 0;
   if (waterHeight > usTankHeight) waterHeight = usTankHeight;
 
-  confirmedPct = (uint8_t)((waterHeight / usTankHeight) * 100.0);
+  uint8_t newPct = (uint8_t)((waterHeight / usTankHeight) * 100.0);
+
+  // Only update confirmedPct if change exceeds threshold
+  // This prevents constant Firebase pushes from small ripples
+  float distChange = abs(usFilteredDistance - usLastSentDistance);
+  int pctChange = abs((int)newPct - (int)usLastSentPct);
+
+  if (distChange >= US_MIN_CHANGE_CM || pctChange >= US_MIN_CHANGE_PCT || usLastSentPct == 0xFF) {
+    confirmedPct = newPct;
+    usLastSentDistance = usFilteredDistance;
+    usLastSentPct = newPct;
+  }
+  // LED always shows latest reading even if not pushed
+  // (confirmedPct stays at last pushed value, but LED can show newPct)
+
   sensorBits = 0;  // Not applicable for ultrasonic
 }
 
@@ -809,6 +827,20 @@ h2{font-size:14px;font-weight:600;color:#666;margin-bottom:8px}
     html += "</div>";
   #endif
 
+  // Tank height config (ultrasonic only)
+  #if USE_ULTRASONIC
+    html += "<div class='card'>";
+    html += "<h2>Tank Settings</h2>";
+    html += "<form action='/settank' method='GET' style='display:flex;gap:6px;align-items:center'>";
+    html += "<span style='font-size:12px;color:#666;white-space:nowrap'>Height (cm):</span>";
+    html += "<input type='number' name='h' min='10' max='500' value='" + String((int)usTankHeight) + "' style='flex:1;padding:8px;border:1px solid #ddd;border-radius:6px;font-size:13px' required>";
+    html += "<button class='btn btn-blue' type='submit' style='margin:0;padding:8px 16px'>Save</button>";
+    html += "</form>";
+    html += "<div class='row' style='margin-top:6px'><span class='label'>Raw Distance</span><span class='val'>" + String(usRawDistance, 1) + " cm</span></div>";
+    html += "<div class='row'><span class='label'>Min Change</span><span class='val'>" + String(US_MIN_CHANGE_CM) + " cm / " + String(US_MIN_CHANGE_PCT) + "%</span></div>";
+    html += "</div>";
+  #endif
+
   // Actions Card
   html += "<div class='card'>";
   html += "<h2>Actions</h2>";
@@ -904,6 +936,21 @@ void setup() {
   });
 
   // API endpoints — use mvs.getServer() inside handlers
+  // Tank height setting (ultrasonic)
+  mvs.addEndpoint("/settank", []() {
+    WebServer* srv = mvs.getServer();
+    float h = srv->arg("h").toFloat();
+    if (h >= 10 && h <= 500) {
+      usTankHeight = h;
+      Preferences tankPrefs;
+      tankPrefs.begin("senseflow", false);
+      tankPrefs.putFloat("tankh", h);
+      tankPrefs.end();
+      Serial.println("Tank height set to: " + String(h) + " cm");
+    }
+    srv->sendHeader("Location", "/"); srv->send(302);
+  });
+
   mvs.addEndpoint("/restart", []() {
     WebServer* srv = mvs.getServer();
     srv->send(200, "text/html", "<html><body><h2>Restarting...</h2><script>setTimeout(()=>history.back(),3000)</script></body></html>");

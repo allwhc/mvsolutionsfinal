@@ -53,6 +53,7 @@
 // Timing
 #define HEARTBEAT_INTERVAL    300000
 #define COMMAND_CHECK_INTERVAL 5000
+#define US_MIN_CHANGE_PCT     5       // Ultrasonic: only push if level changed by 5%+
 
 // DIP percent table
 const uint8_t DIP_PCT_1[] = {100};
@@ -87,6 +88,7 @@ volatile uint8_t simSensorBits = 0;          // DIP bit pattern
 volatile uint8_t simUltrasonicPct = 50;      // Ultrasonic level %
 volatile bool    simUltrasonicOffline = false;
 volatile float   simTankHeight = 100.0;
+uint8_t usLastSentPct = 0xFF;
 
 // Derived state
 uint8_t sensorBits = 0;
@@ -294,9 +296,15 @@ void processSimulatedSensors() {
     if (simUltrasonicOffline) {
       flags |= 0x20;
       confirmedPct = 0xFF;
+      usLastSentPct = 0xFF;
     } else {
       flags &= ~0x20;
-      confirmedPct = simUltrasonicPct;
+      // Only update confirmedPct if change exceeds threshold
+      int pctChange = abs((int)simUltrasonicPct - (int)usLastSentPct);
+      if (pctChange >= US_MIN_CHANGE_PCT || usLastSentPct == 0xFF) {
+        confirmedPct = simUltrasonicPct;
+        usLastSentPct = simUltrasonicPct;
+      }
     }
   }
 }
@@ -586,6 +594,17 @@ select,input[type=number]{background:#1e293b;color:#e2e8f0;border:1px solid #334
   html += "<div class='row'><span class='label'>Uptime</span><span class='val'>" + String(millis() / 1000) + "s</span></div>";
   html += "</div>";
 
+  // Tank height config
+  html += "<div class='card'>";
+  html += "<h2>Tank Settings</h2>";
+  html += "<form action='/api/settank' method='GET' style='display:flex;gap:6px;align-items:center'>";
+  html += "<span style='font-size:11px;color:#94a3b8;white-space:nowrap'>Height (cm):</span>";
+  html += "<input type='number' name='h' min='10' max='500' value='" + String((int)simTankHeight) + "' style='flex:1;padding:8px;background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:6px;font-size:12px' required>";
+  html += "<button class='btn btn-blue' type='submit' style='margin:0;padding:8px 16px'>Save</button>";
+  html += "</form>";
+  html += "<div class='row' style='margin-top:6px'><span class='label'>Min Change</span><span class='val'>" + String(US_MIN_CHANGE_PCT) + "%</span></div>";
+  html += "</div>";
+
   // Actions
   html += "<div class='card'>";
   html += "<a href='/api/force-push'><button class='btn btn-blue'>Force Push</button></a>";
@@ -651,6 +670,17 @@ void setup() {
   mvs.begin();
 
   // Manual WiFi entry endpoint
+  // Tank height setting
+  mvs.addEndpoint("/api/settank", []() {
+    WebServer* srv = mvs.getServer();
+    float h = srv->arg("h").toFloat();
+    if (h >= 10 && h <= 500) {
+      simTankHeight = h;
+      Serial.println("Tank height set to: " + String(h) + " cm");
+    }
+    srv->sendHeader("Location", "/"); srv->send(302);
+  });
+
   mvs.addEndpoint("/setwifi", []() {
     WebServer* srv = mvs.getServer();
     String ssid = srv->arg("ssid");
