@@ -783,6 +783,11 @@ h2{font-size:14px;font-weight:600;color:#666;margin-bottom:8px}
   html += "<div class='row'><span class='label'>MAC</span><span class='val'>" + WiFi.macAddress() + "</span></div>";
   html += "<div class='row'><span class='label'>WiFi</span><span class='val'>" + mvs.getWiFiStatus() + "</span></div>";
   html += "<div class='row'><span class='label'>RSSI</span><span class='val'>" + String(WiFi.RSSI()) + " dBm</span></div>";
+  html += "<div class='row'><span class='label'>Firebase</span><span class='val'>" + String(firebaseReady ? "Ready" : "Not ready") + "</span></div>";
+  html += "<div class='row'><span class='label'>Last Push</span><span class='val'>" +
+    (lastSuccessfulPush > 0 ? String((millis() - lastSuccessfulPush) / 1000) + "s ago" : "Never") + "</span></div>";
+  html += "<div class='row'><span class='label'>Push Fails</span><span class='val" +
+    String(consecutiveFailCount > 0 ? "' style='color:#ef4444" : "") + "'>" + String(consecutiveFailCount) + "</span></div>";
   html += "<div class='row'><span class='label'>Level</span><span class='val'>" + String(confirmedPct) + "%</span></div>";
   html += "</div>";
 
