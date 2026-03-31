@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { getAllDevices, approvePendingDevice, registerDevice, updateDevice } from "../../firebase/db";
+import { getAllDevices, approvePendingDevice, registerDevice, updateDevice, deleteDeviceFromCatalog } from "../../firebase/db";
 import { sendTestCommand, sendRestartCommand, getPendingDevicesRTDB } from "../../firebase/rtdb";
 import { QRCodeSVG } from "qrcode.react";
 
@@ -93,6 +93,14 @@ export default function AdminDevices() {
     const isActive = currentActive !== false;
     await updateDevice(deviceCode, { isActive: !isActive });
     await load();
+  }
+
+  async function handleDeleteDevice(deviceCode) {
+    if (!confirm("Delete " + deviceCode + " from catalog? This cannot be undone. The device will need to be re-registered.")) return;
+    try {
+      await deleteDeviceFromCatalog(deviceCode);
+      await load();
+    } catch (err) { alert(err.message); }
   }
 
   // ══════════════════════════════════════════════
@@ -356,19 +364,23 @@ export default function AdminDevices() {
           <input type="text" placeholder="Device Code (e.g. SF-XXXXXXXX-SN)" value={manualForm.deviceCode}
             onChange={(e) => setManualForm({ ...manualForm, deviceCode: e.target.value.toUpperCase() })}
             className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono" required />
-          <div className="grid grid-cols-3 gap-2">
-            <select value={manualForm.deviceClass} onChange={(e) => setManualForm({ ...manualForm, deviceClass: e.target.value })}
-              className="px-3 py-2 border border-gray-300 rounded-lg text-sm">
-              <option value={1}>Valve</option><option value={2}>Sensor</option><option value={3}>Motor</option>
-            </select>
-            <select value={manualForm.sensorType} onChange={(e) => setManualForm({ ...manualForm, sensorType: e.target.value })}
-              className="px-3 py-2 border border-gray-300 rounded-lg text-sm">
-              <option value={0}>No Sensor</option><option value={1}>DIP</option><option value={2}>Ultrasonic</option>
-            </select>
-            <input type="number" min="0" max="6" placeholder="Count" value={manualForm.sensorCount}
-              onChange={(e) => setManualForm({ ...manualForm, sensorCount: e.target.value })}
-              className="px-3 py-2 border border-gray-300 rounded-lg text-sm" />
-          </div>
+          <p className="text-xs text-gray-400">Device config is auto-detected when it connects. Optional overrides below:</p>
+          <details className="mt-1">
+            <summary className="text-xs text-blue-600 cursor-pointer">Advanced config (optional)</summary>
+            <div className="grid grid-cols-3 gap-2 mt-2">
+              <select value={manualForm.deviceClass} onChange={(e) => setManualForm({ ...manualForm, deviceClass: e.target.value })}
+                className="px-3 py-2 border border-gray-300 rounded-lg text-sm">
+                <option value={1}>Valve</option><option value={2}>Sensor</option><option value={3}>Motor</option>
+              </select>
+              <select value={manualForm.sensorType} onChange={(e) => setManualForm({ ...manualForm, sensorType: e.target.value })}
+                className="px-3 py-2 border border-gray-300 rounded-lg text-sm">
+                <option value={0}>No Sensor</option><option value={1}>DIP</option><option value={2}>Ultrasonic</option>
+              </select>
+              <input type="number" min="0" max="6" placeholder="Count" value={manualForm.sensorCount}
+                onChange={(e) => setManualForm({ ...manualForm, sensorCount: e.target.value })}
+                className="px-3 py-2 border border-gray-300 rounded-lg text-sm" />
+            </div>
+          </details>
           <input type="text" placeholder="Device Name (optional)" value={manualForm.deviceName}
             onChange={(e) => setManualForm({ ...manualForm, deviceName: e.target.value })}
             className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm" />
@@ -452,6 +464,10 @@ export default function AdminDevices() {
                       <button onClick={() => handleToggleDeviceActive(d.deviceCode, d.isActive)}
                         className={`px-3 py-1.5 rounded-lg text-xs ${devActive ? "bg-red-50 text-red-600 hover:bg-red-100" : "bg-green-50 text-green-600 hover:bg-green-100"}`}>
                         {devActive ? "Deactivate" : "Activate"}
+                      </button>
+                      <button onClick={() => handleDeleteDevice(d.deviceCode)}
+                        className="px-3 py-1.5 bg-red-50 text-red-600 rounded-lg text-xs hover:bg-red-100">
+                        Delete
                       </button>
                     </div>
                   </div>

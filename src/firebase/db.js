@@ -112,6 +112,10 @@ export async function updateDevice(deviceCode, data) {
   await updateDoc(doc(db, "deviceCatalog", deviceCode), data);
 }
 
+export async function deleteDeviceFromCatalog(deviceCode) {
+  await deleteDoc(doc(db, "deviceCatalog", deviceCode));
+}
+
 // ── Pending Devices ──
 export async function getPendingDevices() {
   const snap = await getDocs(collection(db, "pendingDevices"));
