@@ -767,7 +767,7 @@ h2{font-size:14px;font-weight:600;color:#666;margin-bottom:8px}
   html += "</form>";
   html += "</div>";
 
-  html += "<script>setTimeout(()=>location.reload(),5000)</script>";
+  html += "<script>var t=setInterval(()=>{if(!document.activeElement||document.activeElement.tagName==='BODY')location.reload()},5000)</script>";
   html += "</body></html>";
 
   return html;

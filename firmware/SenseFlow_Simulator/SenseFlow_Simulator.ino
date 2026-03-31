@@ -545,7 +545,7 @@ select,input[type=number]{background:#1e293b;color:#e2e8f0;border:1px solid #334
   html += "<p style='font-size:10px;color:#64748b'>Register this code in admin panel to generate QR</p>";
   html += "</div>";
 
-  html += "<script>setTimeout(()=>location.reload(),3000)</script>";
+  html += "<script>var t=setInterval(()=>{if(!document.activeElement||document.activeElement.tagName==='BODY')location.reload()},5000)</script>";
   html += "</body></html>";
   return html;
 }
