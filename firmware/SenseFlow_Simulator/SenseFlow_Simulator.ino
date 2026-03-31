@@ -271,9 +271,12 @@ bool checkSensorError(uint8_t bits, int count) {
 }
 
 uint8_t bitsToPercent(uint8_t bits, int count) {
-  int consecutive = countConsecutive(bits, count);
-  if (consecutive == 0) return 0;
-  if (count >= 1 && count <= 6) return DIP_PCT_TABLE[count][consecutive - 1];
+  int totalOn = 0;
+  for (int i = 0; i < count; i++) {
+    if (bits & (1 << i)) totalOn++;
+  }
+  if (totalOn == 0) return 0;
+  if (count >= 1 && count <= 6) return DIP_PCT_TABLE[count][totalOn - 1];
   return 0;
 }
 
@@ -797,15 +800,19 @@ void loop() {
     if (firebaseReady) {
       if (hasDataChanged()) {
         if (pushLiveData()) updateDeviceInfo(true);
+        handleLED();  // Prevent LED freeze during Firebase calls
       }
       if (now - lastHeartbeat >= HEARTBEAT_INTERVAL) {
         lastHeartbeat = now;
         pushLiveData();
+        handleLED();
         updateDeviceInfo(true);
+        handleLED();
       }
       if (now - lastCommandCheck >= COMMAND_CHECK_INTERVAL) {
         lastCommandCheck = now;
         checkCommands();
+        handleLED();
       }
     }
   } else {

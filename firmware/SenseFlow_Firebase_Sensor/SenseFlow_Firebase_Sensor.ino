@@ -320,10 +320,13 @@ bool checkSensorError(uint8_t bits, int count) {
 }
 
 uint8_t bitsToPercent(uint8_t bits, int count) {
-  int consecutive = countConsecutive(bits, count);
-  if (consecutive == 0) return 0;
+  int totalOn = 0;
+  for (int i = 0; i < count; i++) {
+    if (bits & (1 << i)) totalOn++;
+  }
+  if (totalOn == 0) return 0;
   if (count >= 1 && count <= 6) {
-    return DIP_PCT_TABLE[count][consecutive - 1];
+    return DIP_PCT_TABLE[count][totalOn - 1];
   }
   return 0;
 }
@@ -1000,6 +1003,7 @@ void loop() {
         if (pushLiveData()) {
           updateDeviceInfo(true);
         }
+        handleLED();  // Prevent LED freeze during Firebase calls
       }
 
       // 5-minute heartbeat
@@ -1007,13 +1011,16 @@ void loop() {
         lastHeartbeat = now;
         Serial.println("Heartbeat — pushing data + checking commands");
         pushLiveData();
+        handleLED();
         updateDeviceInfo(true);
+        handleLED();
       }
 
       // Check commands every 5 seconds
       if (now - lastCommandCheck >= COMMAND_CHECK_INTERVAL) {
         lastCommandCheck = now;
         checkCommands();
+        handleLED();
       }
     }
   } else {
