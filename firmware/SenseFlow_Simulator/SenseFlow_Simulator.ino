@@ -160,6 +160,17 @@ void printRegistrationInfo() {
 // ══════════════════════════════════════════════════
 
 CRGB rgbLeds[1];
+bool internetAvailable = false;
+unsigned long lastInternetCheck = 0;
+
+// Check internet by connecting to Google DNS
+bool checkInternet() {
+  if (WiFi.status() != WL_CONNECTED) return false;
+  WiFiClient client;
+  bool ok = client.connect("8.8.8.8", 53, 2000);
+  client.stop();
+  return ok;
+}
 
 void setLED(uint8_t r, uint8_t g, uint8_t b) {
   rgbLeds[0] = CRGB(r, g, b);

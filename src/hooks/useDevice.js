@@ -14,7 +14,7 @@ export function useDevice(deviceCode) {
 
   const isOnline = info?.online === true;
   const lastSeen = info?.lastSeen;
-  const isStale = lastSeen ? (Date.now() / 1000 - lastSeen) > 900 : true; // 15 min
+  const isStale = lastSeen ? (Date.now() - lastSeen) > 900000 : true; // 15 min in ms
 
   return { live, info, isOnline: isOnline && !isStale, lastSeen };
 }

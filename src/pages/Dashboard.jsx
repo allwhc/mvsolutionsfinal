@@ -67,7 +67,7 @@ export default function Dashboard() {
   // Count online/offline
   const isDeviceOnline = (d) => {
     const lastSeen = d.info?.lastSeen;
-    const isStale = lastSeen ? (Date.now() / 1000 - lastSeen) > 900 : true;
+    const isStale = lastSeen ? (Date.now() - lastSeen) > 900000 : true;
     return d.info?.online && !isStale;
   };
   const onlineCount = filteredDevices.filter(isDeviceOnline).length;
