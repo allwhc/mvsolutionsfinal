@@ -107,6 +107,10 @@ uint8_t lastSentSensorCount = 0xFF;
 unsigned long lastHeartbeat = 0;
 unsigned long lastCommandCheck = 0;
 
+// Manual WiFi flag — pauses auto-reconnect
+bool manualWiFiInProgress = false;
+unsigned long manualWiFiStart = 0;
+
 // mDNS
 bool mdnsStarted = false;
 String mdnsName = "";
@@ -689,18 +693,24 @@ void setup() {
       srv->send(400, "text/html", "<html><body style='background:#1a1a2e;color:#fff;text-align:center;padding:40px'><h2>SSID required</h2></body></html>");
       return;
     }
-    srv->send(200, "text/html", "<html><body style='background:#1a1a2e;color:#fff;text-align:center;padding:40px'><h2>Connecting to " + ssid + "...</h2><p style='color:#94a3b8;margin-top:8px'>Page will reload in 10s</p><script>setTimeout(()=>location.href='/',10000)</script></body></html>");
+    srv->send(200, "text/html", "<html><body style='background:#1a1a2e;color:#fff;text-align:center;padding:40px'><h2>Connecting to " + ssid + "...</h2><p style='color:#94a3b8;margin-top:8px'>Page will reload in 15s</p><script>setTimeout(()=>location.href='/',15000)</script></body></html>");
     Serial.println("Manual WiFi: " + ssid);
-    WiFi.disconnect(false);
-    delay(200);
-    WiFi.begin(ssid.c_str(), pass.c_str());
-    // Save to NVS so it persists
+    // Pause auto-reconnect for 30s so it doesn't fight
+    manualWiFiInProgress = true;
+    manualWiFiStart = millis();
+    // Full disconnect and wait
+    WiFi.disconnect(true);
+    delay(1000);
+    // Save new credentials to NVS first
     Preferences wifiPrefs;
     wifiPrefs.begin("mvsconnect", false);
     wifiPrefs.putString("ssid", ssid);
     wifiPrefs.putString("password", pass);
     wifiPrefs.putBool("valid", true);
     wifiPrefs.end();
+    // Now connect with new credentials
+    WiFi.begin(ssid.c_str(), pass.c_str());
+    Serial.println("WiFi.begin called for: " + ssid);
   });
 
   // API endpoints — use mvs.getServer() inside handlers
@@ -845,8 +855,13 @@ void loop() {
       }
     }
   } else {
+    // Clear manual WiFi flag after 30s
+    if (manualWiFiInProgress && (now - manualWiFiStart > 30000)) {
+      manualWiFiInProgress = false;
+    }
+    // Auto-reconnect only if manual WiFi is not in progress
     static unsigned long lastReconnect = 0;
-    if (now - lastReconnect > 30000) {
+    if (!manualWiFiInProgress && (now - lastReconnect > 30000)) {
       lastReconnect = now;
       if (mvs.hasSavedWiFi()) {
         if (mvs.connectToSavedWiFi(10)) {
