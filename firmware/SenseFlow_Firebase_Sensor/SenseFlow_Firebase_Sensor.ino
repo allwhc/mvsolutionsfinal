@@ -257,6 +257,14 @@ CRGB rgbLeds[1];
 bool internetAvailable = false;
 unsigned long lastInternetCheck = 0;
 
+// Force Google DNS — fixes broken router DNS
+void setGoogleDNS() {
+  IPAddress dns1(8, 8, 8, 8);
+  IPAddress dns2(8, 8, 4, 4);
+  WiFi.config(WiFi.localIP(), WiFi.gatewayIP(), WiFi.subnetMask(), dns1, dns2);
+  Serial.println("DNS set to 8.8.8.8 / 8.8.4.4");
+}
+
 // Check internet by connecting to Google DNS
 bool checkInternet() {
   if (WiFi.status() != WL_CONNECTED) return false;
@@ -990,6 +998,7 @@ void setup() {
     setLED(0, 0, 255);  // Blue while connecting
     if (mvs.connectToSavedWiFi(30)) {
       Serial.println("WiFi connected! IP: " + WiFi.localIP().toString());
+      setGoogleDNS();
       setLED(0, 255, 0);  // Green on connect
       initFirebase();
     } else {
@@ -1094,6 +1103,7 @@ void loop() {
         Serial.println("Attempting WiFi reconnect...");
         if (mvs.connectToSavedWiFi(10)) {
           Serial.println("Reconnected!");
+          setGoogleDNS();
           if (!firebaseReady) initFirebase();
         }
       }
