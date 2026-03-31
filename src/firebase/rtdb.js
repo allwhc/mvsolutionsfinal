@@ -1,6 +1,14 @@
 import { ref, onValue, set, update, get, off, push, query, orderByKey, limitToLast, remove } from "firebase/database";
 import { rtdb } from "./config";
 
+// ── Pending Devices (from RTDB, where ESP32 writes) ──
+export async function getPendingDevicesRTDB() {
+  const snap = await get(ref(rtdb, "pendingDevices"));
+  if (!snap.exists()) return [];
+  const data = snap.val();
+  return Object.entries(data).map(([code, val]) => ({ deviceCode: code, ...val }));
+}
+
 // ── Live Data Listener ──
 export function listenToDeviceLive(deviceCode, callback) {
   const liveRef = ref(rtdb, `devices/${deviceCode}/live`);

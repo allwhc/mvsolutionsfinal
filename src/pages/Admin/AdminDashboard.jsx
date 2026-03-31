@@ -1,6 +1,7 @@
 import { Link } from "react-router-dom";
 import { useState, useEffect } from "react";
-import { getAllDevices, getPendingDevices, getAllUsers, getAllOrgs, getAllPlans } from "../../firebase/db";
+import { getAllDevices, getAllUsers, getAllOrgs, getAllPlans } from "../../firebase/db";
+import { getPendingDevicesRTDB } from "../../firebase/rtdb";
 
 export default function AdminDashboard() {
   const [stats, setStats] = useState({ devices: 0, pending: 0, users: 0, orgs: 0, plans: 0 });
@@ -9,7 +10,7 @@ export default function AdminDashboard() {
   useEffect(() => {
     async function load() {
       const [devices, pending, users, orgs, plans] = await Promise.all([
-        getAllDevices(), getPendingDevices(), getAllUsers(), getAllOrgs(), getAllPlans(),
+        getAllDevices(), getPendingDevicesRTDB(), getAllUsers(), getAllOrgs(), getAllPlans(),
       ]);
       setStats({
         devices: devices.length,

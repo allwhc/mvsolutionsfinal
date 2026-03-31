@@ -118,13 +118,14 @@ export async function getPendingDevices() {
   return snap.docs.map((d) => ({ deviceCode: d.id, ...d.data() }));
 }
 
-export async function approvePendingDevice(deviceCode, extraData = {}) {
-  const pendingSnap = await getDoc(doc(db, "pendingDevices", deviceCode));
-  if (!pendingSnap.exists()) throw new Error("Pending device not found");
-
-  const deviceData = { ...pendingSnap.data(), ...extraData };
+export async function approvePendingDevice(deviceCode, pendingData, extraData = {}) {
+  // pendingData comes from RTDB (passed by caller), not Firestore
+  const deviceData = { ...pendingData, ...extraData };
   await registerDevice(deviceCode, deviceData);
-  await deleteDoc(doc(db, "pendingDevices", deviceCode));
+  // Delete from RTDB pendingDevices
+  const { ref, remove } = await import("firebase/database");
+  const { rtdb } = await import("./config");
+  await remove(ref(rtdb, "pendingDevices/" + deviceCode));
   return deviceData;
 }
 

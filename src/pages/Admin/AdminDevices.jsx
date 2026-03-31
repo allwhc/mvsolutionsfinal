@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
-import { getAllDevices, getPendingDevices, approvePendingDevice, registerDevice, updateDevice } from "../../firebase/db";
-import { sendTestCommand, sendRestartCommand } from "../../firebase/rtdb";
+import { getAllDevices, approvePendingDevice, registerDevice, updateDevice } from "../../firebase/db";
+import { sendTestCommand, sendRestartCommand, getPendingDevicesRTDB } from "../../firebase/rtdb";
 import { QRCodeSVG } from "qrcode.react";
 
 const DEVICE_CLASS = { 1: "Valve", 2: "Sensor", 3: "Motor" };
@@ -37,7 +37,7 @@ export default function AdminDevices() {
   const [showBulkPrint, setShowBulkPrint] = useState(false);
 
   async function load() {
-    const [p, r] = await Promise.all([getPendingDevices(), getAllDevices()]);
+    const [p, r] = await Promise.all([getPendingDevicesRTDB(), getAllDevices()]);
     // Filter out pending devices that are already registered in catalog
     const registeredCodes = new Set(r.map(d => d.deviceCode));
     setPending(p.filter(d => !registeredCodes.has(d.deviceCode)));
@@ -50,11 +50,12 @@ export default function AdminDevices() {
   // ── Pending device approval ──
   async function handleApprove(deviceCode) {
     try {
+      const pendingDev = pending.find(d => d.deviceCode === deviceCode);
       const extra = {};
       if (extraFields.deviceName) extra.deviceName = extraFields.deviceName;
       if (extraFields.location) extra.location = extraFields.location;
       if (extraFields.notes) extra.notes = extraFields.notes;
-      await approvePendingDevice(deviceCode, extra);
+      await approvePendingDevice(deviceCode, pendingDev || {}, extra);
       setRegisterModal(null);
       setExtraFields({ deviceName: "", location: "", notes: "" });
       await load();
