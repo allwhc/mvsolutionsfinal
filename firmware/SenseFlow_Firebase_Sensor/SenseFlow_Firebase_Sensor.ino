@@ -231,6 +231,17 @@ void printRegistrationInfo() {
 // ══════════════════════════════════════════════════
 
 CRGB rgbLeds[1];
+bool internetAvailable = false;
+unsigned long lastInternetCheck = 0;
+
+// Check internet by connecting to Google DNS
+bool checkInternet() {
+  if (WiFi.status() != WL_CONNECTED) return false;
+  WiFiClient client;
+  bool ok = client.connect("8.8.8.8", 53, 2000);
+  client.stop();
+  return ok;
+}
 
 void setLED(uint8_t r, uint8_t g, uint8_t b) {
   rgbLeds[0] = CRGB(r, g, b);
@@ -493,6 +504,10 @@ bool checkFirebaseReady() {
       firebaseReady = true;
       Serial.println("Firebase ready!");
       writePendingDevice();
+      // Immediate heartbeat — device shows online right away
+      pushLiveData();
+      updateDeviceInfo(true);
+      Serial.println("Initial heartbeat sent!");
     }
     return true;
   }
@@ -624,18 +639,20 @@ void handleLED() {
     return;
   }
 
-  // LED cycle: 30s level color → 2s WiFi status blink → repeat
+  // LED cycle: 30s level color → 5s system status blink → repeat
   unsigned long cycleElapsed = now - ledCycleStart;
-  if (cycleElapsed >= 32000) { ledCycleStart = now; ledShowingWifi = false; }
+  if (cycleElapsed >= 35000) { ledCycleStart = now; ledShowingWifi = false; }
 
   if (cycleElapsed >= 30000) {
-    // Stage 2: WiFi status blink (2s) — HIGHEST PRIORITY, overrides sensor error
+    // Stage 2: System status blink (5s) — HIGHEST PRIORITY, overrides sensor error
     if (!ledShowingWifi) { ledShowingWifi = true; wifiBlinkStart = now; }
     int blinkPhase = ((now - wifiBlinkStart) / 250) % 2;
-    if (WiFi.status() == WL_CONNECTED) {
-      if (blinkPhase == 0) setLED(0, 0, 255); else setLEDOff();  // Blue blink
+    if (WiFi.status() != WL_CONNECTED) {
+      if (blinkPhase == 0) setLED(255, 255, 255); else setLEDOff();  // White blink = no WiFi
+    } else if (!internetAvailable) {
+      if (blinkPhase == 0) setLED(255, 0, 100); else setLEDOff();    // Pink blink = WiFi but no internet
     } else {
-      if (blinkPhase == 0) setLED(255, 255, 255); else setLEDOff();  // White blink
+      if (blinkPhase == 0) setLED(0, 0, 255); else setLEDOff();      // Blue blink = WiFi + internet OK
     }
   } else {
     // Stage 1: Tank level color (30s)
@@ -909,17 +926,23 @@ void loop() {
   // Handle LED state machine
   handleLED();
 
+  // Internet check every 30s
+  if (WiFi.status() == WL_CONNECTED && (now - lastInternetCheck > 30000)) {
+    lastInternetCheck = now;
+    internetAvailable = checkInternet();
+    if (internetAvailable && !firebaseReady) {
+      Serial.println("Internet OK, retrying Firebase...");
+      initFirebase();
+    }
+  } else if (WiFi.status() != WL_CONNECTED) {
+    internetAvailable = false;
+  }
+
   // Firebase operations only when WiFi connected
   if (WiFi.status() == WL_CONNECTED) {
-
-    // Initialize Firebase if not done
-    if (!firebaseReady && !Firebase.ready()) {
-      // Still waiting for auth
-    }
     checkFirebaseReady();
 
     if (firebaseReady) {
-
       // Change-driven data push
       if (hasDataChanged()) {
         Serial.printf("Data changed: bits=%d pct=%d flags=%d → pushing\n", sensorBits, confirmedPct, flags);

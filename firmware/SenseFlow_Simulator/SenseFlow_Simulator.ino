@@ -202,18 +202,20 @@ void handleLED() {
     return;
   }
 
-  // LED cycle: 30s level color → 2s WiFi status blink → repeat
+  // LED cycle: 30s level color → 5s system status blink → repeat
   unsigned long cycleElapsed = now - ledCycleStart;
-  if (cycleElapsed >= 32000) { ledCycleStart = now; ledShowingWifi = false; }
+  if (cycleElapsed >= 35000) { ledCycleStart = now; ledShowingWifi = false; }
 
   if (cycleElapsed >= 30000) {
-    // Stage 2: WiFi status blink (2s) — HIGHEST PRIORITY, overrides sensor error
+    // Stage 2: System status blink (5s) — HIGHEST PRIORITY, overrides sensor error
     if (!ledShowingWifi) { ledShowingWifi = true; wifiBlinkStart = now; }
     int blinkPhase = ((now - wifiBlinkStart) / 250) % 2;
-    if (WiFi.status() == WL_CONNECTED) {
-      if (blinkPhase == 0) setLED(0, 0, 255); else setLEDOff();  // Blue blink
+    if (WiFi.status() != WL_CONNECTED) {
+      if (blinkPhase == 0) setLED(255, 255, 255); else setLEDOff();  // White blink = no WiFi
+    } else if (!internetAvailable) {
+      if (blinkPhase == 0) setLED(255, 0, 100); else setLEDOff();    // Pink blink = WiFi but no internet
     } else {
-      if (blinkPhase == 0) setLED(255, 255, 255); else setLEDOff();  // White blink
+      if (blinkPhase == 0) setLED(0, 0, 255); else setLEDOff();      // Blue blink = WiFi + internet OK
     }
   } else {
     // Stage 1: Tank level color (30s)
@@ -311,6 +313,11 @@ bool checkFirebaseReady() {
       firebaseReady = true;
       Serial.println("Firebase ready!");
       writePendingDevice();
+      // Immediate heartbeat — device shows online right away
+      processSimulatedSensors();
+      pushLiveData();
+      updateDeviceInfo(true);
+      Serial.println("Initial heartbeat sent!");
     }
     return true;
   }
@@ -720,6 +727,20 @@ void loop() {
   mvs.handle();
   processSimulatedSensors();
   handleLED();
+
+  // Internet check every 30s
+  if (WiFi.status() == WL_CONNECTED && (now - lastInternetCheck > 30000)) {
+    lastInternetCheck = now;
+    internetAvailable = checkInternet();
+
+    // Firebase retry if connected to internet but Firebase not ready
+    if (internetAvailable && !firebaseReady) {
+      Serial.println("Internet OK, retrying Firebase...");
+      initFirebase();
+    }
+  } else if (WiFi.status() != WL_CONNECTED) {
+    internetAvailable = false;
+  }
 
   if (WiFi.status() == WL_CONNECTED) {
     checkFirebaseReady();
