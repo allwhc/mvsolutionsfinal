@@ -18,8 +18,6 @@
 
 #include <WiFi.h>
 #include <Preferences.h>
-// Only enable RTDB — saves ~300-400KB flash
-#define ENABLE_RTDB
 #include <Firebase_ESP_Client.h>
 #include <addons/TokenHelper.h>
 #include <MvsConnect.h>
@@ -272,18 +270,28 @@ void processSimulatedSensors() {
 // ══════════════════════════════════════════════════
 
 void initFirebase() {
+  Serial.println("[FB] initFirebase called");
+  Serial.println("[FB] API Key: " + String(FIREBASE_API_KEY).substring(0, 10) + "...");
+  Serial.println("[FB] DB URL: " + String(FIREBASE_DB_URL));
+
   fbConfig.api_key = FIREBASE_API_KEY;
   fbConfig.database_url = FIREBASE_DB_URL;
   fbConfig.token_status_callback = tokenStatusCallback;
+
+  Serial.println("[FB] Calling Firebase.begin...");
   Firebase.begin(&fbConfig, &fbAuth);
   Firebase.reconnectNetwork(true);
+  Serial.println("[FB] Firebase.begin done");
 
   // Anonymous sign-up (empty email + password = anonymous)
+  Serial.println("[FB] Calling signUp for anonymous auth...");
   if (Firebase.signUp(&fbConfig, &fbAuth, "", "")) {
-    Serial.println("Firebase anonymous auth OK");
+    Serial.println("[FB] Anonymous auth OK!");
   } else {
-    Serial.println("Firebase auth failed: " + String(fbConfig.signer.signupError.message.c_str()));
+    Serial.println("[FB] Auth FAILED: " + String(fbConfig.signer.signupError.message.c_str()));
   }
+
+  Serial.println("[FB] Firebase.ready() = " + String(Firebase.ready() ? "true" : "false"));
 }
 
 bool checkFirebaseReady() {
@@ -747,6 +755,16 @@ void loop() {
       Serial.println("------------------------\n");
     } else if (cmd == "ADMIN") {
       printRegistrationInfo();
+    } else if (cmd == "FIREBASE" || cmd == "FB") {
+      Serial.println("\n--- Firebase Debug ---");
+      Serial.println("WiFi:       " + String(WiFi.status() == WL_CONNECTED ? "Connected" : "Not connected"));
+      Serial.println("Ready:      " + String(Firebase.ready() ? "Yes" : "No"));
+      Serial.println("firebaseReady var: " + String(firebaseReady ? "Yes" : "No"));
+      Serial.println("Token type: " + String(fbConfig.signer.tokens.token_type));
+      Serial.println("Attempting initFirebase now...");
+      initFirebase();
+      Serial.println("After init, ready: " + String(Firebase.ready() ? "Yes" : "No"));
+      Serial.println("----------------------\n");
     } else if (cmd == "RESTART") {
       ESP.restart();
     } else if (cmd == "RESET_WIFI") {
