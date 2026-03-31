@@ -199,7 +199,7 @@ void setLevelColor(uint8_t pct) {
   else if (pct <= 25) setLED(255, 80, 0);       // Orange - Low
   else if (pct <= 50) setLED(255, 200, 0);      // Yellow - Half
   else if (pct <= 75) setLED(0, 229, 255);      // Cyan - Good
-  else                setLED(0, 230, 118);      // Green - Full
+  else                setLED(0, 200, 0);        // Green - Full
 }
 
 void handleLED() {
