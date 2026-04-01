@@ -27,6 +27,9 @@ export default function DeviceDetail() {
   const [lastCleanedAt, setLastCleanedAt] = useState(null);
   const [cleanIntervalDays, setCleanIntervalDays] = useState(30);
   const [tankCapacityLitres, setTankCapacityLitres] = useState(0);
+  const [alertLowPct, setAlertLowPct] = useState("");
+  const [alertHighPct, setAlertHighPct] = useState("");
+  const [alertError, setAlertError] = useState("");
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -48,6 +51,8 @@ export default function DeviceDetail() {
           setLastCleanedAt(subData.lastCleanedAt || null);
           setCleanIntervalDays(subData.cleanIntervalDays || 30);
           setTankCapacityLitres(subData.tankCapacityLitres || 0);
+          setAlertLowPct(subData.alertLowPct ?? "");
+          setAlertHighPct(subData.alertHighPct ?? "");
         }
       }
       setLoading(false);
@@ -197,6 +202,47 @@ export default function DeviceDetail() {
           }} className="w-full bg-green-50 text-green-700 py-2 rounded-lg text-sm font-medium hover:bg-green-100">
             🍃 Mark as Cleaned Today
           </button>
+        </div>
+      )}
+
+      {/* Alert Thresholds — for tank devices */}
+      {(catalog && (catalog.sensorType === 1 || catalog.sensorType === 2 || info?.sensorType === 1 || info?.sensorType === 2)) && (
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200 mt-4 p-4">
+          <h3 className="font-semibold text-gray-900 mb-3">Alert Thresholds</h3>
+          <div className="grid grid-cols-2 gap-2 text-sm mb-3">
+            <span className="text-gray-500">Low Alert (≤)</span>
+            <div className="flex items-center gap-1">
+              <input type="number" min="0" max="100" value={alertLowPct}
+                onChange={(e) => { setAlertLowPct(e.target.value); setAlertError(""); }}
+                placeholder="Off"
+                className="w-16 px-2 py-0.5 border border-gray-200 rounded text-sm" />
+              <span className="text-gray-500 text-xs">%</span>
+            </div>
+            <span className="text-gray-500">High Alert (≥)</span>
+            <div className="flex items-center gap-1">
+              <input type="number" min="0" max="100" value={alertHighPct}
+                onChange={(e) => { setAlertHighPct(e.target.value); setAlertError(""); }}
+                placeholder="Off"
+                className="w-16 px-2 py-0.5 border border-gray-200 rounded text-sm" />
+              <span className="text-gray-500 text-xs">%</span>
+            </div>
+          </div>
+          {alertError && <p className="text-red-500 text-xs mb-2">{alertError}</p>}
+          <button onClick={async () => {
+            const low = alertLowPct === "" ? null : parseInt(alertLowPct);
+            const high = alertHighPct === "" ? null : parseInt(alertHighPct);
+            if (low != null && high != null && low >= high) {
+              setAlertError("Low must be less than High");
+              return;
+            }
+            await updateDoc(doc(db, "subscriptions", user.uid, "devices", code), {
+              alertLowPct: low, alertHighPct: high,
+            });
+            setAlertError("");
+          }} className="w-full bg-blue-50 text-blue-700 py-2 rounded-lg text-sm font-medium hover:bg-blue-100">
+            Save Alert Settings
+          </button>
+          <p className="text-xs text-gray-400 mt-2">Card flashes red when low, green when high. Leave empty to disable.</p>
         </div>
       )}
 

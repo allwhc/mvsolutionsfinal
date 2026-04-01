@@ -187,6 +187,8 @@ export default function Dashboard() {
                 lastCleanedAt={d.lastCleanedAt}
                 cleanIntervalDays={d.cleanIntervalDays}
                 tankCapacityLitres={d.tankCapacityLitres}
+                alertLowPct={d.alertLowPct}
+                alertHighPct={d.alertHighPct}
               />
             );
             return locked ? (

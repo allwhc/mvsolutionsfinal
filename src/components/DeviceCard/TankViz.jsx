@@ -57,29 +57,32 @@ export default function TankViz({ confirmedPct, sensorBits, sensorCount, sensorE
         </div>
       )}
 
-      {/* Tank body */}
-      <div className="relative w-14 h-16 border-2 border-gray-300 rounded-sm bg-gray-50 overflow-hidden">
-        {/* Water fill — always blue */}
-        <div
-          className="absolute bottom-0 left-0 right-0 transition-all duration-700 ease-in-out rounded-b-sm"
-          style={{
-            height: `${Math.min(pct, 100)}%`,
-            background: sensorError
-              ? "linear-gradient(to top, #9333EA, #C084FC)"
-              : "linear-gradient(to top, #1E40AF, #60A5FA)",
-          }}
-        />
-        {/* Percentage text */}
-        <div className="absolute inset-0 flex items-center justify-center">
-          <span className="text-xs font-bold text-gray-900 drop-shadow-[0_1px_1px_rgba(255,255,255,0.5)]">
-            {sensorError ? "ERR" : `${pct}%`}
-          </span>
-          {!sensorError && tankCapacityLitres > 0 && (
-            <span className="text-[8px] text-gray-600 absolute bottom-1 left-0 right-0 text-center">
-              {Math.round((pct / 100) * tankCapacityLitres)}L
+      {/* Tank body + litres */}
+      <div className="flex flex-col items-center">
+        <div className="relative w-14 h-16 border-2 border-gray-300 rounded-sm bg-gray-50 overflow-hidden">
+          {/* Water fill — always blue */}
+          <div
+            className="absolute bottom-0 left-0 right-0 transition-all duration-700 ease-in-out rounded-b-sm"
+            style={{
+              height: `${Math.min(pct, 100)}%`,
+              background: sensorError
+                ? "linear-gradient(to top, #9333EA, #C084FC)"
+                : "linear-gradient(to top, #1E40AF, #60A5FA)",
+            }}
+          />
+          {/* Percentage text */}
+          <div className="absolute inset-0 flex items-center justify-center">
+            <span className="text-xs font-bold text-gray-900 drop-shadow-[0_1px_1px_rgba(255,255,255,0.5)]">
+              {sensorError ? "ERR" : `${pct}%`}
             </span>
-          )}
+          </div>
         </div>
+        {/* Litres below tank */}
+        {!sensorError && tankCapacityLitres > 0 && (
+          <span className="text-xs font-semibold text-gray-700 mt-1">
+            {Math.round((pct / 100) * tankCapacityLitres)}L
+          </span>
+        )}
       </div>
 
       {/* Trend arrow */}

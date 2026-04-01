@@ -1,9 +1,22 @@
 import TankViz, { formatTimestamp } from "./TankViz";
-import CleaningBadge from "./CleaningBadge";
+import CleaningBadge, { getCleaningStatus } from "./CleaningBadge";
 import { sendRefreshCommand } from "../../firebase/rtdb";
 
+// Determine card flash class based on alert conditions
+function getAlertFlash({ sensorError, sensorOffline, confirmedPct, alertLowPct, alertHighPct, lastCleanedAt, cleanIntervalDays }) {
+  // Priority 1: Sensor error — purple
+  if (sensorError || sensorOffline) return "animate-pulse-purple";
+  // Priority 2: Level <= low threshold or cleaning overdue — red
+  if (alertLowPct != null && confirmedPct <= alertLowPct) return "animate-pulse-red";
+  const cleaning = getCleaningStatus(lastCleanedAt, cleanIntervalDays);
+  if (cleaning?.status === "overdue") return "animate-pulse-red";
+  // Priority 3: Level >= high threshold — green
+  if (alertHighPct != null && confirmedPct >= alertHighPct) return "animate-pulse-green";
+  return "";
+}
+
 // sensorType: 0=none, 1=DIP, 2=ultrasonic
-export default function SensorCard({ deviceCode, deviceName, live, info, catalog, isOnline, lastCleanedAt, cleanIntervalDays, tankCapacityLitres }) {
+export default function SensorCard({ deviceCode, deviceName, live, info, catalog, isOnline, lastCleanedAt, cleanIntervalDays, tankCapacityLitres, alertLowPct, alertHighPct }) {
   const sensorType = info?.sensorType ?? catalog?.sensorType ?? 1;
   const sensorCount = info?.sensorCount ?? catalog?.sensorCount ?? 4;
   const sensorBits = live?.sensorBits ?? 0;
@@ -12,10 +25,15 @@ export default function SensorCard({ deviceCode, deviceName, live, info, catalog
   const sensorError = !!(flags & 0x01);
   const sensorOffline = !!(flags & 0x20);
 
+  const flashClass = isOnline ? getAlertFlash({
+    sensorError, sensorOffline, confirmedPct,
+    alertLowPct, alertHighPct, lastCleanedAt, cleanIntervalDays,
+  }) : "";
+
   return (
     <div className={`bg-white rounded-xl shadow-sm border p-4 transition-all ${
       isOnline ? "border-gray-200" : "border-gray-200 opacity-60"
-    }`}>
+    } ${flashClass}`}>
       {/* Header */}
       <div className="flex items-center justify-between mb-1">
         <div>
