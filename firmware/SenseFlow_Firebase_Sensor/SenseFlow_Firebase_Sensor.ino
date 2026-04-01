@@ -89,7 +89,7 @@ const int DIP_PINS[] = {32, 33, 14, 27, 34, 35};
 #define US_FAIL_LIMIT     10
 #define US_OFFLINE_TIMEOUT 60000  // ms
 #define US_MIN_CHANGE_CM  5       // Only push if distance changed by 5cm+
-#define US_MIN_CHANGE_PCT 5       // Or level changed by 5%+
+#define US_STEP_SIZE      5       // Ultrasonic: snap to steps (0,5,10,...95,100)
 
 // ══════════════════════════════════════════════════
 //  DIP PERCENT TABLE (same as RS485 version)
@@ -498,17 +498,18 @@ void processUltrasonic() {
   if (waterHeight < 0) waterHeight = 0;
   if (waterHeight > usTankHeight) waterHeight = usTankHeight;
 
-  uint8_t newPct = (uint8_t)((waterHeight / usTankHeight) * 100.0);
+  uint8_t rawPct = (uint8_t)((waterHeight / usTankHeight) * 100.0);
 
-  // Only update confirmedPct if change exceeds threshold
-  // This prevents constant Firebase pushes from small ripples
+  // Snap to nearest step
+  uint8_t snapped = ((rawPct + US_STEP_SIZE / 2) / US_STEP_SIZE) * US_STEP_SIZE;
+  if (snapped > 100) snapped = 100;
+
+  // Only push if step changed or distance moved significantly
   float distChange = abs(usFilteredDistance - usLastSentDistance);
-  int pctChange = abs((int)newPct - (int)usLastSentPct);
-
-  if (distChange >= US_MIN_CHANGE_CM || pctChange >= US_MIN_CHANGE_PCT || usLastSentPct == 0xFF) {
-    confirmedPct = newPct;
+  if (snapped != usLastSentPct || distChange >= US_MIN_CHANGE_CM || usLastSentPct == 0xFF) {
+    confirmedPct = snapped;
     usLastSentDistance = usFilteredDistance;
-    usLastSentPct = newPct;
+    usLastSentPct = snapped;
   }
   // LED always shows latest reading even if not pushed
   // (confirmedPct stays at last pushed value, but LED can show newPct)
@@ -851,7 +852,7 @@ h2{font-size:14px;font-weight:600;color:#666;margin-bottom:8px}
     html += "<button class='btn btn-blue' type='submit' style='margin:0;padding:8px 16px'>Save</button>";
     html += "</form>";
     html += "<div class='row' style='margin-top:6px'><span class='label'>Raw Distance</span><span class='val'>" + String(usRawDistance, 1) + " cm</span></div>";
-    html += "<div class='row'><span class='label'>Min Change</span><span class='val'>" + String(US_MIN_CHANGE_CM) + " cm / " + String(US_MIN_CHANGE_PCT) + "%</span></div>";
+    html += "<div class='row'><span class='label'>Min Change</span><span class='val'>" + String(US_MIN_CHANGE_CM) + " cm / " + String(US_STEP_SIZE) + "% step</span></div>";
     html += "</div>";
   #endif
 

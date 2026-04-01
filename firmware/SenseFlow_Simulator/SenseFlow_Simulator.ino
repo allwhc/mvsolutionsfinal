@@ -53,7 +53,7 @@
 // Timing
 #define HEARTBEAT_INTERVAL    300000
 #define COMMAND_CHECK_INTERVAL 5000
-#define US_MIN_CHANGE_PCT     5       // Ultrasonic: only push if level changed by 5%+
+#define US_STEP_SIZE          5       // Ultrasonic: snap to steps (0,5,10,...95,100)
 
 // DIP percent table
 const uint8_t DIP_PCT_1[] = {100};
@@ -311,11 +311,12 @@ void processSimulatedSensors() {
       usLastSentPct = 0xFF;
     } else {
       flags &= ~0x20;
-      // Only update confirmedPct if change exceeds threshold
-      int pctChange = abs((int)simUltrasonicPct - (int)usLastSentPct);
-      if (pctChange >= US_MIN_CHANGE_PCT || usLastSentPct == 0xFF) {
-        confirmedPct = simUltrasonicPct;
-        usLastSentPct = simUltrasonicPct;
+      // Snap to nearest step
+      uint8_t snapped = ((simUltrasonicPct + US_STEP_SIZE / 2) / US_STEP_SIZE) * US_STEP_SIZE;
+      if (snapped > 100) snapped = 100;
+      if (snapped != usLastSentPct || usLastSentPct == 0xFF) {
+        confirmedPct = snapped;
+        usLastSentPct = snapped;
       }
     }
   }
@@ -616,7 +617,7 @@ select,input[type=number]{background:#1e293b;color:#e2e8f0;border:1px solid #334
   html += "<input type='number' name='h' min='10' max='500' value='" + String((int)simTankHeight) + "' style='flex:1;padding:8px;background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:6px;font-size:12px' required>";
   html += "<button class='btn btn-blue' type='submit' style='margin:0;padding:8px 16px'>Save</button>";
   html += "</form>";
-  html += "<div class='row' style='margin-top:6px'><span class='label'>Min Change</span><span class='val'>" + String(US_MIN_CHANGE_PCT) + "%</span></div>";
+  html += "<div class='row' style='margin-top:6px'><span class='label'>Step Size</span><span class='val'>" + String(US_STEP_SIZE) + "%</span></div>";
   html += "</div>";
 
   // Actions
