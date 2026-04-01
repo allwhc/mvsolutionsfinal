@@ -184,6 +184,8 @@ export default function Dashboard() {
                 info={d.info}
                 catalog={d.catalog}
                 isOnline={isDeviceOnline(d)}
+                lastCleanedAt={d.lastCleanedAt}
+                cleanIntervalDays={d.cleanIntervalDays}
               />
             );
             return locked ? (

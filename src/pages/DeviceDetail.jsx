@@ -5,7 +5,10 @@ import { useDevice } from "../hooks/useDevice";
 import {
   getDevice, unsubscribeFromDevice, isDeviceOwner, getDeviceSubscribers,
   setDeviceAccess, removeSubscriber, createDeviceInvite, getDeviceInvites,
+  updateUserDoc,
 } from "../firebase/db";
+import { doc, updateDoc } from "firebase/firestore";
+import { db } from "../firebase/config";
 import { sendRefreshCommand, sendRestartCommand, sendTestCommand } from "../firebase/rtdb";
 import DeviceCard from "../components/DeviceCard/DeviceCard";
 
@@ -21,6 +24,8 @@ export default function DeviceDetail() {
   const [accessMode, setAccessMode] = useState("open");
   const [accessPin, setAccessPin] = useState("");
   const [inviteLink, setInviteLink] = useState("");
+  const [lastCleanedAt, setLastCleanedAt] = useState(null);
+  const [cleanIntervalDays, setCleanIntervalDays] = useState(30);
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -34,6 +39,14 @@ export default function DeviceDetail() {
         setAccessPin(d.accessPin || "");
         const subs = await getDeviceSubscribers(code);
         setSubscribers(subs);
+        // Load cleaning data from subscription
+        const { getDoc } = await import("firebase/firestore");
+        const subSnap = await getDoc(doc(db, "subscriptions", user.uid, "devices", code));
+        if (subSnap.exists()) {
+          const subData = subSnap.data();
+          setLastCleanedAt(subData.lastCleanedAt || null);
+          setCleanIntervalDays(subData.cleanIntervalDays || 30);
+        }
       }
       setLoading(false);
     }
@@ -128,6 +141,43 @@ export default function DeviceDetail() {
           <button onClick={handleUnsubscribe}
             className="px-4 py-2 bg-red-50 text-red-600 rounded-lg text-sm hover:bg-red-100">Unsubscribe</button>
         </div>
+      </div>
+
+      {/* Tank Cleaning Tracker */}
+      <div className="bg-white rounded-xl shadow-sm border border-gray-200 mt-4 p-4">
+        <h3 className="font-semibold text-gray-900 mb-3">Tank Maintenance</h3>
+        <div className="grid grid-cols-2 gap-2 text-sm mb-3">
+          <span className="text-gray-500">Last Cleaned</span>
+          <span className="text-gray-900">{lastCleanedAt || "Not set"}</span>
+          <span className="text-gray-500">Clean Every</span>
+          <div className="flex items-center gap-1">
+            <input type="number" min="7" max="365" value={cleanIntervalDays}
+              onChange={(e) => setCleanIntervalDays(parseInt(e.target.value) || 30)}
+              className="w-14 px-2 py-0.5 border border-gray-200 rounded text-sm" />
+            <span className="text-gray-500 text-xs">days</span>
+            <button onClick={async () => {
+              await updateDoc(doc(db, "subscriptions", user.uid, "devices", code), { cleanIntervalDays });
+            }} className="text-xs text-blue-600 hover:underline ml-1">Save</button>
+          </div>
+          <span className="text-gray-500">Status</span>
+          <span>{(() => {
+            if (!lastCleanedAt) return <span className="text-gray-400">Set cleaning date</span>;
+            const days = Math.floor((new Date() - new Date(lastCleanedAt)) / 86400000);
+            const left = cleanIntervalDays - days;
+            if (left > 14) return <span className="text-green-600">🍃 Clean ({days}d ago)</span>;
+            if (left > 0) return <span className="text-yellow-600">⚠️ Due in {left} days</span>;
+            return <span className="text-red-600">🔴 Overdue by {Math.abs(left)} days</span>;
+          })()}</span>
+        </div>
+        <button onClick={async () => {
+          const today = new Date().toISOString().split("T")[0];
+          await updateDoc(doc(db, "subscriptions", user.uid, "devices", code), {
+            lastCleanedAt: today, cleanIntervalDays,
+          });
+          setLastCleanedAt(today);
+        }} className="w-full bg-green-50 text-green-700 py-2 rounded-lg text-sm font-medium hover:bg-green-100">
+          🍃 Mark as Cleaned Today
+        </button>
       </div>
 
       {/* Owner controls */}

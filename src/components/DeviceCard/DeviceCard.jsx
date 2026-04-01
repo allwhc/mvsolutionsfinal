@@ -3,10 +3,10 @@ import ValveCard from "./ValveCard";
 import MotorCard from "./MotorCard";
 
 // deviceClass: 1=valve, 2=sensor, 3=motor
-export default function DeviceCard({ deviceCode, deviceName, live, info, catalog, isOnline }) {
+export default function DeviceCard({ deviceCode, deviceName, live, info, catalog, isOnline, lastCleanedAt, cleanIntervalDays }) {
   const deviceClass = info?.deviceClass ?? catalog?.deviceClass ?? 2;
 
-  const props = { deviceCode, deviceName, live, info, catalog, isOnline };
+  const props = { deviceCode, deviceName, live, info, catalog, isOnline, lastCleanedAt, cleanIntervalDays };
 
   switch (deviceClass) {
     case 1:

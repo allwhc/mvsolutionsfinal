@@ -1,26 +1,24 @@
 import { useState, useEffect, useRef } from "react";
 
-function getStatusColor(pct) {
-  if (pct <= 10) return { fill: "from-red-500 to-red-400", text: "text-red-600", label: "Critical" };
-  if (pct <= 25) return { fill: "from-orange-500 to-orange-400", text: "text-orange-600", label: "Low" };
-  if (pct <= 50) return { fill: "from-yellow-500 to-yellow-400", text: "text-yellow-600", label: "Half" };
-  if (pct <= 75) return { fill: "from-cyan-500 to-cyan-400", text: "text-cyan-600", label: "Good" };
-  return { fill: "from-green-500 to-green-400", text: "text-green-600", label: "Full" };
-}
+// Smart date formatter
+export function formatTimestamp(ts) {
+  if (!ts) return "No data";
+  const date = new Date(ts);
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const yesterday = new Date(today - 86400000);
+  const tsDate = new Date(date.getFullYear(), date.getMonth(), date.getDate());
 
-function getFillStyle(pct) {
-  if (pct <= 10) return "linear-gradient(to top, #DC2626, #F87171)";
-  if (pct <= 25) return "linear-gradient(to top, #D97706, #FCD34D)";
-  if (pct <= 50) return "linear-gradient(to top, #CA8A04, #FDE047)";
-  if (pct <= 75) return "linear-gradient(to top, #0891B2, #67E8F9)";
-  return "linear-gradient(to top, #16A34A, #4ADE80)";
+  const time = date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  if (tsDate.getTime() === today.getTime()) return time;
+  if (tsDate.getTime() === yesterday.getTime()) return `Yesterday, ${time}`;
+  return `${date.getDate()} ${date.toLocaleString("default", { month: "short" })}, ${time}`;
 }
 
 export default function TankViz({ confirmedPct, sensorBits, sensorCount, sensorError, sensorType }) {
   const pct = confirmedPct ?? 0;
-  const status = getStatusColor(pct);
   const prevPctRef = useRef(pct);
-  const [trend, setTrend] = useState(null); // "up" | "down" | null
+  const [trend, setTrend] = useState(null);
 
   useEffect(() => {
     const prev = prevPctRef.current;
@@ -30,7 +28,7 @@ export default function TankViz({ confirmedPct, sensorBits, sensorCount, sensorE
     prevPctRef.current = pct;
   }, [pct]);
 
-  // Parse DIP sensors
+  // Parse DIP sensors (top to bottom)
   const sensors = [];
   if (sensorType === 1) {
     const count = sensorCount || 4;
@@ -61,17 +59,19 @@ export default function TankViz({ confirmedPct, sensorBits, sensorCount, sensorE
 
       {/* Tank body */}
       <div className="relative w-14 h-16 border-2 border-gray-300 rounded-sm bg-gray-50 overflow-hidden">
-        {/* Water fill */}
+        {/* Water fill — always blue */}
         <div
           className="absolute bottom-0 left-0 right-0 transition-all duration-700 ease-in-out rounded-b-sm"
           style={{
             height: `${Math.min(pct, 100)}%`,
-            background: sensorError ? "linear-gradient(to top, #9333EA, #C084FC)" : getFillStyle(pct),
+            background: sensorError
+              ? "linear-gradient(to top, #9333EA, #C084FC)"
+              : "linear-gradient(to top, #1E40AF, #60A5FA)",
           }}
         />
         {/* Percentage text */}
         <div className="absolute inset-0 flex items-center justify-center">
-          <span className={`text-xs font-bold ${pct > 40 ? "text-white" : "text-gray-700"} drop-shadow-sm`}>
+          <span className={`text-xs font-bold ${pct > 30 ? "text-white" : "text-gray-700"} drop-shadow-sm`}>
             {sensorError ? "ERR" : `${pct}%`}
           </span>
         </div>

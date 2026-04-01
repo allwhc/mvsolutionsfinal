@@ -1,4 +1,4 @@
-import TankViz from "./TankViz";
+import TankViz, { formatTimestamp } from "./TankViz";
 import { sendRefreshCommand, sendValveCommand } from "../../firebase/rtdb";
 
 const VALVE_STATES = {
@@ -79,7 +79,7 @@ export default function ValveCard({ deviceCode, deviceName, live, info, catalog,
       <div className="flex items-center justify-between mt-3 pt-3 border-t border-gray-100">
         <span className="text-xs text-gray-400">
           {live?.timestamp
-            ? new Date(live.timestamp).toLocaleTimeString()
+            ? formatTimestamp(live.timestamp)
             : "No data"}
         </span>
         <button
