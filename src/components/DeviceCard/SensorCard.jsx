@@ -1,15 +1,13 @@
 import TankViz, { formatTimestamp } from "./TankViz";
-import CleaningBadge, { getCleaningStatus } from "./CleaningBadge";
+import CleaningBadge from "./CleaningBadge";
 import { sendRefreshCommand } from "../../firebase/rtdb";
 
-// Determine card flash class based on alert conditions
-function getAlertFlash({ sensorError, sensorOffline, confirmedPct, alertLowPct, alertHighPct, lastCleanedAt, cleanIntervalDays }) {
+// Determine card flash class — cleaning never causes flash, only badge
+function getAlertFlash({ sensorError, sensorOffline, confirmedPct, alertLowPct, alertHighPct }) {
   // Priority 1: Sensor error — purple
   if (sensorError || sensorOffline) return "animate-pulse-purple";
-  // Priority 2: Level <= low threshold or cleaning overdue — red
+  // Priority 2: Level <= low threshold — red
   if (alertLowPct != null && confirmedPct <= alertLowPct) return "animate-pulse-red";
-  const cleaning = getCleaningStatus(lastCleanedAt, cleanIntervalDays);
-  if (cleaning?.status === "overdue") return "animate-pulse-red";
   // Priority 3: Level >= high threshold — green
   if (alertHighPct != null && confirmedPct >= alertHighPct) return "animate-pulse-green";
   return "";
