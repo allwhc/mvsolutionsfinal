@@ -60,10 +60,10 @@ export default function TankViz({ confirmedPct, sensorBits, sensorCount, sensorE
   }
 
   return (
-    <div className="flex items-end justify-center gap-2 my-2">
+    <div className="flex items-center justify-center gap-2 my-2">
       {/* DIP sensor dots (left side) */}
       {sensorType === 1 && (
-        <div className="flex flex-col justify-center gap-1">
+        <div className="flex flex-col justify-between h-16 py-1">
           {sensors.map((s, i) => (
             <div
               key={i}
