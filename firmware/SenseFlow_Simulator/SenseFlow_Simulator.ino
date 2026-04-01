@@ -19,7 +19,6 @@
 #include <WiFi.h>
 #include <ESPmDNS.h>
 #include <Preferences.h>
-#define ENABLE_RTDB
 #include <Firebase_ESP_Client.h>
 #include <addons/TokenHelper.h>
 #include <MvsConnect.h>
@@ -328,6 +327,8 @@ void processSimulatedSensors() {
 
 void initFirebase() {
   Serial.println("[FB] initFirebase called");
+  // Ensure Google DNS is set before any Firebase connection
+  if (WiFi.status() == WL_CONNECTED) setGoogleDNS();
   Serial.println("[FB] API Key: " + String(FIREBASE_API_KEY).substring(0, 10) + "...");
   Serial.println("[FB] DB URL: " + String(FIREBASE_DB_URL));
 
