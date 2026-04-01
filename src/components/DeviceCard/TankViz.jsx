@@ -17,15 +17,22 @@ export function formatTimestamp(ts) {
 
 export default function TankViz({ confirmedPct, sensorBits, sensorCount, sensorError, sensorType, tankCapacityLitres }) {
   const pct = confirmedPct ?? 0;
-  const prevPctRef = useRef(pct);
+  const prevPctRef = useRef(null);
   const [trend, setTrend] = useState(null);
 
   useEffect(() => {
     const prev = prevPctRef.current;
-    if (pct > prev) setTrend("up");
-    else if (pct < prev) setTrend("down");
-    else setTrend(null);
-    prevPctRef.current = pct;
+    if (prev === null) {
+      // First render — no trend
+      prevPctRef.current = pct;
+      return;
+    }
+    if (pct !== prev) {
+      // Only update trend when value actually changes
+      if (pct > prev) setTrend("up");
+      else setTrend("down");
+      prevPctRef.current = pct;
+    }
   }, [pct]);
 
   // Parse DIP sensors (top to bottom)
