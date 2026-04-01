@@ -12,9 +12,12 @@ export default function AdminDashboard() {
       const [devices, pending, users, orgs, plans] = await Promise.all([
         getAllDevices(), getPendingDevicesRTDB(), getAllUsers(), getAllOrgs(), getAllPlans(),
       ]);
+      // Filter pending: exclude devices already registered in catalog
+      const registeredCodes = new Set(devices.map(d => d.deviceCode));
+      const filteredPending = pending.filter(d => !registeredCodes.has(d.deviceCode));
       setStats({
         devices: devices.length,
-        pending: pending.length,
+        pending: filteredPending.length,
         users: users.length,
         orgs: orgs.length,
         plans: plans.length,
