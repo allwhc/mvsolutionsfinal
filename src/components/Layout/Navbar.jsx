@@ -51,7 +51,7 @@ export default function Navbar() {
         {/* Desktop nav */}
         <div className="hidden md:flex items-center gap-1">
           {navLink("/dashboard", "Dashboard")}
-          {navLink("/subscribe", "Subscribe")}
+          {navLink("/subscribe", "Add Device")}
           {(isOrgAdmin || isOrgMember) && navLink("/org", "Organisation")}
           {isSuperAdmin && navLink("/admin", "Admin")}
           {navLink("/profile", userData?.displayName || "Profile")}
@@ -82,7 +82,7 @@ export default function Navbar() {
       {menuOpen && (
         <div className="md:hidden border-t border-gray-100 px-4 py-3 flex flex-col gap-1 bg-white">
           {navLink("/dashboard", "Dashboard")}
-          {navLink("/subscribe", "Subscribe")}
+          {navLink("/subscribe", "Add Device")}
           {(isOrgAdmin || isOrgMember) && navLink("/org", "Organisation")}
           {isSuperAdmin && navLink("/admin", "Admin")}
           {navLink("/profile", userData?.displayName || "Profile")}

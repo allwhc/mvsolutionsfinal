@@ -159,7 +159,7 @@ export default function Subscribe() {
 
   return (
     <div className="max-w-md mx-auto">
-      <h1 className="text-2xl font-bold text-gray-900 mb-6">Subscribe to Device</h1>
+      <h1 className="text-2xl font-bold text-gray-900 mb-6">Add Device</h1>
 
       {/* QR Scanner */}
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 mb-4">

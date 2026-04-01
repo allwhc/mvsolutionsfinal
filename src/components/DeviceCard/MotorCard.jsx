@@ -1,5 +1,4 @@
-import LevelBar from "./LevelBar";
-import UltrasonicBar from "./UltrasonicBar";
+import TankViz from "./TankViz";
 import { sendRefreshCommand, sendMotorCommand } from "../../firebase/rtdb";
 
 const MOTOR_STATES = {
@@ -66,17 +65,14 @@ export default function MotorCard({ deviceCode, deviceName, live, info, catalog,
         </button>
       </div>
 
-      {/* Sensor visualization (if any) */}
-      {sensorType === 1 ? (
-        <LevelBar
-          sensorBits={sensorBits}
-          sensorCount={sensorCount}
-          confirmedPct={confirmedPct}
-          sensorError={sensorError}
-        />
-      ) : sensorType === 2 ? (
-        <UltrasonicBar confirmedPct={confirmedPct} sensorOffline={sensorOffline} />
-      ) : null}
+      {/* Tank visualization */}
+      <TankViz
+        confirmedPct={confirmedPct}
+        sensorBits={sensorBits}
+        sensorCount={sensorCount}
+        sensorError={sensorError}
+        sensorType={sensorType}
+      />
 
       {/* Footer */}
       <div className="flex items-center justify-between mt-3 pt-3 border-t border-gray-100">

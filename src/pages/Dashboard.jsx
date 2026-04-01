@@ -24,7 +24,7 @@ export default function Dashboard() {
 
   // Greeting based on time of day
   const hour = new Date().getHours();
-  const greeting = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
+  const greeting = hour < 12 ? "Good Morning" : hour < 17 ? "Good Afternoon" : "Good Evening";
 
   if (loading) {
     return (
@@ -43,13 +43,17 @@ export default function Dashboard() {
         {isOrg && (
           <p className="text-blue-600 font-medium mb-4">{userData?.orgName || orgId}</p>
         )}
-        <p className="text-gray-500 mb-6">Subscribe to a device to start monitoring</p>
+        <p className="text-gray-500 mb-6">Add a device to start monitoring</p>
         <Link
           to="/subscribe"
           className="inline-block bg-blue-600 text-white px-6 py-2.5 rounded-lg text-sm font-medium hover:bg-blue-700"
         >
           Add Device
         </Link>
+        <p className="text-gray-400 text-xs mt-8 max-w-sm mx-auto leading-relaxed">
+          Discover SenseFlow's complete water management solutions — smart monitoring for tanks and control for automated valve & pump.{" "}
+          <a href="https://senseflow.in" target="_blank" className="text-blue-500 hover:underline">Visit senseflow.in</a>
+        </p>
       </div>
     );
   }
