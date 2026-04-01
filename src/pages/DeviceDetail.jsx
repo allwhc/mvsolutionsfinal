@@ -135,21 +135,6 @@ export default function DeviceDetail() {
         </div>
       </div>
 
-      {/* Actions */}
-      <div className="bg-white rounded-xl shadow-sm border border-gray-200 mt-4 p-4">
-        <h3 className="font-semibold text-gray-900 mb-3">Actions</h3>
-        <div className="flex flex-wrap gap-2">
-          <button onClick={() => sendRefreshCommand(code)}
-            className="px-4 py-2 bg-blue-50 text-blue-600 rounded-lg text-sm hover:bg-blue-100">Force Refresh</button>
-          <button onClick={() => { if (confirm("Send test blink command to this device?")) sendTestCommand(code); }}
-            className="px-4 py-2 bg-green-50 text-green-600 rounded-lg text-sm hover:bg-green-100">Test LED</button>
-          <button onClick={() => { if (confirm("Restart this device? It will go offline for a few seconds.")) sendRestartCommand(code); }}
-            className="px-4 py-2 bg-yellow-50 text-yellow-600 rounded-lg text-sm hover:bg-yellow-100">Restart</button>
-          <button onClick={handleUnsubscribe}
-            className="px-4 py-2 bg-red-50 text-red-600 rounded-lg text-sm hover:bg-red-100">Unsubscribe</button>
-        </div>
-      </div>
-
       {/* Tank Settings — only for devices with tanks (DIP or Ultrasonic) */}
       {(catalog && (catalog.sensorType === 1 || catalog.sensorType === 2 || info?.sensorType === 1 || info?.sensorType === 2)) && (
         <div className="bg-white rounded-xl shadow-sm border border-gray-200 mt-4 p-4">
@@ -323,6 +308,20 @@ export default function DeviceDetail() {
           </div>
         </div>
       )}
+      {/* Actions — at bottom */}
+      <div className="bg-white rounded-xl shadow-sm border border-gray-200 mt-4 p-4">
+        <h3 className="font-semibold text-gray-900 mb-3">Actions</h3>
+        <div className="flex flex-wrap gap-2">
+          <button onClick={() => sendRefreshCommand(code)}
+            className="px-4 py-2 bg-blue-50 text-blue-600 rounded-lg text-sm hover:bg-blue-100">Force Refresh</button>
+          <button onClick={() => { if (confirm("Send test blink command to this device?")) sendTestCommand(code); }}
+            className="px-4 py-2 bg-green-50 text-green-600 rounded-lg text-sm hover:bg-green-100">Test LED</button>
+          <button onClick={() => { if (confirm("Restart this device? It will go offline for a few seconds.")) sendRestartCommand(code); }}
+            className="px-4 py-2 bg-yellow-50 text-yellow-600 rounded-lg text-sm hover:bg-yellow-100">Restart</button>
+          <button onClick={handleUnsubscribe}
+            className="px-4 py-2 bg-red-50 text-red-600 rounded-lg text-sm hover:bg-red-100">Unsubscribe</button>
+        </div>
+      </div>
     </div>
   );
 }
