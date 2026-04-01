@@ -20,22 +20,22 @@ export default function CleaningBadge({ lastCleanedAt, cleanIntervalDays }) {
 
   if (info.status === "clean") {
     return (
-      <span className="inline-flex items-center gap-0.5 text-xs px-1.5 py-0.5 rounded-full bg-green-50 text-green-700" title={`Cleaned ${info.daysSince} days ago`}>
-        🍃
+      <span className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-full bg-green-50 text-green-700 font-medium" title={`Cleaned ${info.daysSince} days ago`}>
+        🍃 Clean
       </span>
     );
   }
 
   if (info.status === "due") {
     return (
-      <span className="inline-flex items-center gap-0.5 text-xs px-1.5 py-0.5 rounded-full bg-yellow-50 text-yellow-700" title={info.label}>
+      <span className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-full bg-yellow-50 text-yellow-700 font-medium" title={info.label}>
         ⚠️ {info.daysLeft}d
       </span>
     );
   }
 
   return (
-    <span className="inline-flex items-center gap-0.5 text-xs px-1.5 py-0.5 rounded-full bg-red-50 text-red-700" title={info.label}>
+    <span className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-full bg-red-50 text-red-700 font-medium" title={info.label}>
       🔴 {info.daysLeft}d
     </span>
   );

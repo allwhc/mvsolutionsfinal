@@ -3,7 +3,7 @@ import CleaningBadge from "./CleaningBadge";
 import { sendRefreshCommand } from "../../firebase/rtdb";
 
 // sensorType: 0=none, 1=DIP, 2=ultrasonic
-export default function SensorCard({ deviceCode, deviceName, live, info, catalog, isOnline, lastCleanedAt, cleanIntervalDays }) {
+export default function SensorCard({ deviceCode, deviceName, live, info, catalog, isOnline, lastCleanedAt, cleanIntervalDays, tankCapacityLitres }) {
   const sensorType = info?.sensorType ?? catalog?.sensorType ?? 1;
   const sensorCount = info?.sensorCount ?? catalog?.sensorCount ?? 4;
   const sensorBits = live?.sensorBits ?? 0;
@@ -41,6 +41,7 @@ export default function SensorCard({ deviceCode, deviceName, live, info, catalog
           sensorCount={sensorCount}
           sensorError={sensorError}
           sensorType={sensorType}
+          tankCapacityLitres={tankCapacityLitres}
         />
       )}
 

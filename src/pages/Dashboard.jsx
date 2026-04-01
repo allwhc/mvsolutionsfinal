@@ -186,6 +186,7 @@ export default function Dashboard() {
                 isOnline={isDeviceOnline(d)}
                 lastCleanedAt={d.lastCleanedAt}
                 cleanIntervalDays={d.cleanIntervalDays}
+                tankCapacityLitres={d.tankCapacityLitres}
               />
             );
             return locked ? (

@@ -15,7 +15,7 @@ export function formatTimestamp(ts) {
   return `${date.getDate()} ${date.toLocaleString("default", { month: "short" })}, ${time}`;
 }
 
-export default function TankViz({ confirmedPct, sensorBits, sensorCount, sensorError, sensorType }) {
+export default function TankViz({ confirmedPct, sensorBits, sensorCount, sensorError, sensorType, tankCapacityLitres }) {
   const pct = confirmedPct ?? 0;
   const prevPctRef = useRef(pct);
   const [trend, setTrend] = useState(null);
@@ -71,9 +71,14 @@ export default function TankViz({ confirmedPct, sensorBits, sensorCount, sensorE
         />
         {/* Percentage text */}
         <div className="absolute inset-0 flex items-center justify-center">
-          <span className={`text-xs font-bold ${pct > 30 ? "text-white" : "text-gray-700"} drop-shadow-sm`}>
+          <span className="text-xs font-bold text-gray-900 drop-shadow-[0_1px_1px_rgba(255,255,255,0.5)]">
             {sensorError ? "ERR" : `${pct}%`}
           </span>
+          {!sensorError && tankCapacityLitres > 0 && (
+            <span className="text-[8px] text-gray-600 absolute bottom-1 left-0 right-0 text-center">
+              {Math.round((pct / 100) * tankCapacityLitres)}L
+            </span>
+          )}
         </div>
       </div>
 

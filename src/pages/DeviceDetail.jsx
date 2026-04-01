@@ -26,6 +26,7 @@ export default function DeviceDetail() {
   const [inviteLink, setInviteLink] = useState("");
   const [lastCleanedAt, setLastCleanedAt] = useState(null);
   const [cleanIntervalDays, setCleanIntervalDays] = useState(30);
+  const [tankCapacityLitres, setTankCapacityLitres] = useState(0);
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -46,6 +47,7 @@ export default function DeviceDetail() {
           const subData = subSnap.data();
           setLastCleanedAt(subData.lastCleanedAt || null);
           setCleanIntervalDays(subData.cleanIntervalDays || 30);
+          setTankCapacityLitres(subData.tankCapacityLitres || 0);
         }
       }
       setLoading(false);
@@ -143,42 +145,60 @@ export default function DeviceDetail() {
         </div>
       </div>
 
-      {/* Tank Cleaning Tracker */}
-      <div className="bg-white rounded-xl shadow-sm border border-gray-200 mt-4 p-4">
-        <h3 className="font-semibold text-gray-900 mb-3">Tank Maintenance</h3>
-        <div className="grid grid-cols-2 gap-2 text-sm mb-3">
-          <span className="text-gray-500">Last Cleaned</span>
-          <span className="text-gray-900">{lastCleanedAt || "Not set"}</span>
-          <span className="text-gray-500">Clean Every</span>
-          <div className="flex items-center gap-1">
-            <input type="number" min="7" max="365" value={cleanIntervalDays}
-              onChange={(e) => setCleanIntervalDays(parseInt(e.target.value) || 30)}
-              className="w-14 px-2 py-0.5 border border-gray-200 rounded text-sm" />
-            <span className="text-gray-500 text-xs">days</span>
-            <button onClick={async () => {
-              await updateDoc(doc(db, "subscriptions", user.uid, "devices", code), { cleanIntervalDays });
-            }} className="text-xs text-blue-600 hover:underline ml-1">Save</button>
+      {/* Tank Settings — only for devices with tanks (DIP or Ultrasonic) */}
+      {(catalog && (catalog.sensorType === 1 || catalog.sensorType === 2 || info?.sensorType === 1 || info?.sensorType === 2)) && (
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200 mt-4 p-4">
+          <h3 className="font-semibold text-gray-900 mb-3">Tank Maintenance</h3>
+          <div className="grid grid-cols-2 gap-2 text-sm mb-3">
+            <span className="text-gray-500">Last Cleaned</span>
+            <input type="date" value={lastCleanedAt || ""}
+              onChange={async (e) => {
+                const val = e.target.value;
+                setLastCleanedAt(val);
+                await updateDoc(doc(db, "subscriptions", user.uid, "devices", code), { lastCleanedAt: val });
+              }}
+              className="px-2 py-0.5 border border-gray-200 rounded text-sm" />
+            <span className="text-gray-500">Clean Every</span>
+            <div className="flex items-center gap-1">
+              <input type="number" min="7" max="365" value={cleanIntervalDays}
+                onChange={(e) => setCleanIntervalDays(parseInt(e.target.value) || 30)}
+                className="w-14 px-2 py-0.5 border border-gray-200 rounded text-sm" />
+              <span className="text-gray-500 text-xs">days</span>
+              <button onClick={async () => {
+                await updateDoc(doc(db, "subscriptions", user.uid, "devices", code), { cleanIntervalDays });
+              }} className="text-xs text-blue-600 hover:underline ml-1">Save</button>
+            </div>
+            <span className="text-gray-500">Tank Capacity</span>
+            <div className="flex items-center gap-1">
+              <input type="number" min="0" max="100000" value={tankCapacityLitres}
+                onChange={(e) => setTankCapacityLitres(parseInt(e.target.value) || 0)}
+                className="w-20 px-2 py-0.5 border border-gray-200 rounded text-sm" />
+              <span className="text-gray-500 text-xs">litres</span>
+              <button onClick={async () => {
+                await updateDoc(doc(db, "subscriptions", user.uid, "devices", code), { tankCapacityLitres });
+              }} className="text-xs text-blue-600 hover:underline ml-1">Save</button>
+            </div>
+            <span className="text-gray-500">Status</span>
+            <span>{(() => {
+              if (!lastCleanedAt) return <span className="text-gray-400">Set cleaning date</span>;
+              const days = Math.floor((new Date() - new Date(lastCleanedAt)) / 86400000);
+              const left = cleanIntervalDays - days;
+              if (left > 14) return <span className="text-green-600">🍃 Clean ({days}d ago)</span>;
+              if (left > 0) return <span className="text-yellow-600">⚠️ Due in {left} days</span>;
+              return <span className="text-red-600">🔴 Overdue by {Math.abs(left)} days</span>;
+            })()}</span>
           </div>
-          <span className="text-gray-500">Status</span>
-          <span>{(() => {
-            if (!lastCleanedAt) return <span className="text-gray-400">Set cleaning date</span>;
-            const days = Math.floor((new Date() - new Date(lastCleanedAt)) / 86400000);
-            const left = cleanIntervalDays - days;
-            if (left > 14) return <span className="text-green-600">🍃 Clean ({days}d ago)</span>;
-            if (left > 0) return <span className="text-yellow-600">⚠️ Due in {left} days</span>;
-            return <span className="text-red-600">🔴 Overdue by {Math.abs(left)} days</span>;
-          })()}</span>
+          <button onClick={async () => {
+            const today = new Date().toISOString().split("T")[0];
+            await updateDoc(doc(db, "subscriptions", user.uid, "devices", code), {
+              lastCleanedAt: today, cleanIntervalDays, tankCapacityLitres,
+            });
+            setLastCleanedAt(today);
+          }} className="w-full bg-green-50 text-green-700 py-2 rounded-lg text-sm font-medium hover:bg-green-100">
+            🍃 Mark as Cleaned Today
+          </button>
         </div>
-        <button onClick={async () => {
-          const today = new Date().toISOString().split("T")[0];
-          await updateDoc(doc(db, "subscriptions", user.uid, "devices", code), {
-            lastCleanedAt: today, cleanIntervalDays,
-          });
-          setLastCleanedAt(today);
-        }} className="w-full bg-green-50 text-green-700 py-2 rounded-lg text-sm font-medium hover:bg-green-100">
-          🍃 Mark as Cleaned Today
-        </button>
-      </div>
+      )}
 
       {/* Owner controls */}
       {(isOwner || isSuperAdmin) && (
