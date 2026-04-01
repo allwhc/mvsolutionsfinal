@@ -63,11 +63,11 @@ export default function TankViz({ confirmedPct, sensorBits, sensorCount, sensorE
     <div className="flex items-end justify-center gap-2 my-2">
       {/* DIP sensor dots (left side) */}
       {sensorType === 1 && (
-        <div className="flex flex-col justify-between h-16 py-0.5">
+        <div className={`flex flex-col justify-between py-0.5 ${count > 5 ? "h-20" : "h-16"}`}>
           {sensors.map((s, i) => (
             <div
               key={i}
-              className={`w-2.5 h-2.5 rounded-full transition-all ${
+              className={`${count > 5 ? "w-2 h-2" : "w-2.5 h-2.5"} rounded-full transition-all ${
                 s.gap
                   ? "bg-red-500 shadow-sm shadow-red-400 ring-2 ring-red-200"
                   : s.on
@@ -80,7 +80,7 @@ export default function TankViz({ confirmedPct, sensorBits, sensorCount, sensorE
       )}
 
       {/* Tank body */}
-      <div className="relative w-14 h-16 border-2 border-gray-300 rounded-sm bg-gray-50 overflow-hidden">
+      <div className={`relative w-14 border-2 border-gray-300 rounded-sm bg-gray-50 overflow-hidden ${count > 5 ? "h-20" : "h-16"}`}>
         {/* Water fill — always blue */}
         <div
           className="absolute bottom-0 left-0 right-0 transition-all duration-700 ease-in-out rounded-b-sm"
@@ -100,7 +100,7 @@ export default function TankViz({ confirmedPct, sensorBits, sensorCount, sensorE
       </div>
 
       {/* Trend arrow + Litres */}
-      <div className="flex flex-col items-center justify-end h-16 gap-1">
+      <div className={`flex flex-col items-center justify-end gap-1 ${count > 5 ? "h-20" : "h-16"}`}>
         {trend === "up" && (
           <svg className="w-4 h-4 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 15l7-7 7 7" />
