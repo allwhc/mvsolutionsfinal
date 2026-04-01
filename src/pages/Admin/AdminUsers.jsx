@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { getAllUsers, updateUserDoc, getUserSubscriptions, getAllPlans } from "../../firebase/db";
+import { getAllUsers, updateUserDoc, getUserSubscriptions, getAllPlans, removeSubscriber } from "../../firebase/db";
 
 const ROLES = ["individual", "orgAdmin", "orgMember", "superadmin"];
 
@@ -148,9 +148,16 @@ export default function AdminUsers() {
             ) : (
               <div className="space-y-2">
                 {userSubs.map((s) => (
-                  <div key={s.deviceCode} className="bg-gray-50 rounded-lg p-3">
-                    <p className="font-mono text-xs font-semibold">{s.deviceCode}</p>
-                    <p className="text-xs text-gray-500">{s.deviceName || "—"}</p>
+                  <div key={s.deviceCode} className="bg-gray-50 rounded-lg p-3 flex items-center justify-between">
+                    <div>
+                      <p className="font-mono text-xs font-semibold">{s.deviceCode}</p>
+                      <p className="text-xs text-gray-500">{s.deviceName || "—"}</p>
+                    </div>
+                    <button onClick={async () => {
+                      if (!confirm("Remove " + s.deviceCode + " from this user?")) return;
+                      await removeSubscriber(s.deviceCode, selectedUser.uid);
+                      setUserSubs(userSubs.filter(x => x.deviceCode !== s.deviceCode));
+                    }} className="text-xs text-red-500 hover:text-red-700">Remove</button>
                   </div>
                 ))}
               </div>
