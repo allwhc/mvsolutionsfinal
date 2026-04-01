@@ -35,12 +35,27 @@ export default function TankViz({ confirmedPct, sensorBits, sensorCount, sensorE
     }
   }, [pct]);
 
-  // Parse DIP sensors (top to bottom)
+  // Parse DIP sensors (top to bottom) with error detection
+  const count = sensorCount || 4;
   const sensors = [];
   if (sensorType === 1) {
-    const count = sensorCount || 4;
+    // Find consecutive count from bottom
+    let consecutive = 0;
+    for (let i = 0; i < count; i++) {
+      if ((sensorBits >> i) & 1) consecutive++;
+      else break;
+    }
+    // Build sensor array top-to-bottom with error marking
     for (let i = count - 1; i >= 0; i--) {
-      sensors.push((sensorBits >> i) & 1);
+      const isOn = (sensorBits >> i) & 1;
+      // Gap = sensor OFF but a higher sensor is ON (non-consecutive)
+      const isGap = sensorError && !isOn && i < count && (() => {
+        for (let j = i + 1; j < count; j++) {
+          if ((sensorBits >> j) & 1) return true;
+        }
+        return false;
+      })();
+      sensors.push({ on: isOn, gap: isGap });
     }
   }
 
@@ -49,13 +64,13 @@ export default function TankViz({ confirmedPct, sensorBits, sensorCount, sensorE
       {/* DIP sensor dots (left side) */}
       {sensorType === 1 && (
         <div className="flex flex-col justify-between h-16 py-0.5">
-          {sensors.map((on, i) => (
+          {sensors.map((s, i) => (
             <div
               key={i}
-              className={`w-2 h-2 rounded-full transition-all ${
-                sensorError
-                  ? "bg-purple-500"
-                  : on
+              className={`w-2.5 h-2.5 rounded-full transition-all ${
+                s.gap
+                  ? "bg-red-500 shadow-sm shadow-red-400 ring-2 ring-red-200"
+                  : s.on
                   ? "bg-blue-500 shadow-sm shadow-blue-400"
                   : "bg-gray-200 border border-gray-300"
               }`}
