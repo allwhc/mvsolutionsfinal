@@ -35,9 +35,27 @@ export async function sendRefreshCommand(deviceCode) {
 }
 
 export async function sendValveCommand(deviceCode, command) {
-  await update(ref(rtdb, `devices/${deviceCode}/commands`), {
-    valveCommand: command, // "open" | "close" | ""
-  });
+  if (command === "open") {
+    await update(ref(rtdb, `devices/${deviceCode}/commands`), { openRequested: true });
+  } else if (command === "close") {
+    await update(ref(rtdb, `devices/${deviceCode}/commands`), { closeRequested: true });
+  }
+}
+
+// ── Valve Config (auto mode, thresholds) ──
+export async function getValveConfig(deviceCode) {
+  const snap = await get(ref(rtdb, `devices/${deviceCode}/config`));
+  return snap.val();
+}
+
+export async function setValveConfig(deviceCode, config) {
+  await set(ref(rtdb, `devices/${deviceCode}/config`), config);
+}
+
+export function listenToValveConfig(deviceCode, callback) {
+  const configRef = ref(rtdb, `devices/${deviceCode}/config`);
+  onValue(configRef, (snap) => { callback(snap.val()); });
+  return () => off(configRef);
 }
 
 export async function sendMotorCommand(deviceCode, command) {

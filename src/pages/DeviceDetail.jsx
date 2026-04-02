@@ -9,7 +9,7 @@ import {
 } from "../firebase/db";
 import { doc, updateDoc } from "firebase/firestore";
 import { db } from "../firebase/config";
-import { sendRefreshCommand, sendRestartCommand, sendTestCommand } from "../firebase/rtdb";
+import { sendRefreshCommand, sendRestartCommand, sendTestCommand, sendValveCommand, listenToValveConfig, setValveConfig } from "../firebase/rtdb";
 import DeviceCard from "../components/DeviceCard/DeviceCard";
 
 export default function DeviceDetail() {
@@ -30,6 +30,7 @@ export default function DeviceDetail() {
   const [alertLowPct, setAlertLowPct] = useState("");
   const [alertHighPct, setAlertHighPct] = useState("");
   const [alertError, setAlertError] = useState("");
+  const [valveConfig, setValveConfigState] = useState(null);
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -58,6 +59,12 @@ export default function DeviceDetail() {
       setLoading(false);
     }
     load();
+
+    // Listen for valve config changes
+    const unsub = listenToValveConfig(code, (cfg) => {
+      setValveConfigState(cfg);
+    });
+    return () => unsub();
   }, [code]);
 
   async function handleUnsubscribe() {
@@ -228,6 +235,104 @@ export default function DeviceDetail() {
             Save Alert Settings
           </button>
           <p className="text-xs text-gray-400 mt-2">Card flashes red when low, green when high. Leave empty to disable.</p>
+        </div>
+      )}
+
+      {/* Valve Controls — only for valve devices */}
+      {(catalog?.deviceClass === 1 || info?.deviceClass === 1) && (
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200 mt-4 p-4">
+          <h3 className="font-semibold text-gray-900 mb-3">Valve Controls</h3>
+
+          {/* Open / Close buttons */}
+          <div className="flex gap-2 mb-4">
+            <button onClick={() => sendValveCommand(code, "open")}
+              disabled={!isOnline}
+              className="flex-1 bg-green-500 text-white py-2 rounded-lg text-sm font-medium hover:bg-green-600 disabled:opacity-40 disabled:cursor-not-allowed">
+              Open Valve
+            </button>
+            <button onClick={() => sendValveCommand(code, "close")}
+              disabled={!isOnline}
+              className="flex-1 bg-red-500 text-white py-2 rounded-lg text-sm font-medium hover:bg-red-600 disabled:opacity-40 disabled:cursor-not-allowed">
+              Close Valve
+            </button>
+          </div>
+
+          {/* Valve state */}
+          {live?.valveState != null && (
+            <div className="flex items-center justify-between bg-gray-50 rounded-lg px-3 py-2 mb-3 text-sm">
+              <span className="text-gray-500">Current State</span>
+              <span className={`font-semibold ${
+                live.valveState === 2 ? "text-green-600" :
+                live.valveState === 4 ? "text-red-600" :
+                live.valveState === 5 ? "text-red-700" :
+                live.valveState === 6 ? "text-purple-600" :
+                "text-blue-600"
+              }`}>
+                {["Recovery", "Opening", "Open", "Closing", "Closed", "Fault", "LS Error"][live.valveState] || "Unknown"}
+              </span>
+            </div>
+          )}
+
+          {/* Auto mode toggle */}
+          <div className="flex items-center justify-between bg-gray-50 rounded-lg px-3 py-2 mb-3">
+            <span className="text-sm text-gray-700">Auto Mode</span>
+            <button
+              onClick={async () => {
+                const newAuto = !(valveConfig?.autoMode);
+                if (newAuto && !confirm("Enable auto mode? The valve will open/close automatically based on thresholds. Device must be online.")) return;
+                await setValveConfig(code, {
+                  ...valveConfig,
+                  autoMode: newAuto,
+                  minPercent: valveConfig?.minPercent ?? 25,
+                  maxPercent: valveConfig?.maxPercent ?? 75,
+                });
+              }}
+              disabled={!isOnline}
+              className={`px-4 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+                valveConfig?.autoMode
+                  ? "bg-green-500 text-white hover:bg-green-600"
+                  : "bg-gray-200 text-gray-600 hover:bg-gray-300"
+              } disabled:opacity-40`}
+            >
+              {valveConfig?.autoMode ? "ON" : "OFF"}
+            </button>
+          </div>
+
+          {/* Thresholds — only shown when auto mode is on */}
+          {valveConfig?.autoMode && (
+            <div className="bg-blue-50 rounded-lg p-3 space-y-2">
+              <p className="text-xs text-blue-600 font-semibold">Auto Thresholds</p>
+              <div className="flex items-center gap-2 text-sm">
+                <span className="text-gray-600 w-24">Open below</span>
+                <select
+                  value={valveConfig?.minPercent ?? 25}
+                  onChange={async (e) => {
+                    await setValveConfig(code, { ...valveConfig, minPercent: parseInt(e.target.value) });
+                  }}
+                  className="px-2 py-1 border border-gray-200 rounded text-sm"
+                >
+                  {[0, 17, 20, 25, 33, 40, 50, 60, 67, 75, 80, 83].filter(v => v < (valveConfig?.maxPercent ?? 75)).map(v => (
+                    <option key={v} value={v}>{v}%</option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex items-center gap-2 text-sm">
+                <span className="text-gray-600 w-24">Close above</span>
+                <select
+                  value={valveConfig?.maxPercent ?? 75}
+                  onChange={async (e) => {
+                    await setValveConfig(code, { ...valveConfig, maxPercent: parseInt(e.target.value) });
+                  }}
+                  className="px-2 py-1 border border-gray-200 rounded text-sm"
+                >
+                  {[17, 20, 25, 33, 40, 50, 60, 67, 75, 80, 83, 100].filter(v => v > (valveConfig?.minPercent ?? 25)).map(v => (
+                    <option key={v} value={v}>{v}%</option>
+                  ))}
+                </select>
+              </div>
+              <p className="text-xs text-gray-400">Device stores thresholds locally. Works even if internet disconnects.</p>
+            </div>
+          )}
         </div>
       )}
 

@@ -17,12 +17,12 @@ export default function ValveCard({ deviceCode, deviceName, live, info, catalog,
   const sensorBits = live?.sensorBits ?? 0;
   const confirmedPct = live?.confirmedPct ?? 0;
   const flags = live?.flags ?? 0;
-  const stateVal = live?.stateVal ?? 4;
+  const stateVal = live?.valveState ?? live?.stateVal ?? 4;
   const sensorError = !!(flags & 0x01);
-  const sensorOffline = !!(flags & 0x20);
+  const autoMode = !!(flags & 0x10);
 
   const valveState = VALVE_STATES[stateVal] || VALVE_STATES[4];
-  const canControl = isOnline && stateVal !== 5 && stateVal !== 6;
+  const canControl = isOnline && !autoMode && stateVal !== 5 && stateVal !== 6;
 
   return (
     <div className={`bg-white rounded-xl shadow-sm border p-4 transition-all ${
@@ -34,7 +34,10 @@ export default function ValveCard({ deviceCode, deviceName, live, info, catalog,
           <h3 className="font-semibold text-gray-900 text-sm">{deviceName || deviceCode}</h3>
           <p className="text-xs text-gray-400">{deviceCode}</p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5">
+          {autoMode && (
+            <span className="text-[10px] bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded-full font-semibold">AUTO</span>
+          )}
           <span className={`w-2 h-2 rounded-full ${isOnline ? "bg-green-500" : "bg-gray-300"}`} />
           <span className="text-xs text-gray-500">{isOnline ? "Online" : "Offline"}</span>
         </div>

@@ -22,6 +22,7 @@
 #include <Firebase_ESP_Client.h>
 #include <addons/TokenHelper.h>
 #include <MvsConnect.h>
+#include <mvsota_esp32.h>
 #include <FastLED_min.h>
 
 // ══════════════════════════════════════════════════
@@ -72,6 +73,7 @@ const uint8_t* DIP_PCT_TABLE[] = {
 
 Preferences prefs;
 MvsConnect mvs(DEVICE_NAME, FIRMWARE_VERSION);
+MvsOTA mvsota;
 
 FirebaseData fbdo;
 FirebaseAuth fbAuth;
@@ -808,6 +810,9 @@ void setup() {
     setLED(255, 255, 255);
   }
 
+  // MvsOTA
+  mvsota.begin(DEVICE_NAME, FIRMWARE_VERSION, FIRMWARE_CODE);
+
   ledCycleStart = millis();
 }
 
@@ -818,6 +823,7 @@ void setup() {
 void loop() {
   unsigned long now = millis();
   mvs.handle();
+  if (!mvsota.isUpdating()) mvsota.handle();
   processSimulatedSensors();
   handleLED();
 
