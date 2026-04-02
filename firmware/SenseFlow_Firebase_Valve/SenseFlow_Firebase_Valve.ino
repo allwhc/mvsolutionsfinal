@@ -91,8 +91,8 @@ const int DIP_PINS[] = {32, 33, 14, 27, 34, 35};
 
 // Timing
 #define HEARTBEAT_INTERVAL     300000   // 5 minutes
-#define COMMAND_CHECK_INTERVAL  5000    // 5 seconds
-#define CONFIG_CHECK_INTERVAL   5000    // 5 seconds — poll Firebase config
+#define COMMAND_CHECK_INTERVAL 15000    // 15 seconds
+#define CONFIG_CHECK_INTERVAL  30000    // 30 seconds
 #define DIP_DEBOUNCE_MS         2000
 #define FAULT_TIMEOUT_MS        (3UL * 60UL * 1000UL)
 #define FAULT_RETRY_INTERVAL_MS (5UL * 60UL * 1000UL)
@@ -841,47 +841,42 @@ void checkConfig() {
 }
 
 void checkCommands() {
-  String basePath = "devices/" + deviceCode + "/commands/";
+  // Single batch read — 1 Firebase call instead of 5
+  String path = "devices/" + deviceCode + "/commands";
+  if (!Firebase.RTDB.getJSON(&fbdo, path.c_str())) return;
 
-  if (Firebase.RTDB.getBool(&fbdo, (basePath + "refreshRequested").c_str())) {
-    if (fbdo.boolData()) {
-      pushLiveData();
-      Firebase.RTDB.setBool(&fbdo, (basePath + "refreshRequested").c_str(), false);
-    }
+  FirebaseJson &json = fbdo.jsonData();
+  FirebaseJsonData r;
+
+  if (json.get(r, "refreshRequested") && r.type == "boolean" && r.boolValue) {
+    pushLiveData();
+    Firebase.RTDB.setBool(&fbdo, (path + "/refreshRequested").c_str(), false);
   }
   handleLED();
 
-  if (Firebase.RTDB.getBool(&fbdo, (basePath + "openRequested").c_str())) {
-    if (fbdo.boolData()) {
-      Serial.println("[CMD] Firebase open requested");
-      executeValveCommand('O');
-      Firebase.RTDB.setBool(&fbdo, (basePath + "openRequested").c_str(), false);
-      pushLiveData();  // Immediately report new state
-    }
+  if (json.get(r, "openRequested") && r.type == "boolean" && r.boolValue) {
+    Serial.println("[CMD] Firebase open requested");
+    executeValveCommand('O');
+    Firebase.RTDB.setBool(&fbdo, (path + "/openRequested").c_str(), false);
+    pushLiveData();
   }
   handleLED();
 
-  if (Firebase.RTDB.getBool(&fbdo, (basePath + "closeRequested").c_str())) {
-    if (fbdo.boolData()) {
-      Serial.println("[CMD] Firebase close requested");
-      executeValveCommand('C');
-      Firebase.RTDB.setBool(&fbdo, (basePath + "closeRequested").c_str(), false);
-      pushLiveData();
-    }
+  if (json.get(r, "closeRequested") && r.type == "boolean" && r.boolValue) {
+    Serial.println("[CMD] Firebase close requested");
+    executeValveCommand('C');
+    Firebase.RTDB.setBool(&fbdo, (path + "/closeRequested").c_str(), false);
+    pushLiveData();
   }
   handleLED();
 
-  if (Firebase.RTDB.getBool(&fbdo, (basePath + "testRequested").c_str())) {
-    if (fbdo.boolData()) {
-      testBlinkActive = true; testBlinkStart = millis();
-      Firebase.RTDB.setBool(&fbdo, (basePath + "testRequested").c_str(), false);
-    }
+  if (json.get(r, "testRequested") && r.type == "boolean" && r.boolValue) {
+    testBlinkActive = true; testBlinkStart = millis();
+    Firebase.RTDB.setBool(&fbdo, (path + "/testRequested").c_str(), false);
   }
-  if (Firebase.RTDB.getBool(&fbdo, (basePath + "restartRequested").c_str())) {
-    if (fbdo.boolData()) {
-      Firebase.RTDB.setBool(&fbdo, (basePath + "restartRequested").c_str(), false);
-      updateDeviceInfo(false); delay(500); ESP.restart();
-    }
+  if (json.get(r, "restartRequested") && r.type == "boolean" && r.boolValue) {
+    Firebase.RTDB.setBool(&fbdo, (path + "/restartRequested").c_str(), false);
+    updateDeviceInfo(false); delay(500); ESP.restart();
   }
 }
 
