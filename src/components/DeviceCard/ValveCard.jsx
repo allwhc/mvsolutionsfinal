@@ -20,13 +20,16 @@ export default function ValveCard({ deviceCode, deviceName, live, info, catalog,
   const stateVal = live?.valveState ?? live?.stateVal ?? 4;
   const sensorError = !!(flags & 0x01);
   const autoMode = !!(flags & 0x10);
+  const isStreamTest = info?.streamTest === true;
 
   const valveState = VALVE_STATES[stateVal] || VALVE_STATES[4];
   const canControl = isOnline && !autoMode && stateVal !== 5 && stateVal !== 6;
 
   return (
     <div className={`bg-white rounded-xl shadow-sm border p-4 transition-all ${
-      isOnline ? "border-gray-200" : "border-gray-200 opacity-60"
+      isStreamTest
+        ? (isOnline ? "border-purple-400 border-2" : "border-purple-200 border-2 opacity-60")
+        : (isOnline ? "border-gray-200" : "border-gray-200 opacity-60")
     }`}>
       {/* Header */}
       <div className="flex items-center justify-between mb-3">
@@ -35,6 +38,9 @@ export default function ValveCard({ deviceCode, deviceName, live, info, catalog,
           <p className="text-xs text-gray-400">{deviceCode}</p>
         </div>
         <div className="flex items-center gap-1.5">
+          {isStreamTest && (
+            <span className="text-[10px] bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded-full font-semibold">STREAM</span>
+          )}
           {autoMode && (
             <span className="text-[10px] bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded-full font-semibold">AUTO</span>
           )}
