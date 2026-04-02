@@ -69,14 +69,16 @@ export default function ValveCard({ deviceCode, deviceName, live, info, catalog,
         </button>
       </div>
 
-      {/* Tank visualization */}
-      <TankViz
-        confirmedPct={confirmedPct}
-        sensorBits={sensorBits}
-        sensorCount={sensorCount}
-        sensorError={sensorError}
-        sensorType={sensorType}
-      />
+      {/* Tank visualization — only if device has sensors */}
+      {sensorCount > 0 && (
+        <TankViz
+          confirmedPct={confirmedPct}
+          sensorBits={sensorBits}
+          sensorCount={sensorCount}
+          sensorError={sensorError}
+          sensorType={sensorType}
+        />
+      )}
 
       {/* Footer */}
       <div className="flex items-center justify-between mt-3 pt-3 border-t border-gray-100">

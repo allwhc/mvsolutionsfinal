@@ -314,7 +314,7 @@ void printRegistrationInfo() {
   Serial.print("  Code:           "); Serial.println(deviceCode);
   Serial.println("  Class:          VALVE (0x01)");
   Serial.print("  Valve Type:     "); Serial.println(VALVE_TYPE == 24 ? "24V DC" : "230V AC");
-  Serial.print("  Sensor Count:   "); Serial.println(SENSOR_COUNT);
+  Serial.print("  Sensors:        "); Serial.println(SENSOR_COUNT > 0 ? String(SENSOR_COUNT) + " DIP" : "None");
   Serial.print("  Firmware:       "); Serial.println(FIRMWARE_VERSION);
   Serial.print("  MAC:            "); Serial.println(WiFi.macAddress());
   Serial.print("  Auto Mode:      "); Serial.println(autoMode ? "ON" : "OFF");
@@ -392,11 +392,19 @@ void handleLED() {
     }
   } else {
     ledShowingWifi = false;
+    #if SENSOR_COUNT > 0
     if (sensorError) {
       setLED(148, 51, 234);
     } else {
       setLevelColor(confirmedPct);
     }
+    #else
+    // No sensor — show valve state color
+    if (valveState == STATE_OPEN) setLED(0, 200, 0);
+    else if (valveState == STATE_CLOSED) setLED(255, 0, 0);
+    else if (valveState == STATE_FAULT || valveState == STATE_LS_ERROR) setLED(148, 51, 234);
+    else setLED(0, 0, 255);  // Opening/closing/recovery
+    #endif
   }
 }
 
@@ -593,6 +601,8 @@ void handleFaultState(bool openLS, bool closeLS) {
 //  DIP SENSOR LOGIC
 // ══════════════════════════════════════════════════
 
+#if SENSOR_COUNT > 0
+
 int countConsecutive(uint8_t bits, int count) {
   int consecutive = 0;
   for (int i = 0; i < count; i++) {
@@ -637,10 +647,17 @@ bool isValidPercent(uint8_t pct) {
   return false;
 }
 
+#else
+// No sensors — stubs
+void validateSensors() {}
+bool isValidPercent(uint8_t) { return true; }
+#endif
+
 // ══════════════════════════════════════════════════
 //  AUTO MODE EVALUATOR
 // ══════════════════════════════════════════════════
 
+#if SENSOR_COUNT > 0
 void evaluateAutoMode() {
   if (!autoMode) return;
   if (sensorError) return;
@@ -657,6 +674,9 @@ void evaluateAutoMode() {
     return;
   }
 }
+#else
+void evaluateAutoMode() {} // No sensors — auto mode handled externally
+#endif
 
 // ══════════════════════════════════════════════════
 //  FIREBASE
@@ -952,7 +972,8 @@ h2{font-size:13px;font-weight:600;color:#94a3b8;margin-bottom:8px}
   html += "<a href='/api/valve?cmd=close'><button class='btn btn-red'>CLOSE</button></a>";
   html += "</div></div>";
 
-  // Water level
+  // Water level (only if sensors present)
+  #if SENSOR_COUNT > 0
   html += "<div class='card'>";
   html += "<h2>WATER LEVEL</h2>";
   html += "<div style='font-size:28px;font-weight:bold;text-align:center;margin:6px 0'>" + String(confirmedPct) + "%</div>";
@@ -964,6 +985,7 @@ h2{font-size:13px;font-weight:600;color:#94a3b8;margin-bottom:8px}
   html += "</div>";
   if (sensorError) html += "<div style='color:#a855f7;font-size:12px;text-align:center;font-weight:600'>SENSOR ERROR</div>";
   html += "</div>";
+  #endif
 
   // Auto mode config
   html += "<div class='card'>";
@@ -1030,9 +1052,11 @@ void setup() {
   digitalWrite(LED_CLOSE, LOW);
 
   // DIP sensor pins
+  #if SENSOR_COUNT > 0
   for (int i = 0; i < SENSOR_COUNT; i++) {
     pinMode(DIP_PINS[i], INPUT_PULLDOWN);
   }
+  #endif
 
   // Addressable LED
   FastLED_min<LED_PIN>.addLeds(rgbLeds, 1);
@@ -1213,9 +1237,11 @@ void loop() {
   bool btnRev  = updateDebounce(dbBtnRev, rawBtnRev, DEBOUNCE_BTN_MS);
 
   // Debounce DIP sensors
+  #if SENSOR_COUNT > 0
   for (int i = 0; i < SENSOR_COUNT; i++) {
     levelActive[i] = updateDebounce(dbLevel[i], digitalRead(DIP_PINS[i]), DIP_DEBOUNCE_MS);
   }
+  #endif
 
   validateSensors();
   handleLED();
