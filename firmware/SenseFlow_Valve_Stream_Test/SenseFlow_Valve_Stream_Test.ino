@@ -532,7 +532,7 @@ void handleStream() {
 
   // ── Handle bulk config write (when web sets entire /config/ at once) ──
   else if (path == "/config" && type == "json") {
-    FirebaseJson &json = fbdoStream.jsonData();
+    FirebaseJson json = fbdoStream.jsonData();
     FirebaseJsonData r;
     bool changed = false;
     if (json.get(r, "autoMode") && r.type == "boolean" && r.boolValue != autoMode) {

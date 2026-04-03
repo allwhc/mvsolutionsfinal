@@ -523,7 +523,7 @@ void pushConfigToFirebase() {
 void checkConfig() {
   String path = "devices/" + deviceCode + "/config";
   if (Firebase.RTDB.getJSON(&fbdo, path.c_str())) {
-    FirebaseJson &json = fbdo.jsonData();
+    FirebaseJson json = fbdo.jsonData();
     FirebaseJsonData result;
     bool changed = false;
 
@@ -548,7 +548,7 @@ void checkCommands() {
   String path = "devices/" + deviceCode + "/commands";
   if (!Firebase.RTDB.getJSON(&fbdo, path.c_str())) return;
 
-  FirebaseJson &json = fbdo.jsonData();
+  FirebaseJson json = fbdo.jsonData();
   FirebaseJsonData r;
 
   if (json.get(r, "refreshRequested") && r.type == "boolean" && r.boolValue) {
