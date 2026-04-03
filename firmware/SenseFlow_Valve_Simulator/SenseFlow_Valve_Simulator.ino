@@ -521,63 +521,64 @@ void pushConfigToFirebase() {
 }
 
 void checkConfig() {
-  String path = "devices/" + deviceCode + "/config";
-  if (Firebase.RTDB.getJSON(&fbdo, path.c_str())) {
-    FirebaseJson json = fbdo.jsonData();
-    FirebaseJsonData result;
-    bool changed = false;
+  String basePath = "devices/" + deviceCode + "/config/";
+  bool changed = false;
 
-    if (json.get(result, "autoMode") && result.type == "boolean") {
-      bool v = result.boolValue;
-      if (v != autoMode) { autoMode = v; changed = true; Serial.printf("[CONFIG] autoMode=%s\n", autoMode ? "ON" : "OFF"); }
-    }
-    if (json.get(result, "minPercent") && result.type == "int") {
-      uint8_t v = (uint8_t)result.intValue;
-      if (v != minPercent && v < maxPercent) { minPercent = v; changed = true; }
-    }
-    if (json.get(result, "maxPercent") && result.type == "int") {
-      uint8_t v = (uint8_t)result.intValue;
-      if (v != maxPercent && v > minPercent) { maxPercent = v; changed = true; }
-    }
-    if (changed) saveConfig();
+  if (Firebase.RTDB.getBool(&fbdo, (basePath + "autoMode").c_str())) {
+    bool v = fbdo.boolData();
+    if (v != autoMode) { autoMode = v; changed = true; Serial.printf("[CONFIG] autoMode=%s\n", autoMode ? "ON" : "OFF"); }
   }
+  if (Firebase.RTDB.getInt(&fbdo, (basePath + "minPercent").c_str())) {
+    uint8_t v = (uint8_t)fbdo.intData();
+    if (v != minPercent && v < maxPercent) { minPercent = v; changed = true; }
+  }
+  if (Firebase.RTDB.getInt(&fbdo, (basePath + "maxPercent").c_str())) {
+    uint8_t v = (uint8_t)fbdo.intData();
+    if (v != maxPercent && v > minPercent) { maxPercent = v; changed = true; }
+  }
+  if (changed) saveConfig();
 }
 
 void checkCommands() {
-  // Single batch read — 1 Firebase call instead of 5
-  String path = "devices/" + deviceCode + "/commands";
-  if (!Firebase.RTDB.getJSON(&fbdo, path.c_str())) return;
+  String basePath = "devices/" + deviceCode + "/commands/";
 
-  FirebaseJson json = fbdo.jsonData();
-  FirebaseJsonData r;
-
-  if (json.get(r, "refreshRequested") && r.type == "boolean" && r.boolValue) {
-    pushLiveData();
-    Firebase.RTDB.setBool(&fbdo, (path + "/refreshRequested").c_str(), false);
+  if (Firebase.RTDB.getBool(&fbdo, (basePath + "refreshRequested").c_str())) {
+    if (fbdo.boolData()) {
+      pushLiveData();
+      Firebase.RTDB.setBool(&fbdo, (basePath + "refreshRequested").c_str(), false);
+    }
   }
   handleLED();
 
-  if (json.get(r, "openRequested") && r.type == "boolean" && r.boolValue) {
-    executeValveCommand('O');
-    Firebase.RTDB.setBool(&fbdo, (path + "/openRequested").c_str(), false);
-    pushLiveData();
+  if (Firebase.RTDB.getBool(&fbdo, (basePath + "openRequested").c_str())) {
+    if (fbdo.boolData()) {
+      executeValveCommand('O');
+      Firebase.RTDB.setBool(&fbdo, (basePath + "openRequested").c_str(), false);
+      pushLiveData();
+    }
   }
   handleLED();
 
-  if (json.get(r, "closeRequested") && r.type == "boolean" && r.boolValue) {
-    executeValveCommand('C');
-    Firebase.RTDB.setBool(&fbdo, (path + "/closeRequested").c_str(), false);
-    pushLiveData();
+  if (Firebase.RTDB.getBool(&fbdo, (basePath + "closeRequested").c_str())) {
+    if (fbdo.boolData()) {
+      executeValveCommand('C');
+      Firebase.RTDB.setBool(&fbdo, (basePath + "closeRequested").c_str(), false);
+      pushLiveData();
+    }
   }
   handleLED();
 
-  if (json.get(r, "testRequested") && r.type == "boolean" && r.boolValue) {
-    testBlinkActive = true; testBlinkStart = millis();
-    Firebase.RTDB.setBool(&fbdo, (path + "/testRequested").c_str(), false);
+  if (Firebase.RTDB.getBool(&fbdo, (basePath + "testRequested").c_str())) {
+    if (fbdo.boolData()) {
+      testBlinkActive = true; testBlinkStart = millis();
+      Firebase.RTDB.setBool(&fbdo, (basePath + "testRequested").c_str(), false);
+    }
   }
-  if (json.get(r, "restartRequested") && r.type == "boolean" && r.boolValue) {
-    Firebase.RTDB.setBool(&fbdo, (path + "/restartRequested").c_str(), false);
-    updateDeviceInfo(false); delay(500); ESP.restart();
+  if (Firebase.RTDB.getBool(&fbdo, (basePath + "restartRequested").c_str())) {
+    if (fbdo.boolData()) {
+      Firebase.RTDB.setBool(&fbdo, (basePath + "restartRequested").c_str(), false);
+      updateDeviceInfo(false); delay(500); ESP.restart();
+    }
   }
 }
 
