@@ -45,7 +45,8 @@ export default function ValveCard({ deviceCode, deviceName, live, info, catalog,
   }, [pendingCmd]);
 
   const valveState = VALVE_STATES[stateVal] || VALVE_STATES[4];
-  const canControl = isOnline && !autoMode && stateVal !== 5 && stateVal !== 6;
+  const isBusy = stateVal === 0 || stateVal === 1 || stateVal === 3; // recovery, opening, closing
+  const canControl = isOnline && !autoMode && !isBusy && !pendingCmd && stateVal !== 5 && stateVal !== 6;
 
   return (
     <div className={`bg-white rounded-xl shadow-sm border p-4 transition-all ${
@@ -91,7 +92,7 @@ export default function ValveCard({ deviceCode, deviceName, live, info, catalog,
       <div className="flex gap-2 mb-3">
         <button
           onClick={() => { setPendingCmd("open"); sendValveCommand(deviceCode, "open"); }}
-          disabled={!canControl || !!pendingCmd || stateVal === 2 || stateVal === 1}
+          disabled={!canControl || stateVal === 2}
           className="flex-1 bg-green-500 text-white py-1.5 rounded-lg text-xs font-medium hover:bg-green-600 disabled:opacity-40 disabled:cursor-not-allowed"
         >
           {pendingCmd === "open" ? (
@@ -103,7 +104,7 @@ export default function ValveCard({ deviceCode, deviceName, live, info, catalog,
         </button>
         <button
           onClick={() => { setPendingCmd("close"); sendValveCommand(deviceCode, "close"); }}
-          disabled={!canControl || !!pendingCmd || stateVal === 4 || stateVal === 3}
+          disabled={!canControl || stateVal === 4}
           className="flex-1 bg-red-500 text-white py-1.5 rounded-lg text-xs font-medium hover:bg-red-600 disabled:opacity-40 disabled:cursor-not-allowed"
         >
           {pendingCmd === "close" ? (
