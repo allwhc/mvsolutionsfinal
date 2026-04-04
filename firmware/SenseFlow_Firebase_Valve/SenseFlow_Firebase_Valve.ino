@@ -1276,6 +1276,7 @@ void loop() {
         Serial.println("[ERROR] Both LS HIGH - wiring fault");
         valveState = STATE_LS_ERROR;
         setRelays(false, false);
+        if (firebaseReady) { pushLiveData(); handleLED(); }  // Report LS error
       }
       updateValveLEDs();
       return;
@@ -1288,6 +1289,8 @@ void loop() {
     if (valveState == STATE_FAULT) {
       handleFaultState(openLS, closeLS);
       updateValveLEDs();
+      // Push fault state to Firebase (since return skips normal push)
+      if (firebaseReady && hasDataChanged()) { pushLiveData(); handleLED(); }
       return;
     }
     // Fault timer — only watch the LS we're traveling toward
@@ -1306,6 +1309,7 @@ void loop() {
       faultRetryTimerStart = millis();
       setRelays(false, false);
       updateValveLEDs();
+      if (firebaseReady) { pushLiveData(); handleLED(); }  // Immediately report fault
       return;
     }
     if (valveState == STATE_RECOVERY) {
@@ -1332,6 +1336,7 @@ void loop() {
     if (valveState == STATE_FAULT) {
       handleFaultState(openLS, closeLS);
       updateValveLEDs();
+      if (firebaseReady && hasDataChanged()) { pushLiveData(); handleLED(); }
       return;
     }
     if (faultTimerExpired()) {
@@ -1342,6 +1347,7 @@ void loop() {
       faultRetryTimerStart = millis();
       setRelays(false, false);
       updateValveLEDs();
+      if (firebaseReady) { pushLiveData(); handleLED(); }
       return;
     }
     if (valveState == STATE_RECOVERY || valveState == STATE_OPENING) {
