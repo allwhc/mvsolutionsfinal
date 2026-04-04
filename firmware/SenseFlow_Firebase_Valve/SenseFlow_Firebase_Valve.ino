@@ -1284,7 +1284,14 @@ void loop() {
       updateValveLEDs();
       return;
     }
-    updateFaultTimer(openLS, closeLS);
+    // Fault timer — only watch the LS we're traveling toward
+    if (valveState == STATE_OPENING || valveState == STATE_RECOVERY) {
+      updateFaultTimer(openLS, false);   // only care about open LS
+    } else if (valveState == STATE_CLOSING) {
+      updateFaultTimer(false, closeLS);  // only care about close LS
+    } else {
+      updateFaultTimer(openLS, closeLS); // idle — either LS resets timer
+    }
     if (faultTimerExpired()) {
       Serial.println("[FAULT] No LS 3min - VALVE FAULTY");
       valveState = STATE_FAULT;
