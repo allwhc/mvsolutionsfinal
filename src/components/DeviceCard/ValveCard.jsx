@@ -20,6 +20,7 @@ export default function ValveCard({ deviceCode, deviceName, live, info, catalog,
   const flags = live?.flags ?? 0;
   const stateVal = live?.valveState ?? live?.stateVal ?? 4;
   const sensorError = !!(flags & 0x01);
+  const faultRetrying = !!(flags & 0x02);
   const autoMode = !!(flags & 0x10);
   const isStreamTest = info?.streamTest === true;
 
@@ -79,6 +80,18 @@ export default function ValveCard({ deviceCode, deviceName, live, info, catalog,
           {valveState.label}
         </span>
       </div>
+
+      {/* Fault / LS Error warning */}
+      {stateVal === 5 && (
+        <div className="bg-red-50 border border-red-200 rounded-lg px-3 py-2 mb-2 text-xs text-red-700 font-medium">
+          Valve Fault — {faultRetrying ? "Retrying..." : "Waiting for retry"}
+        </div>
+      )}
+      {stateVal === 6 && (
+        <div className="bg-purple-50 border border-purple-200 rounded-lg px-3 py-2 mb-2 text-xs text-purple-700 font-medium">
+          Limit Switch Error — Check wiring
+        </div>
+      )}
 
       {/* Auto mode thresholds */}
       {autoMode && valveConfig && (
