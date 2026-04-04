@@ -24,11 +24,25 @@ export default function ValveCard({ deviceCode, deviceName, live, info, catalog,
   const isStreamTest = info?.streamTest === true;
 
   const [valveConfig, setValveConfig] = useState(null);
+  const [pendingCmd, setPendingCmd] = useState(null); // "open" or "close"
 
   useEffect(() => {
     const unsub = listenToValveConfig(deviceCode, (cfg) => setValveConfig(cfg));
     return () => unsub();
   }, [deviceCode]);
+
+  // Clear pending when valve state changes to the expected state
+  useEffect(() => {
+    if (pendingCmd === "open" && (stateVal === 1 || stateVal === 2)) setPendingCmd(null);
+    if (pendingCmd === "close" && (stateVal === 3 || stateVal === 4)) setPendingCmd(null);
+  }, [stateVal, pendingCmd]);
+
+  // Timeout — clear pending after 20s even if no response
+  useEffect(() => {
+    if (!pendingCmd) return;
+    const t = setTimeout(() => setPendingCmd(null), 20000);
+    return () => clearTimeout(t);
+  }, [pendingCmd]);
 
   const valveState = VALVE_STATES[stateVal] || VALVE_STATES[4];
   const canControl = isOnline && !autoMode && stateVal !== 5 && stateVal !== 6;
@@ -76,18 +90,28 @@ export default function ValveCard({ deviceCode, deviceName, live, info, catalog,
       {/* Valve controls */}
       <div className="flex gap-2 mb-3">
         <button
-          onClick={() => sendValveCommand(deviceCode, "open")}
-          disabled={!canControl || stateVal === 2 || stateVal === 1}
+          onClick={() => { setPendingCmd("open"); sendValveCommand(deviceCode, "open"); }}
+          disabled={!canControl || !!pendingCmd || stateVal === 2 || stateVal === 1}
           className="flex-1 bg-green-500 text-white py-1.5 rounded-lg text-xs font-medium hover:bg-green-600 disabled:opacity-40 disabled:cursor-not-allowed"
         >
-          Open
+          {pendingCmd === "open" ? (
+            <span className="flex items-center justify-center gap-1">
+              <span className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" />
+              Opening...
+            </span>
+          ) : "Open"}
         </button>
         <button
-          onClick={() => sendValveCommand(deviceCode, "close")}
-          disabled={!canControl || stateVal === 4 || stateVal === 3}
+          onClick={() => { setPendingCmd("close"); sendValveCommand(deviceCode, "close"); }}
+          disabled={!canControl || !!pendingCmd || stateVal === 4 || stateVal === 3}
           className="flex-1 bg-red-500 text-white py-1.5 rounded-lg text-xs font-medium hover:bg-red-600 disabled:opacity-40 disabled:cursor-not-allowed"
         >
-          Close
+          {pendingCmd === "close" ? (
+            <span className="flex items-center justify-center gap-1">
+              <span className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" />
+              Closing...
+            </span>
+          ) : "Close"}
         </button>
       </div>
 
