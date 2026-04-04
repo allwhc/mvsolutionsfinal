@@ -167,6 +167,7 @@ unsigned long faultRetryTimerStart   = 0;
 bool          faultRetrying          = false;
 unsigned long faultRetryAttemptStart = 0;
 int           faultRetryCount        = 0;
+char          faultDirection         = 'O';  // 'O'=was opening, 'C'=was closing
 
 // Both-button hold
 unsigned long bothBtnHoldStart = 0;
@@ -562,15 +563,16 @@ bool faultTimerExpired() {
 }
 
 void handleFaultState(bool openLS, bool closeLS) {
-  if (openLS && !closeLS) {
-    Serial.println("[FAULT] Open LS - exiting - STATE_OPEN");
+  // Only exit fault if the TARGET LS triggers (the direction we were trying to go)
+  if (faultDirection == 'O' && openLS) {
+    Serial.println("[FAULT] Open LS confirmed - exiting - STATE_OPEN");
     setRelays(false, false);
     faultRetrying = false; faultRetryCount = 0; faultTimerActive = false;
     valveState = STATE_OPEN;
     return;
   }
-  if (closeLS && !openLS) {
-    Serial.println("[FAULT] Close LS - exiting - STATE_CLOSED");
+  if (faultDirection == 'C' && closeLS) {
+    Serial.println("[FAULT] Close LS confirmed - exiting - STATE_CLOSED");
     setRelays(false, false);
     faultRetrying = false; faultRetryCount = 0; faultTimerActive = false;
     valveState = STATE_CLOSED;
@@ -583,11 +585,15 @@ void handleFaultState(bool openLS, bool closeLS) {
       faultRetryAttemptStart = millis();
       faultTimerActive = false;
       faultTimerStart  = 0;
-      Serial.printf("[FAULT] Retry #%d\n", faultRetryCount);
-      setRelays(true, false);
+      Serial.printf("[FAULT] Retry #%d direction=%c\n", faultRetryCount, faultDirection);
+      // Retry in the SAME direction that failed
+      if (faultDirection == 'C') setRelays(false, true);
+      else setRelays(true, false);
     }
   } else {
-    setRelays(true, false);
+    // Keep relay on during retry
+    if (faultDirection == 'C') setRelays(false, true);
+    else setRelays(true, false);
     if ((millis() - faultRetryAttemptStart) >= FAULT_TIMEOUT_MS) {
       Serial.printf("[FAULT] Retry #%d failed\n", faultRetryCount);
       setRelays(false, false);
@@ -1293,7 +1299,8 @@ void loop() {
       updateFaultTimer(openLS, closeLS); // idle — either LS resets timer
     }
     if (faultTimerExpired()) {
-      Serial.println("[FAULT] No LS 3min - VALVE FAULTY");
+      faultDirection = (valveState == STATE_CLOSING) ? 'C' : 'O';
+      Serial.printf("[FAULT] No LS 3min - VALVE FAULTY (direction=%c)\n", faultDirection);
       valveState = STATE_FAULT;
       faultRetrying = false; faultRetryCount = 0;
       faultRetryTimerStart = millis();
@@ -1328,7 +1335,8 @@ void loop() {
       return;
     }
     if (faultTimerExpired()) {
-      Serial.println("[FAULT] No LS confirm - VALVE FAULTY");
+      faultDirection = (valveState == STATE_CLOSING) ? 'C' : 'O';
+      Serial.printf("[FAULT] No LS confirm - VALVE FAULTY (direction=%c)\n", faultDirection);
       valveState = STATE_FAULT;
       faultRetrying = false; faultRetryCount = 0;
       faultRetryTimerStart = millis();
