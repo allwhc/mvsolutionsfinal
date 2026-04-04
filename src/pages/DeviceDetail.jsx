@@ -303,7 +303,7 @@ export default function DeviceDetail() {
             <div className="bg-blue-50 rounded-lg p-3 space-y-2">
               <p className="text-xs text-blue-600 font-semibold">Auto Thresholds</p>
               <div className="flex items-center gap-2 text-sm">
-                <span className="text-gray-600 w-24">Open below</span>
+                <span className="text-gray-600 w-24">Open at ≤</span>
                 <select
                   value={valveConfig?.minPercent ?? 25}
                   onChange={async (e) => {
@@ -317,7 +317,7 @@ export default function DeviceDetail() {
                 </select>
               </div>
               <div className="flex items-center gap-2 text-sm">
-                <span className="text-gray-600 w-24">Close above</span>
+                <span className="text-gray-600 w-24">Close at ≥</span>
                 <select
                   value={valveConfig?.maxPercent ?? 75}
                   onChange={async (e) => {

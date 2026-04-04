@@ -1,5 +1,6 @@
+import { useState, useEffect } from "react";
 import TankViz, { formatTimestamp } from "./TankViz";
-import { sendRefreshCommand, sendValveCommand } from "../../firebase/rtdb";
+import { sendRefreshCommand, sendValveCommand, listenToValveConfig } from "../../firebase/rtdb";
 
 const VALVE_STATES = {
   0: { label: "Recovery", color: "text-yellow-600" },
@@ -21,6 +22,13 @@ export default function ValveCard({ deviceCode, deviceName, live, info, catalog,
   const sensorError = !!(flags & 0x01);
   const autoMode = !!(flags & 0x10);
   const isStreamTest = info?.streamTest === true;
+
+  const [valveConfig, setValveConfig] = useState(null);
+
+  useEffect(() => {
+    const unsub = listenToValveConfig(deviceCode, (cfg) => setValveConfig(cfg));
+    return () => unsub();
+  }, [deviceCode]);
 
   const valveState = VALVE_STATES[stateVal] || VALVE_STATES[4];
   const canControl = isOnline && !autoMode && stateVal !== 5 && stateVal !== 6;
@@ -56,6 +64,14 @@ export default function ValveCard({ deviceCode, deviceName, live, info, catalog,
           {valveState.label}
         </span>
       </div>
+
+      {/* Auto mode thresholds */}
+      {autoMode && valveConfig && (
+        <div className="flex items-center justify-between mb-2 px-1 text-[11px] text-blue-600">
+          <span>Open at ≤ {valveConfig.minPercent ?? 25}%</span>
+          <span>Close at ≥ {valveConfig.maxPercent ?? 75}%</span>
+        </div>
+      )}
 
       {/* Valve controls */}
       <div className="flex gap-2 mb-3">
