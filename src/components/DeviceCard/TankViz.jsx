@@ -63,7 +63,7 @@ export default function TankViz({ confirmedPct, sensorBits, sensorCount, sensorE
     <div className="flex items-center justify-center gap-2 my-2">
       {/* DIP sensor dots (left side) */}
       {sensorType === 1 && (
-        <div className="flex flex-col justify-between h-16 py-1">
+        <div className={`flex flex-col ${count === 1 ? "justify-center" : "justify-between"} h-16 py-1`}>
           {sensors.map((s, i) => (
             <div
               key={i}
@@ -93,8 +93,8 @@ export default function TankViz({ confirmedPct, sensorBits, sensorCount, sensorE
         />
         {/* Percentage text */}
         <div className="absolute inset-0 flex items-center justify-center">
-          <span className="text-xs font-bold text-gray-900 drop-shadow-[0_1px_1px_rgba(255,255,255,0.5)]">
-            {sensorError ? "ERR" : `${pct}%`}
+          <span className={`font-bold drop-shadow-[0_1px_1px_rgba(255,255,255,0.5)] ${count === 1 ? "text-[9px]" : "text-xs"} text-gray-900`}>
+            {sensorError ? "ERR" : count === 1 ? (pct > 0 ? "Present" : "Empty") : `${pct}%`}
           </span>
         </div>
       </div>
