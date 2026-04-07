@@ -132,23 +132,27 @@ export default function DeviceDetail() {
               <input type="text" value={nameInput} onChange={(e) => setNameInput(e.target.value)}
                 maxLength={30} autoFocus
                 className="px-2 py-1 border border-gray-300 rounded text-sm w-40"
-                onKeyDown={(e) => {
+                onKeyDown={async (e) => {
                   if (e.key === "Enter") {
                     const trimmed = nameInput.trim();
                     if (trimmed) {
-                      updateDoc(doc(db, "subscriptions", user.uid, "devices", code), { deviceName: trimmed });
+                      await updateDoc(doc(db, "subscriptions", user.uid, "devices", code), { deviceName: trimmed });
+                      if (isOwner) await updateDoc(doc(db, "deviceCatalog", code), { deviceName: trimmed });
                       setDeviceName(trimmed);
+                      if (isOwner) setCatalog({ ...catalog, deviceName: trimmed });
                     }
                     setEditingName(false);
                   }
                   if (e.key === "Escape") setEditingName(false);
                 }}
               />
-              <button onClick={() => {
+              <button onClick={async () => {
                 const trimmed = nameInput.trim();
                 if (trimmed) {
-                  updateDoc(doc(db, "subscriptions", user.uid, "devices", code), { deviceName: trimmed });
+                  await updateDoc(doc(db, "subscriptions", user.uid, "devices", code), { deviceName: trimmed });
+                  if (isOwner) await updateDoc(doc(db, "deviceCatalog", code), { deviceName: trimmed });
                   setDeviceName(trimmed);
+                  if (isOwner) setCatalog({ ...catalog, deviceName: trimmed });
                 }
                 setEditingName(false);
               }} className="text-xs text-blue-600 hover:underline">Save</button>
@@ -159,6 +163,7 @@ export default function DeviceDetail() {
               <span className="text-sm font-semibold text-gray-900">{deviceName || catalog.deviceName || code}</span>
               <button onClick={() => { setNameInput(deviceName || catalog.deviceName || ""); setEditingName(true); }}
                 className="text-xs text-blue-600 hover:underline">Edit</button>
+              {isOwner && <span className="text-[10px] text-gray-400">(changes for all)</span>}
             </div>
           )}
         </div>
