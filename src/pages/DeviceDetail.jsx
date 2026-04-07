@@ -163,7 +163,6 @@ export default function DeviceDetail() {
               <span className="text-sm font-semibold text-gray-900">{deviceName || catalog.deviceName || code}</span>
               <button onClick={() => { setNameInput(deviceName || catalog.deviceName || ""); setEditingName(true); }}
                 className="text-xs text-blue-600 hover:underline">Edit</button>
-              {isOwner && <span className="text-[10px] text-gray-400">(changes for all)</span>}
             </div>
           )}
         </div>
