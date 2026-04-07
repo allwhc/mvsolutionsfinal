@@ -31,6 +31,9 @@ export default function DeviceDetail() {
   const [alertHighPct, setAlertHighPct] = useState("");
   const [alertError, setAlertError] = useState("");
   const [valveConfig, setValveConfigState] = useState(null);
+  const [deviceName, setDeviceName] = useState("");
+  const [editingName, setEditingName] = useState(false);
+  const [nameInput, setNameInput] = useState("");
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -54,6 +57,7 @@ export default function DeviceDetail() {
           setTankCapacityLitres(subData.tankCapacityLitres || 0);
           setAlertLowPct(subData.alertLowPct ?? "");
           setAlertHighPct(subData.alertHighPct ?? "");
+          setDeviceName(subData.deviceName || "");
         }
       }
       setLoading(false);
@@ -116,8 +120,49 @@ export default function DeviceDetail() {
         &larr; Back to Dashboard
       </button>
 
-      <DeviceCard deviceCode={code} deviceName={catalog.deviceName || code}
+      <DeviceCard deviceCode={code} deviceName={deviceName || catalog.deviceName || code}
         live={live} info={info} catalog={catalog} isOnline={isOnline} />
+
+      {/* Device Name — editable */}
+      <div className="bg-white rounded-xl shadow-sm border border-gray-200 mt-4 p-4">
+        <div className="flex items-center justify-between">
+          <span className="text-sm text-gray-500">Device Name</span>
+          {editingName ? (
+            <div className="flex items-center gap-2">
+              <input type="text" value={nameInput} onChange={(e) => setNameInput(e.target.value)}
+                maxLength={30} autoFocus
+                className="px-2 py-1 border border-gray-300 rounded text-sm w-40"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    const trimmed = nameInput.trim();
+                    if (trimmed) {
+                      updateDoc(doc(db, "subscriptions", user.uid, "devices", code), { deviceName: trimmed });
+                      setDeviceName(trimmed);
+                    }
+                    setEditingName(false);
+                  }
+                  if (e.key === "Escape") setEditingName(false);
+                }}
+              />
+              <button onClick={() => {
+                const trimmed = nameInput.trim();
+                if (trimmed) {
+                  updateDoc(doc(db, "subscriptions", user.uid, "devices", code), { deviceName: trimmed });
+                  setDeviceName(trimmed);
+                }
+                setEditingName(false);
+              }} className="text-xs text-blue-600 hover:underline">Save</button>
+              <button onClick={() => setEditingName(false)} className="text-xs text-gray-400 hover:underline">Cancel</button>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-semibold text-gray-900">{deviceName || catalog.deviceName || code}</span>
+              <button onClick={() => { setNameInput(deviceName || catalog.deviceName || ""); setEditingName(true); }}
+                className="text-xs text-blue-600 hover:underline">Edit</button>
+            </div>
+          )}
+        </div>
+      </div>
 
       {/* Device info */}
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 mt-4 p-4">
