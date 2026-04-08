@@ -1462,33 +1462,54 @@ void loop() {
 
   // Serial commands
   if (Serial.available()) {
-    char cmd = Serial.read();
-    if (cmd == '\n' || cmd == '\r') return;
-    switch (cmd) {
-      case 'O': case 'o': executeValveCommand('O'); Serial.println("Opening..."); break;
-      case 'C': case 'c': executeValveCommand('C'); Serial.println("Closing..."); break;
-      case 'S': case 's':
-        Serial.println("\n--- Valve Status ---");
-        Serial.println("Code:       " + deviceCode);
-        Serial.println("Valve:      " + stateName(valveState));
-        Serial.printf("Level:      %d%% bits=%d error=%s\n", confirmedPct, sensorBits, sensorError ? "YES" : "No");
-        Serial.printf("Auto:       %s  min=%d%% max=%d%%\n", autoMode ? "ON" : "OFF", minPercent, maxPercent);
-        Serial.printf("Relays:     fwd=%s rev=%s\n", currentRelayFwd ? "ON" : "OFF", currentRelayRev ? "ON" : "OFF");
-        Serial.println("Firebase:   " + String(firebaseReady ? "Ready" : "Not ready"));
-        Serial.println("WiFi:       " + mvs.getWiFiStatus());
-        Serial.println("IP:         " + WiFi.localIP().toString());
-        Serial.println("Uptime:     " + String(millis() / 1000) + "s");
-        Serial.println("--------------------\n");
-        break;
-      case 'R': case 'r':
-        if (valveState == STATE_FAULT || valveState == STATE_LS_ERROR) {
-          faultRetrying = false; faultRetryCount = 0; faultTimerActive = false;
-          valveState = STATE_RECOVERY;
-          setRelays(true, false);
-          Serial.println("Manual reset - recovery");
-        }
-        break;
-      default: Serial.println("O=open C=close S=status R=reset"); break;
+    String line = Serial.readStringUntil('\n');
+    line.trim();
+    if (line.length() == 0) return;
+    String upper = line; upper.toUpperCase();
+
+    if (upper.startsWith("WIFI ")) {
+      String params = line.substring(5);
+      int sp = params.indexOf(' ');
+      String ssid = sp > 0 ? params.substring(0, sp) : params;
+      String pass = sp > 0 ? params.substring(sp + 1) : "";
+      ssid.trim(); pass.trim();
+      if (ssid.length() == 0) { Serial.println("Usage: WIFI <ssid> <password>"); return; }
+      Serial.println("Setting WiFi: " + ssid);
+      Preferences wp; wp.begin("mvsconnect", false);
+      wp.putString("ssid", ssid); wp.putString("password", pass); wp.putBool("valid", true); wp.end();
+      Serial.println("Saved. Restarting...");
+      delay(500); ESP.restart();
+    }
+    else if (upper == "ADMIN") { printRegistrationInfo(); }
+    else if (upper == "RESET_WIFI") { mvs.clearSavedWiFi(); delay(500); ESP.restart(); }
+    else {
+      char cmd = line.charAt(0);
+      switch (cmd) {
+        case 'O': case 'o': executeValveCommand('O'); Serial.println("Opening..."); break;
+        case 'C': case 'c': executeValveCommand('C'); Serial.println("Closing..."); break;
+        case 'S': case 's':
+          Serial.println("\n--- Valve Status ---");
+          Serial.println("Code:       " + deviceCode);
+          Serial.println("Valve:      " + stateName(valveState));
+          Serial.printf("Level:      %d%% bits=%d error=%s\n", confirmedPct, sensorBits, sensorError ? "YES" : "No");
+          Serial.printf("Auto:       %s  min=%d%% max=%d%%\n", autoMode ? "ON" : "OFF", minPercent, maxPercent);
+          Serial.printf("Relays:     fwd=%s rev=%s\n", currentRelayFwd ? "ON" : "OFF", currentRelayRev ? "ON" : "OFF");
+          Serial.println("Firebase:   " + String(firebaseReady ? "Ready" : "Not ready"));
+          Serial.println("WiFi:       " + mvs.getWiFiStatus());
+          Serial.println("IP:         " + WiFi.localIP().toString());
+          Serial.println("Uptime:     " + String(millis() / 1000) + "s");
+          Serial.println("--------------------\n");
+          break;
+        case 'R': case 'r':
+          if (valveState == STATE_FAULT || valveState == STATE_LS_ERROR) {
+            faultRetrying = false; faultRetryCount = 0; faultTimerActive = false;
+            valveState = STATE_RECOVERY;
+            setRelays(true, false);
+            Serial.println("Manual reset - recovery");
+          }
+          break;
+        default: Serial.println("O=open C=close S=status R=reset WIFI ADMIN RESET_WIFI"); break;
+      }
     }
   }
 }

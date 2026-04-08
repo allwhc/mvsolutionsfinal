@@ -372,6 +372,25 @@ export default function AdminDevices() {
               </button>
             </div>
           )}
+          {/* WiFi Config via Serial */}
+          <div className="bg-gray-800 rounded-lg p-3 mt-3">
+            <p className="text-gray-400 text-xs font-semibold mb-2">WiFi Setup via Serial</p>
+            <div className="flex gap-2">
+              <input type="text" id="serial-wifi-ssid" placeholder="SSID"
+                className="flex-1 px-3 py-1.5 bg-gray-700 text-white border border-gray-600 rounded text-xs font-mono" />
+              <input type="password" id="serial-wifi-pass" placeholder="Password"
+                className="flex-1 px-3 py-1.5 bg-gray-700 text-white border border-gray-600 rounded text-xs font-mono" />
+              <button onClick={() => {
+                const ssid = document.getElementById("serial-wifi-ssid").value.trim();
+                const pass = document.getElementById("serial-wifi-pass").value;
+                if (!ssid) { alert("SSID required"); return; }
+                sendSerialCmd("WIFI " + ssid + (pass ? " " + pass : ""));
+              }} className="px-4 py-1.5 bg-blue-600 text-white rounded text-xs font-medium hover:bg-blue-700 whitespace-nowrap">
+                Send WiFi
+              </button>
+            </div>
+            <p className="text-gray-500 text-[10px] mt-1">Device will save credentials and restart automatically</p>
+          </div>
         </div>
       )}
 
