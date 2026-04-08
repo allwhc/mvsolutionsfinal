@@ -1,20 +1,52 @@
 import { useState, useEffect } from "react";
-import { getAllUsers, updateUserDoc, getUserSubscriptions, getAllPlans, removeSubscriber } from "../../firebase/db";
+import { getAllUsers, updateUserDoc, getUserSubscriptions, getAllPlans, getAllOrgs, removeSubscriber } from "../../firebase/db";
 
 const ROLES = ["individual", "orgAdmin", "orgMember", "superadmin"];
+
+function getEffectiveStatus(u, orgsMap) {
+  if (u.isActive === false) return { active: false, reason: "Manually deactivated" };
+  if (u.orgId && orgsMap[u.orgId]?.isActive === false) return { active: false, reason: "Org deactivated" };
+  // Individual subscription expired
+  if (u.subscriptionEnd) {
+    const daysLeft = Math.ceil((new Date(u.subscriptionEnd) - new Date()) / (1000 * 60 * 60 * 24));
+    if (daysLeft <= 0) return { active: false, reason: "Subscription expired" };
+  }
+  // Org subscription expired
+  if (u.orgId && orgsMap[u.orgId]?.subscriptionEnd) {
+    const org = orgsMap[u.orgId];
+    const daysLeft = Math.ceil((new Date(org.subscriptionEnd) - new Date()) / (1000 * 60 * 60 * 24));
+    if (daysLeft <= 0) return { active: false, reason: "Org subscription expired" };
+  }
+  return { active: true, reason: null };
+}
 
 export default function AdminUsers() {
   const [users, setUsers] = useState([]);
   const [plans, setPlans] = useState([]);
+  const [orgsMap, setOrgsMap] = useState({});
+  const [deviceCounts, setDeviceCounts] = useState({});
   const [loading, setLoading] = useState(true);
   const [selectedUser, setSelectedUser] = useState(null);
   const [userSubs, setUserSubs] = useState([]);
   const [loadingSubs, setLoadingSubs] = useState(false);
 
   async function load() {
-    const [u, p] = await Promise.all([getAllUsers(), getAllPlans()]);
+    const [u, p, orgs] = await Promise.all([getAllUsers(), getAllPlans(), getAllOrgs()]);
+    const oMap = {};
+    orgs.forEach((o) => { oMap[o.orgId] = o; });
+    setOrgsMap(oMap);
     setUsers(u);
     setPlans(p);
+
+    // Load device counts for all users
+    const counts = {};
+    await Promise.all(u.map(async (user) => {
+      try {
+        const subs = await getUserSubscriptions(user.uid);
+        counts[user.uid] = subs.length;
+      } catch { counts[user.uid] = 0; }
+    }));
+    setDeviceCounts(counts);
     setLoading(false);
   }
 
@@ -65,20 +97,24 @@ export default function AdminUsers() {
 
       <div className="space-y-3">
         {users.map((u) => {
-          const isActive = u.isActive !== false;
+          const status = getEffectiveStatus(u, orgsMap);
+          const isActive = status.active;
+          const devCount = deviceCounts[u.uid] || 0;
           return (
             <div key={u.uid} className={`bg-white rounded-xl border p-4 ${isActive ? "border-gray-200" : "border-red-200 bg-red-50"}`}>
               <div className="flex items-start justify-between">
                 <div className="flex-1">
                   <div className="flex items-center gap-2">
                     <p className="font-semibold text-sm text-gray-900">{u.displayName || "—"}</p>
-                    {!isActive && <span className="text-xs bg-red-100 text-red-600 px-2 py-0.5 rounded-full">Deactivated</span>}
+                    {!isActive && <span className="text-xs bg-red-100 text-red-600 px-2 py-0.5 rounded-full">{status.reason}</span>}
+                    {isActive && <span className="text-xs bg-green-100 text-green-600 px-2 py-0.5 rounded-full">Active</span>}
                   </div>
                   <p className="text-xs text-gray-500">{u.email}</p>
                   {u.orgId && <p className="text-xs text-blue-500">Org: {u.orgName || u.orgId}</p>}
-                  {u.subscriptionEnd && (
-                    <p className="text-xs text-gray-400 mt-1">Expires: {u.subscriptionEnd}</p>
-                  )}
+                  <p className="text-xs text-gray-400 mt-1">
+                    Devices: {devCount}
+                    {u.subscriptionEnd ? ` · Expires: ${u.subscriptionEnd}` : ""}
+                  </p>
                 </div>
 
                 <div className="flex flex-col items-end gap-2">
@@ -114,12 +150,12 @@ export default function AdminUsers() {
                 <button
                   onClick={() => handleToggleActive(u.uid, u.isActive)}
                   className={`px-3 py-1 rounded text-xs ${
-                    isActive
+                    u.isActive !== false
                       ? "bg-red-50 text-red-600 hover:bg-red-100"
                       : "bg-green-50 text-green-600 hover:bg-green-100"
                   }`}
                 >
-                  {isActive ? "Deactivate" : "Reactivate"}
+                  {u.isActive !== false ? "Deactivate" : "Reactivate"}
                 </button>
                 <input
                   type="date"

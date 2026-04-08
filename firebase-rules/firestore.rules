@@ -38,15 +38,33 @@ service cloud.firestore {
       allow write: if true; // ESP32 anonymous auth writes here
     }
 
-    // Subscriptions — user manages own subscriptions
+    // Subscriptions — user manages own, superadmin can read all
     match /subscriptions/{uid}/devices/{deviceCode} {
-      allow read, write: if request.auth != null && request.auth.uid == uid;
+      allow read: if request.auth != null && (request.auth.uid == uid || isSuperAdmin());
+      allow write: if request.auth != null && (request.auth.uid == uid || isSuperAdmin());
     }
 
     // Device Subscribers — read by superadmin, written during subscribe/unsubscribe
     match /deviceSubscribers/{deviceCode}/subscribers/{uid} {
       allow read: if request.auth != null;
-      allow write: if request.auth != null && request.auth.uid == uid;
+      allow write: if request.auth != null && (request.auth.uid == uid || isSuperAdmin());
+    }
+
+    // Device Invites
+    match /deviceInvites/{deviceCode}/invites/{inviteId} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null;
+    }
+
+    // Plans — anyone can read, superadmin can write
+    match /plans/{planId} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null && isSuperAdmin();
+    }
+
+    // Invites
+    match /invites/{inviteId} {
+      allow read, write: if request.auth != null;
     }
 
     // Helper functions
