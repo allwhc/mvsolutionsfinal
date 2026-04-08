@@ -1173,7 +1173,37 @@ void handleSerialCommand(String cmd) {
     delay(500);
     ESP.restart();
   }
+  else if (cmd.startsWith("WIFI ")) {
+    // Format: WIFI ssid password
+    // Example: WIFI MyNetwork MyPassword123
+    // Example: WIFI MyNetwork (no password for open networks)
+    String params = cmd.substring(5);
+    int spaceIdx = params.indexOf(' ');
+    String ssid, pass;
+    if (spaceIdx > 0) {
+      ssid = params.substring(0, spaceIdx);
+      pass = params.substring(spaceIdx + 1);
+    } else {
+      ssid = params;
+      pass = "";
+    }
+    ssid.trim(); pass.trim();
+    if (ssid.length() == 0) {
+      Serial.println("Usage: WIFI <ssid> <password>");
+      return;
+    }
+    Serial.println("Setting WiFi: " + ssid);
+    Preferences wifiPrefs;
+    wifiPrefs.begin("mvsconnect", false);
+    wifiPrefs.putString("ssid", ssid);
+    wifiPrefs.putString("password", pass);
+    wifiPrefs.putBool("valid", true);
+    wifiPrefs.end();
+    Serial.println("Credentials saved. Restarting...");
+    delay(500);
+    ESP.restart();
+  }
   else if (cmd == "HELP") {
-    Serial.println("\nCommands: STATUS, ADMIN, FIREBASE, RESTART, RESET_WIFI, HELP\n");
+    Serial.println("\nCommands: STATUS, ADMIN, FIREBASE, RESTART, RESET_WIFI, WIFI <ssid> <pass>, HELP\n");
   }
 }
