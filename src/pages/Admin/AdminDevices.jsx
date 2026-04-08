@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { getAllDevices, approvePendingDevice, registerDevice, updateDevice, deleteDeviceFromCatalog } from "../../firebase/db";
-import { sendTestCommand, sendRestartCommand, getPendingDevicesRTDB } from "../../firebase/rtdb";
+import { sendTestCommand, sendRestartCommand, getPendingDevicesRTDB, listenToDeviceLive, listenToDeviceInfo } from "../../firebase/rtdb";
 import { QRCodeSVG } from "qrcode.react";
 
 const DEVICE_CLASS = { 1: "Valve", 2: "Sensor", 3: "Motor" };
@@ -35,6 +35,12 @@ export default function AdminDevices() {
   // Bulk QR print
   const [selectedForPrint, setSelectedForPrint] = useState(new Set());
   const [showBulkPrint, setShowBulkPrint] = useState(false);
+
+  // Device live viewer
+  const [viewDevice, setViewDevice] = useState(null);  // device code being viewed
+  const [viewLive, setViewLive] = useState(null);
+  const [viewInfo, setViewInfo] = useState(null);
+  const viewUnsubRef = useRef([]);
 
   async function load() {
     const [p, r] = await Promise.all([getPendingDevicesRTDB(), getAllDevices()]);
@@ -289,6 +295,27 @@ export default function AdminDevices() {
     setSelectedForPrint(selectedForPrint.size === registered.length ? new Set() : new Set(registered.map((d) => d.deviceCode)));
   }
 
+  function openDeviceViewer(code) {
+    // Clean up previous listeners
+    viewUnsubRef.current.forEach(u => u());
+    viewUnsubRef.current = [];
+    setViewLive(null);
+    setViewInfo(null);
+    setViewDevice(code);
+    // Attach live listeners
+    const unLive = listenToDeviceLive(code, (data) => setViewLive(data));
+    const unInfo = listenToDeviceInfo(code, (data) => setViewInfo(data));
+    viewUnsubRef.current = [unLive, unInfo];
+  }
+
+  function closeDeviceViewer() {
+    viewUnsubRef.current.forEach(u => u());
+    viewUnsubRef.current = [];
+    setViewDevice(null);
+    setViewLive(null);
+    setViewInfo(null);
+  }
+
   const subscribeUrl = (code) => `${window.location.origin}/subscribe?code=${code}`;
 
   if (loading) {
@@ -458,6 +485,7 @@ export default function AdminDevices() {
                       <p className="text-xs text-gray-500">{DEVICE_CLASS[d.deviceClass] || "?"} | {SENSOR_TYPE[d.sensorType] || "?"} | {d.sensorCount || 0} sensors</p>
                     </div>
                     <div className="flex flex-wrap gap-1.5">
+                      <button onClick={() => openDeviceViewer(d.deviceCode)} className="px-3 py-1.5 bg-cyan-50 text-cyan-700 rounded-lg text-xs hover:bg-cyan-100">View</button>
                       <button onClick={() => sendTestCommand(d.deviceCode)} className="px-3 py-1.5 bg-green-50 text-green-600 rounded-lg text-xs hover:bg-green-100">Test</button>
                       <button onClick={() => sendRestartCommand(d.deviceCode)} className="px-3 py-1.5 bg-yellow-50 text-yellow-600 rounded-lg text-xs hover:bg-yellow-100">Restart</button>
                       <button onClick={() => setQrDevice(d.deviceCode)} className="px-3 py-1.5 bg-blue-50 text-blue-600 rounded-lg text-xs hover:bg-blue-100">QR</button>
@@ -528,6 +556,112 @@ export default function AdminDevices() {
           </div>
         </div>
       )}
+
+      {/* Device Live Viewer Modal */}
+      {viewDevice && (() => {
+        const cat = registered.find(d => d.deviceCode === viewDevice) || {};
+        const isOnline = viewInfo?.online === true;
+        const VALVE_STATES = ["Recovery", "Opening", "Open", "Closing", "Closed", "Fault", "LS Error"];
+        const valveState = viewLive?.valveState;
+        const flags = viewLive?.flags ?? 0;
+        const autoMode = !!(flags & 0x10);
+        const sensorError = !!(flags & 0x01);
+        const faultRetrying = !!(flags & 0x02);
+        const ts = viewLive?.timestamp ? new Date(viewLive.timestamp).toLocaleString() : "No data";
+
+        return (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={closeDeviceViewer}>
+            <div className="bg-white rounded-xl p-6 w-full max-w-md max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+              <div className="flex items-center justify-between mb-4">
+                <div>
+                  <h3 className="font-bold text-lg">{cat.deviceName || viewDevice}</h3>
+                  <p className="font-mono text-xs text-gray-400">{viewDevice}</p>
+                </div>
+                <span className={`flex items-center gap-1.5 text-xs ${isOnline ? "text-green-600" : "text-gray-400"}`}>
+                  <span className={`w-2 h-2 rounded-full ${isOnline ? "bg-green-500" : "bg-gray-300"}`} />
+                  {isOnline ? "Online" : "Offline"}
+                </span>
+              </div>
+
+              {!viewLive ? (
+                <p className="text-gray-400 text-sm text-center py-6">Waiting for live data...</p>
+              ) : (
+                <div className="space-y-3">
+                  {/* Device Info */}
+                  <div className="bg-gray-50 rounded-lg p-3">
+                    <p className="text-xs text-gray-500 font-semibold mb-2">Device Info</p>
+                    <div className="grid grid-cols-2 gap-1 text-xs">
+                      <span className="text-gray-500">Class</span>
+                      <span className="text-gray-900">{DEVICE_CLASS[cat.deviceClass] || "?"}</span>
+                      <span className="text-gray-500">Sensor</span>
+                      <span className="text-gray-900">{SENSOR_TYPE[cat.sensorType] || "?"} ({cat.sensorCount || 0})</span>
+                      <span className="text-gray-500">Firmware</span>
+                      <span className="text-gray-900">{viewInfo?.firmwareVersion || cat.firmwareVersion || "?"}</span>
+                      <span className="text-gray-500">RSSI</span>
+                      <span className="text-gray-900">{viewLive.rssi ? `${viewLive.rssi} dBm` : "N/A"}</span>
+                      <span className="text-gray-500">Last Update</span>
+                      <span className="text-gray-900">{ts}</span>
+                    </div>
+                  </div>
+
+                  {/* Tank Level — for sensor/valve with sensors */}
+                  {(cat.sensorCount > 0 || cat.sensorType > 0) && (
+                    <div className="bg-blue-50 rounded-lg p-3 text-center">
+                      <p className="text-xs text-blue-600 font-semibold mb-1">Water Level</p>
+                      <p className="text-3xl font-bold text-blue-700">
+                        {sensorError ? "ERR" : cat.sensorCount === 1 ? (viewLive.confirmedPct > 0 ? "Present" : "Empty") : `${viewLive.confirmedPct}%`}
+                      </p>
+                      {sensorError && <p className="text-xs text-purple-600 mt-1">Sensor Error</p>}
+                      <div className="flex justify-center gap-1 mt-2">
+                        {Array.from({ length: cat.sensorCount || 0 }, (_, i) => (
+                          <div key={i} className={`w-3 h-3 rounded-full ${(viewLive.sensorBits >> i) & 1 ? "bg-blue-500" : "bg-gray-200"}`} />
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Valve State — for valve devices */}
+                  {cat.deviceClass === 1 && valveState != null && (
+                    <div className={`rounded-lg p-3 text-center ${valveState === 5 || valveState === 6 ? "bg-red-50" : valveState === 2 ? "bg-green-50" : valveState === 4 ? "bg-gray-50" : "bg-blue-50"}`}>
+                      <p className="text-xs text-gray-600 font-semibold mb-1">Valve</p>
+                      <p className={`text-2xl font-bold ${
+                        valveState === 2 ? "text-green-600" :
+                        valveState === 4 ? "text-red-600" :
+                        valveState === 5 ? "text-red-700" :
+                        valveState === 6 ? "text-purple-600" :
+                        "text-blue-600"
+                      }`}>
+                        {VALVE_STATES[valveState] || "Unknown"}
+                      </p>
+                      {autoMode && <p className="text-xs text-blue-600 mt-1">Auto Mode ON</p>}
+                      {valveState === 5 && <p className="text-xs text-red-600 mt-1">{faultRetrying ? "Retrying..." : "Waiting for retry"}</p>}
+                    </div>
+                  )}
+
+                  {/* Flags */}
+                  <div className="bg-gray-50 rounded-lg p-3">
+                    <p className="text-xs text-gray-500 font-semibold mb-1">Flags: 0x{flags.toString(16).toUpperCase().padStart(2, "0")}</p>
+                    <div className="flex flex-wrap gap-1">
+                      {sensorError && <span className="text-[10px] bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded">Sensor Error</span>}
+                      {faultRetrying && <span className="text-[10px] bg-yellow-100 text-yellow-700 px-1.5 py-0.5 rounded">Fault Retrying</span>}
+                      {!!(flags & 0x04) && <span className="text-[10px] bg-green-100 text-green-700 px-1.5 py-0.5 rounded">Relay FWD</span>}
+                      {!!(flags & 0x08) && <span className="text-[10px] bg-red-100 text-red-700 px-1.5 py-0.5 rounded">Relay REV</span>}
+                      {autoMode && <span className="text-[10px] bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded">Auto Mode</span>}
+                      {flags === 0 && <span className="text-[10px] text-gray-400">None</span>}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              <div className="flex gap-2 mt-4">
+                <button onClick={() => { sendTestCommand(viewDevice); }} className="flex-1 bg-green-50 text-green-600 py-2 rounded-lg text-sm hover:bg-green-100">Test LED</button>
+                <button onClick={() => { sendRestartCommand(viewDevice); }} className="flex-1 bg-yellow-50 text-yellow-600 py-2 rounded-lg text-sm hover:bg-yellow-100">Restart</button>
+                <button onClick={closeDeviceViewer} className="flex-1 bg-gray-100 text-gray-600 py-2 rounded-lg text-sm">Close</button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Bulk QR Print */}
       {showBulkPrint && (
