@@ -13,7 +13,12 @@
   0%, 100% { border-color: #e9d5ff; box-shadow: none; }
   50% { border-color: #9333ea; box-shadow: 0 0 14px rgba(147,51,234,0.35); }
 }
+@keyframes pulseYellow {
+  0%, 100% { border-color: #fef08a; box-shadow: none; }
+  50% { border-color: #eab308; box-shadow: 0 0 14px rgba(234,179,8,0.35); }
+}
 
 .animate-pulse-red { animation: pulseRed 1.5s ease-in-out infinite; }
 .animate-pulse-green { animation: pulseGreen 1.5s ease-in-out infinite; }
 .animate-pulse-purple { animation: pulsePurple 1.5s ease-in-out infinite; }
+.animate-pulse-yellow { animation: pulseYellow 1.5s ease-in-out infinite; }

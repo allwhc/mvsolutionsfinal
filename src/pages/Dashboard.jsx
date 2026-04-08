@@ -189,6 +189,8 @@ export default function Dashboard() {
                 tankCapacityLitres={d.tankCapacityLitres}
                 alertLowPct={d.alertLowPct}
                 alertHighPct={d.alertHighPct}
+                valveAlertOpenHours={d.valveAlertOpenHours}
+                valveAlertClosedHours={d.valveAlertClosedHours}
               />
             );
             return locked ? (

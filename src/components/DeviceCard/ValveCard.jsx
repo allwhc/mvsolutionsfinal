@@ -12,7 +12,23 @@ const VALVE_STATES = {
   6: { label: "LS Error", color: "text-purple-600" },
 };
 
-export default function ValveCard({ deviceCode, deviceName, live, info, catalog, isOnline }) {
+function getValveAlertFlash({ stateVal, timestamp, valveAlertOpenHours, valveAlertClosedHours }) {
+  // Priority 1: Fault or LS Error — purple
+  if (stateVal === 5 || stateVal === 6) return { flash: "animate-pulse-purple", reason: stateVal === 5 ? "Valve Fault" : "LS Error" };
+  // Priority 2: Open too long — yellow
+  if (valveAlertOpenHours && stateVal === 2 && timestamp) {
+    const hours = (Date.now() - timestamp) / 3600000;
+    if (hours >= valveAlertOpenHours) return { flash: "animate-pulse-yellow", reason: `Open ${Math.floor(hours)}h` };
+  }
+  // Priority 3: Closed too long — red
+  if (valveAlertClosedHours && stateVal === 4 && timestamp) {
+    const hours = (Date.now() - timestamp) / 3600000;
+    if (hours >= valveAlertClosedHours) return { flash: "animate-pulse-red", reason: `Closed ${Math.floor(hours)}h` };
+  }
+  return { flash: "", reason: "" };
+}
+
+export default function ValveCard({ deviceCode, deviceName, live, info, catalog, isOnline, valveAlertOpenHours, valveAlertClosedHours }) {
   const sensorType = info?.sensorType ?? catalog?.sensorType ?? 1;
   const sensorCount = info?.sensorCount ?? catalog?.sensorCount ?? 4;
   const sensorBits = live?.sensorBits ?? 0;
@@ -49,12 +65,16 @@ export default function ValveCard({ deviceCode, deviceName, live, info, catalog,
   const isBusy = stateVal === 0 || stateVal === 1 || stateVal === 3; // recovery, opening, closing
   const canControl = isOnline && !autoMode && !isBusy && !pendingCmd && stateVal !== 5 && stateVal !== 6;
 
+  const { flash: flashClass, reason: alertReason } = isOnline ? getValveAlertFlash({
+    stateVal, timestamp: live?.timestamp, valveAlertOpenHours, valveAlertClosedHours,
+  }) : { flash: "", reason: "" };
+
   return (
     <div className={`bg-white rounded-xl shadow-sm border p-4 transition-all ${
       isStreamTest
         ? (isOnline ? "border-purple-400 border-2" : "border-purple-200 border-2 opacity-60")
         : (isOnline ? "border-gray-200" : "border-gray-200 opacity-60")
-    }`}>
+    } ${flashClass}`}>
       {/* Header */}
       <div className="flex items-center justify-between mb-3">
         <div>
@@ -80,6 +100,15 @@ export default function ValveCard({ deviceCode, deviceName, live, info, catalog,
           {valveState.label}
         </span>
       </div>
+
+      {/* Alert reason text */}
+      {alertReason && (
+        <div className="text-center mb-2">
+          <span className="text-[10px] font-semibold text-red-600 bg-red-50 px-2 py-0.5 rounded-full">
+            {alertReason}
+          </span>
+        </div>
+      )}
 
       {/* Fault / LS Error warning */}
       {stateVal === 5 && (

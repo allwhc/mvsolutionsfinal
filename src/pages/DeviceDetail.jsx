@@ -34,6 +34,8 @@ export default function DeviceDetail() {
   const [deviceName, setDeviceName] = useState("");
   const [editingName, setEditingName] = useState(false);
   const [nameInput, setNameInput] = useState("");
+  const [valveAlertOpenHours, setValveAlertOpenHours] = useState("");
+  const [valveAlertClosedHours, setValveAlertClosedHours] = useState("");
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -58,6 +60,8 @@ export default function DeviceDetail() {
           setAlertLowPct(subData.alertLowPct ?? "");
           setAlertHighPct(subData.alertHighPct ?? "");
           setDeviceName(subData.deviceName || "");
+          setValveAlertOpenHours(subData.valveAlertOpenHours ?? "");
+          setValveAlertClosedHours(subData.valveAlertClosedHours ?? "");
         }
       }
       setLoading(false);
@@ -382,6 +386,37 @@ export default function DeviceDetail() {
               <p className="text-xs text-gray-400">Device stores thresholds locally. Works even if internet disconnects.</p>
             </div>
           )}
+
+          {/* Valve Alert Settings */}
+          <div className="bg-gray-50 rounded-lg p-3 mt-3 space-y-2">
+            <p className="text-xs text-gray-600 font-semibold">Valve Alerts</p>
+            <p className="text-[11px] text-gray-400">Card flashes when valve stays open or closed too long. Leave empty to disable.</p>
+            <div className="flex items-center gap-2 text-sm">
+              <span className="text-gray-600 w-32">Alert if open &gt;</span>
+              <input type="number" min="0" max="168" value={valveAlertOpenHours}
+                onChange={(e) => setValveAlertOpenHours(e.target.value)}
+                placeholder="Off"
+                className="w-16 px-2 py-0.5 border border-gray-200 rounded text-sm" />
+              <span className="text-gray-500 text-xs">hours</span>
+            </div>
+            <div className="flex items-center gap-2 text-sm">
+              <span className="text-gray-600 w-32">Alert if closed &gt;</span>
+              <input type="number" min="0" max="168" value={valveAlertClosedHours}
+                onChange={(e) => setValveAlertClosedHours(e.target.value)}
+                placeholder="Off"
+                className="w-16 px-2 py-0.5 border border-gray-200 rounded text-sm" />
+              <span className="text-gray-500 text-xs">hours</span>
+            </div>
+            <button onClick={async () => {
+              const openH = valveAlertOpenHours === "" ? null : parseInt(valveAlertOpenHours);
+              const closedH = valveAlertClosedHours === "" ? null : parseInt(valveAlertClosedHours);
+              await updateDoc(doc(db, "subscriptions", user.uid, "devices", code), {
+                valveAlertOpenHours: openH, valveAlertClosedHours: closedH,
+              });
+            }} className="w-full bg-blue-50 text-blue-700 py-2 rounded-lg text-sm font-medium hover:bg-blue-100">
+              Save Valve Alerts
+            </button>
+          </div>
         </div>
       )}
 
