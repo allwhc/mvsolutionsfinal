@@ -251,45 +251,99 @@ export default function DeviceDetail() {
       )}
 
       {/* Alert Thresholds — for tank devices */}
-      {(catalog && (catalog.sensorType === 1 || catalog.sensorType === 2 || info?.sensorType === 1 || info?.sensorType === 2)) && (
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 mt-4 p-4">
-          <h3 className="font-semibold text-gray-900 mb-3">Alert Thresholds</h3>
-          <div className="grid grid-cols-2 gap-2 text-sm mb-3">
-            <span className="text-gray-500">Low Alert (≤)</span>
-            <div className="flex items-center gap-1">
-              <input type="number" min="0" max="100" value={alertLowPct}
-                onChange={(e) => { setAlertLowPct(e.target.value); setAlertError(""); }}
-                placeholder="Off"
-                className="w-16 px-2 py-0.5 border border-gray-200 rounded text-sm" />
-              <span className="text-gray-500 text-xs">%</span>
-            </div>
-            <span className="text-gray-500">High Alert (≥)</span>
-            <div className="flex items-center gap-1">
-              <input type="number" min="0" max="100" value={alertHighPct}
-                onChange={(e) => { setAlertHighPct(e.target.value); setAlertError(""); }}
-                placeholder="Off"
-                className="w-16 px-2 py-0.5 border border-gray-200 rounded text-sm" />
-              <span className="text-gray-500 text-xs">%</span>
-            </div>
+      {(catalog && (catalog.sensorType === 1 || catalog.sensorType === 2 || info?.sensorType === 1 || info?.sensorType === 2)) && (() => {
+        const sc = info?.sensorCount ?? catalog?.sensorCount ?? 4;
+        const isSingle = sc === 1;
+
+        return (
+          <div className="bg-white rounded-xl shadow-sm border border-gray-200 mt-4 p-4">
+            <h3 className="font-semibold text-gray-900 mb-3">Alert Settings</h3>
+
+            {isSingle ? (
+              /* Single sensor — simple toggles */
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-gray-700">Alert when Empty</span>
+                  <button
+                    onClick={async () => {
+                      const newVal = alertLowPct === "" || alertLowPct === null ? 0 : null;
+                      setAlertLowPct(newVal === null ? "" : "0");
+                      await updateDoc(doc(db, "subscriptions", user.uid, "devices", code), {
+                        alertLowPct: newVal,
+                      });
+                    }}
+                    className={`px-4 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+                      alertLowPct !== "" && alertLowPct !== null
+                        ? "bg-red-500 text-white"
+                        : "bg-gray-200 text-gray-600"
+                    }`}
+                  >
+                    {alertLowPct !== "" && alertLowPct !== null ? "ON" : "OFF"}
+                  </button>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-gray-700">Alert when Present</span>
+                  <button
+                    onClick={async () => {
+                      const newVal = alertHighPct === "" || alertHighPct === null ? 100 : null;
+                      setAlertHighPct(newVal === null ? "" : "100");
+                      await updateDoc(doc(db, "subscriptions", user.uid, "devices", code), {
+                        alertHighPct: newVal,
+                      });
+                    }}
+                    className={`px-4 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+                      alertHighPct !== "" && alertHighPct !== null
+                        ? "bg-green-500 text-white"
+                        : "bg-gray-200 text-gray-600"
+                    }`}
+                  >
+                    {alertHighPct !== "" && alertHighPct !== null ? "ON" : "OFF"}
+                  </button>
+                </div>
+                <p className="text-xs text-gray-400">Card flashes red when empty, green when water is present.</p>
+              </div>
+            ) : (
+              /* Multiple sensors — percentage inputs */
+              <>
+                <div className="grid grid-cols-2 gap-2 text-sm mb-3">
+                  <span className="text-gray-500">Low Alert (≤)</span>
+                  <div className="flex items-center gap-1">
+                    <input type="number" min="0" max="100" value={alertLowPct}
+                      onChange={(e) => { setAlertLowPct(e.target.value); setAlertError(""); }}
+                      placeholder="Off"
+                      className="w-16 px-2 py-0.5 border border-gray-200 rounded text-sm" />
+                    <span className="text-gray-500 text-xs">%</span>
+                  </div>
+                  <span className="text-gray-500">High Alert (≥)</span>
+                  <div className="flex items-center gap-1">
+                    <input type="number" min="0" max="100" value={alertHighPct}
+                      onChange={(e) => { setAlertHighPct(e.target.value); setAlertError(""); }}
+                      placeholder="Off"
+                      className="w-16 px-2 py-0.5 border border-gray-200 rounded text-sm" />
+                    <span className="text-gray-500 text-xs">%</span>
+                  </div>
+                </div>
+                {alertError && <p className="text-red-500 text-xs mb-2">{alertError}</p>}
+                <button onClick={async () => {
+                  const low = alertLowPct === "" ? null : parseInt(alertLowPct);
+                  const high = alertHighPct === "" ? null : parseInt(alertHighPct);
+                  if (low != null && high != null && low >= high) {
+                    setAlertError("Low must be less than High");
+                    return;
+                  }
+                  await updateDoc(doc(db, "subscriptions", user.uid, "devices", code), {
+                    alertLowPct: low, alertHighPct: high,
+                  });
+                  setAlertError("");
+                }} className="w-full bg-blue-50 text-blue-700 py-2 rounded-lg text-sm font-medium hover:bg-blue-100">
+                  Save Alert Settings
+                </button>
+                <p className="text-xs text-gray-400 mt-2">Card flashes red when low, green when high. Leave empty to disable.</p>
+              </>
+            )}
           </div>
-          {alertError && <p className="text-red-500 text-xs mb-2">{alertError}</p>}
-          <button onClick={async () => {
-            const low = alertLowPct === "" ? null : parseInt(alertLowPct);
-            const high = alertHighPct === "" ? null : parseInt(alertHighPct);
-            if (low != null && high != null && low >= high) {
-              setAlertError("Low must be less than High");
-              return;
-            }
-            await updateDoc(doc(db, "subscriptions", user.uid, "devices", code), {
-              alertLowPct: low, alertHighPct: high,
-            });
-            setAlertError("");
-          }} className="w-full bg-blue-50 text-blue-700 py-2 rounded-lg text-sm font-medium hover:bg-blue-100">
-            Save Alert Settings
-          </button>
-          <p className="text-xs text-gray-400 mt-2">Card flashes red when low, green when high. Leave empty to disable.</p>
-        </div>
-      )}
+        );
+      })()}
 
       {/* Valve Controls — only for valve devices */}
       {(catalog?.deviceClass === 1 || info?.deviceClass === 1) && (
