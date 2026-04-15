@@ -12,6 +12,8 @@ export default function OrgGroups() {
   const [newName, setNewName] = useState("");
   const [editGroup, setEditGroup] = useState(null);
   const [selectedDevices, setSelectedDevices] = useState([]);
+  const [renameGroup, setRenameGroup] = useState(null);
+  const [renameName, setRenameName] = useState("");
 
   async function load() {
     if (!orgId) return;
@@ -35,6 +37,15 @@ export default function OrgGroups() {
   async function handleDelete(groupId) {
     if (!confirm("Delete this group?")) return;
     await deleteOrgGroup(orgId, groupId);
+    await load();
+  }
+
+  async function handleRename() {
+    const trimmed = renameName.trim();
+    if (!trimmed || !renameGroup) return;
+    await updateOrgGroup(orgId, renameGroup.groupId, { name: trimmed });
+    setRenameGroup(null);
+    setRenameName("");
     await load();
   }
 
@@ -83,7 +94,11 @@ export default function OrgGroups() {
           <div key={g.groupId} className="bg-white rounded-xl border border-gray-200 p-4">
             <div className="flex items-center justify-between">
               <div>
-                <p className="font-semibold text-gray-900">{g.name}</p>
+                <div className="flex items-center gap-2">
+                  <p className="font-semibold text-gray-900">{g.name}</p>
+                  <button onClick={() => { setRenameGroup(g); setRenameName(g.name); }}
+                    className="text-[10px] text-blue-600 hover:underline">Edit</button>
+                </div>
                 <p className="text-xs text-gray-500">{(g.deviceCodes || []).length} devices</p>
               </div>
               <div className="flex gap-2">
@@ -133,8 +148,27 @@ export default function OrgGroups() {
               ))}
             </div>
             <div className="flex gap-2">
-              <button onClick={handleAssignDevices} className="flex-1 bg-blue-600 text-white py-2 rounded-lg text-sm font-medium">Save</button>
-              <button onClick={() => setEditGroup(null)} className="px-4 py-2 bg-gray-100 text-gray-600 rounded-lg text-sm">Cancel</button>
+              {devices.length > 0 && (
+                <button onClick={handleAssignDevices} className="flex-1 bg-blue-600 text-white py-2 rounded-lg text-sm font-medium">Save</button>
+              )}
+              <button onClick={() => setEditGroup(null)} className={`py-2 rounded-lg text-sm ${devices.length > 0 ? "px-4 bg-gray-100 text-gray-600" : "flex-1 bg-gray-100 text-gray-600"}`}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Rename group modal */}
+      {renameGroup && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={() => setRenameGroup(null)}>
+          <div className="bg-white rounded-xl p-6 w-full max-w-sm" onClick={(e) => e.stopPropagation()}>
+            <h3 className="font-bold text-lg mb-4">Rename Group</h3>
+            <input type="text" value={renameName} onChange={(e) => setRenameName(e.target.value)}
+              autoFocus
+              onKeyDown={(e) => { if (e.key === "Enter") handleRename(); if (e.key === "Escape") setRenameGroup(null); }}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm mb-4" />
+            <div className="flex gap-2">
+              <button onClick={handleRename} className="flex-1 bg-blue-600 text-white py-2 rounded-lg text-sm font-medium">Save</button>
+              <button onClick={() => setRenameGroup(null)} className="px-4 py-2 bg-gray-100 text-gray-600 rounded-lg text-sm">Cancel</button>
             </div>
           </div>
         </div>
