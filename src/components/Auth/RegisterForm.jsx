@@ -2,6 +2,15 @@ import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { registerWithEmail, loginWithGoogle } from "../../firebase/auth";
 
+function friendlyError(err) {
+  const code = err.code || "";
+  if (code === "auth/email-already-in-use") return "This email is already registered. Please sign in.";
+  if (code === "auth/invalid-email") return "Please enter a valid email address.";
+  if (code === "auth/weak-password") return "Password must be at least 6 characters.";
+  if (code === "auth/network-request-failed") return "Network error. Check your internet connection.";
+  return err.message;
+}
+
 export default function RegisterForm() {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -22,7 +31,7 @@ export default function RegisterForm() {
       await registerWithEmail(email, password, name);
       navigate("/dashboard");
     } catch (err) {
-      setError(err.message);
+      setError(friendlyError(err));
     }
     setLoading(false);
   }
@@ -34,7 +43,7 @@ export default function RegisterForm() {
       await loginWithGoogle();
       navigate("/dashboard");
     } catch (err) {
-      setError(err.message);
+      setError(friendlyError(err));
     }
     setLoading(false);
   }

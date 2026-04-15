@@ -4,6 +4,16 @@ import { registerWithEmail } from "../../firebase/auth";
 import { createOrg, addOrgMember, updateUserDoc } from "../../firebase/db";
 import { auth } from "../../firebase/config";
 
+function friendlyError(err) {
+  const code = err.code || "";
+  if (code === "auth/email-already-in-use") return "This email is already registered. Please sign in.";
+  if (code === "auth/invalid-email") return "Please enter a valid email address.";
+  if (code === "auth/weak-password") return "Password must be at least 6 characters.";
+  if (code === "auth/network-request-failed") return "Network error. Check your internet connection.";
+  if (err.message?.includes("permission")) return "Registration failed. Please try again or contact SenseFlow team.";
+  return err.message;
+}
+
 export default function OrgRegisterForm() {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -46,7 +56,7 @@ export default function OrgRegisterForm() {
 
       navigate("/dashboard");
     } catch (err) {
-      setError(err.message);
+      setError(friendlyError(err));
     }
     setLoading(false);
   }

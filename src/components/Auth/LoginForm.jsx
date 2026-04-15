@@ -2,6 +2,17 @@ import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { loginWithEmail, loginWithGoogle, resetPassword } from "../../firebase/auth";
 
+function friendlyError(err) {
+  const code = err.code || "";
+  if (code === "auth/invalid-credential" || code === "auth/wrong-password" || code === "auth/user-not-found")
+    return "Account not found or incorrect password. Please register first.";
+  if (code === "auth/invalid-email") return "Please enter a valid email address.";
+  if (code === "auth/too-many-requests") return "Too many attempts. Please try again later.";
+  if (code === "auth/user-disabled") return "This account has been disabled. Contact SenseFlow team.";
+  if (code === "auth/network-request-failed") return "Network error. Check your internet connection.";
+  return err.message;
+}
+
 export default function LoginForm() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -19,7 +30,7 @@ export default function LoginForm() {
       await loginWithEmail(email, password);
       navigate("/dashboard");
     } catch (err) {
-      setError(err.message);
+      setError(friendlyError(err));
     }
     setLoading(false);
   }
@@ -31,7 +42,7 @@ export default function LoginForm() {
       await loginWithGoogle();
       navigate("/dashboard");
     } catch (err) {
-      setError(err.message);
+      setError(friendlyError(err));
     }
     setLoading(false);
   }
@@ -119,7 +130,7 @@ export default function LoginForm() {
                 await resetPassword(email);
                 setResetSent(true);
               } catch (err) {
-                setError(err.message);
+                setError(friendlyError(err));
               }
             }}
             className="text-sm text-gray-500 hover:text-blue-600"
