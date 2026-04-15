@@ -1,9 +1,9 @@
 import { useState, useEffect } from "react";
 import { useAuth } from "../../context/AuthContext";
-import { getOrgGroups, createOrgGroup, deleteOrgGroup, updateOrgGroup, getAllDevices } from "../../firebase/db";
+import { getOrgGroups, createOrgGroup, deleteOrgGroup, updateOrgGroup, getUserSubscriptions } from "../../firebase/db";
 
 export default function OrgGroups() {
-  const { userData } = useAuth();
+  const { user, userData } = useAuth();
   const orgId = userData?.orgId;
   const [groups, setGroups] = useState([]);
   const [devices, setDevices] = useState([]);
@@ -15,7 +15,7 @@ export default function OrgGroups() {
 
   async function load() {
     if (!orgId) return;
-    const [g, d] = await Promise.all([getOrgGroups(orgId), getAllDevices()]);
+    const [g, d] = await Promise.all([getOrgGroups(orgId), getUserSubscriptions(user.uid)]);
     setGroups(g);
     setDevices(d);
     setLoading(false);
