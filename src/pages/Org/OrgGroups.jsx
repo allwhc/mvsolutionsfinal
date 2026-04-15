@@ -112,7 +112,14 @@ export default function OrgGroups() {
           <div className="bg-white rounded-xl p-6 w-full max-w-md max-h-[80vh] overflow-y-auto">
             <h3 className="font-bold text-lg mb-4">Assign Devices to {editGroup.name}</h3>
             <div className="space-y-2 mb-4">
-              {devices.map((d) => (
+              {devices.length === 0 ? (
+                <div className="text-center py-6">
+                  <p className="text-gray-400 text-sm mb-3">No devices subscribed yet</p>
+                  <a href="/subscribe" className="inline-block bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700">
+                    + Add Device
+                  </a>
+                </div>
+              ) : devices.map((d) => (
                 <label key={d.deviceCode} className="flex items-center gap-2 text-sm cursor-pointer">
                   <input
                     type="checkbox"
