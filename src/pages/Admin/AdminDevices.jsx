@@ -583,7 +583,9 @@ export default function AdminDevices() {
       {/* Device Live Viewer Modal */}
       {viewDevice && (() => {
         const cat = registered.find(d => d.deviceCode === viewDevice) || {};
-        const isOnline = viewInfo?.online === true;
+        const lastSeen = viewInfo?.lastSeen;
+        const isStale = lastSeen ? (Date.now() - lastSeen) > 900000 : true;
+        const isOnline = viewInfo?.online === true && !isStale;
         const VALVE_STATES = ["Recovery", "Opening", "Open", "Closing", "Closed", "Fault", "LS Error"];
         const valveState = viewLive?.valveState;
         const flags = viewLive?.flags ?? 0;
