@@ -11,6 +11,7 @@ import { doc, updateDoc } from "firebase/firestore";
 import { db } from "../firebase/config";
 import { sendRefreshCommand, sendRestartCommand, sendTestCommand, sendValveCommand, listenToValveConfig, setValveConfig } from "../firebase/rtdb";
 import DeviceCard from "../components/DeviceCard/DeviceCard";
+import AnalyticsChart, { generateCSV, downloadCSV } from "../components/Analytics/AnalyticsChart";
 
 export default function DeviceDetail() {
   const { code } = useParams();
@@ -551,6 +552,29 @@ export default function DeviceDetail() {
           </div>
         </div>
       )}
+      {/* Analytics — only shown when analyticsOn is true */}
+      {valveConfig?.analyticsOn && (
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200 mt-4 p-4">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="font-semibold text-gray-900">Analytics</h3>
+            <button
+              onClick={async () => {
+                const { getHistoryByRange } = await import("../firebase/rtdb");
+                const endTs = Date.now();
+                const startTs = endTs - 30 * 86400000;
+                const history = await getHistoryByRange(code, startTs, endTs);
+                const csv = generateCSV(history, tankCapacityLitres, startTs, endTs);
+                downloadCSV(`${code}_30d_history.csv`, csv);
+              }}
+              className="text-xs bg-blue-50 text-blue-600 px-3 py-1 rounded-lg hover:bg-blue-100"
+            >
+              Download CSV (30d)
+            </button>
+          </div>
+          <AnalyticsChart deviceCode={code} tankCapacityLitres={tankCapacityLitres} />
+        </div>
+      )}
+
       {/* Actions — at bottom */}
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 mt-4 p-4">
         <h3 className="font-semibold text-gray-900 mb-3">Actions</h3>

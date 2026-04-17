@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { getAllDevices, approvePendingDevice, registerDevice, updateDevice, deleteDeviceFromCatalog } from "../../firebase/db";
-import { sendTestCommand, sendRestartCommand, getPendingDevicesRTDB, listenToDeviceLive, listenToDeviceInfo } from "../../firebase/rtdb";
+import { sendTestCommand, sendRestartCommand, getPendingDevicesRTDB, listenToDeviceLive, listenToDeviceInfo, listenToValveConfig, setAnalyticsEnabled } from "../../firebase/rtdb";
 import { QRCodeSVG } from "qrcode.react";
 
 const DEVICE_CLASS = { 1: "Valve", 2: "Sensor", 3: "Motor" };
@@ -40,6 +40,7 @@ export default function AdminDevices() {
   const [viewDevice, setViewDevice] = useState(null);  // device code being viewed
   const [viewLive, setViewLive] = useState(null);
   const [viewInfo, setViewInfo] = useState(null);
+  const [viewConfig, setViewConfig] = useState(null);
   const viewUnsubRef = useRef([]);
 
   async function load() {
@@ -301,11 +302,13 @@ export default function AdminDevices() {
     viewUnsubRef.current = [];
     setViewLive(null);
     setViewInfo(null);
+    setViewConfig(null);
     setViewDevice(code);
     // Attach live listeners
     const unLive = listenToDeviceLive(code, (data) => setViewLive(data));
     const unInfo = listenToDeviceInfo(code, (data) => setViewInfo(data));
-    viewUnsubRef.current = [unLive, unInfo];
+    const unConfig = listenToValveConfig(code, (data) => setViewConfig(data));
+    viewUnsubRef.current = [unLive, unInfo, unConfig];
   }
 
   function closeDeviceViewer() {
@@ -314,6 +317,7 @@ export default function AdminDevices() {
     setViewDevice(null);
     setViewLive(null);
     setViewInfo(null);
+    setViewConfig(null);
   }
 
   const subscribeUrl = (code) => `${window.location.origin}/subscribe?code=${code}`;
@@ -671,6 +675,23 @@ export default function AdminDevices() {
                   </div>
                 </div>
               )}
+
+              {/* Analytics toggle */}
+              <div className="flex items-center justify-between bg-gray-50 rounded-lg px-3 py-2 mt-3">
+                <span className="text-sm text-gray-700">Analytics (history tracking)</span>
+                <button
+                  onClick={async () => {
+                    await setAnalyticsEnabled(viewDevice, !viewConfig?.analyticsOn);
+                  }}
+                  className={`px-4 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+                    viewConfig?.analyticsOn
+                      ? "bg-green-500 text-white"
+                      : "bg-gray-200 text-gray-600"
+                  }`}
+                >
+                  {viewConfig?.analyticsOn ? "ON" : "OFF"}
+                </button>
+              </div>
 
               <div className="flex gap-2 mt-4">
                 <button onClick={() => { sendTestCommand(viewDevice); }} className="flex-1 bg-green-50 text-green-600 py-2 rounded-lg text-sm hover:bg-green-100">Test LED</button>

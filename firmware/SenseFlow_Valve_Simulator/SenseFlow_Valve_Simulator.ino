@@ -118,6 +118,9 @@ uint8_t confirmedPct = 0;
 uint8_t flags = 0;
 bool    sensorError = false;
 
+// Analytics
+bool analyticsOn = false;
+
 // ── Last sent values ────────────────────────────
 uint8_t lastSentValveState = 0xFF;
 uint8_t lastSentBits = 0xFF;
@@ -537,6 +540,25 @@ void checkConfig() {
     if (v != maxPercent && v > minPercent) { maxPercent = v; changed = true; }
   }
   if (changed) saveConfig();
+
+  // Check analyticsOn
+  if (Firebase.RTDB.getBool(&fbdo, (basePath + "analyticsOn").c_str())) {
+    bool v = fbdo.boolData();
+    if (v != analyticsOn) { analyticsOn = v; Serial.printf("[CONFIG] analyticsOn=%s\n", analyticsOn ? "ON" : "OFF"); }
+  }
+}
+
+void writeHistory() {
+  if (!analyticsOn) return;
+  FirebaseJson json;
+  json.set("pct", confirmedPct);
+  json.set("bits", sensorBits);
+  json.set("valve", (int)valveState);
+  json.set("flags", flags);
+  json.set("ts/.sv", "timestamp");
+  if (Firebase.RTDB.pushJSON(&fbdo, ("devices/" + deviceCode + "/history").c_str(), &json)) {
+    Serial.println("[HISTORY] Entry recorded");
+  }
 }
 
 void checkCommands() {
@@ -909,7 +931,10 @@ void loop() {
     checkFirebaseReady();
     if (firebaseReady) {
       if (hasDataChanged()) {
-        if (pushLiveData()) updateDeviceInfo(true);
+        if (pushLiveData()) {
+          updateDeviceInfo(true);
+          writeHistory();
+        }
         handleLED();
       }
       if (now - lastHeartbeat >= HEARTBEAT_INTERVAL) {

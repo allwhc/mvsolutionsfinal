@@ -1,5 +1,28 @@
-import { ref, onValue, set, update, get, off, push, query, orderByKey, limitToLast, remove } from "firebase/database";
+import { ref, onValue, set, update, get, off, push, query, orderByKey, orderByChild, startAt, endAt, limitToLast, remove } from "firebase/database";
 import { rtdb } from "./config";
+
+// Fetch history entries by timestamp range (ms since epoch)
+export async function getHistoryByRange(deviceCode, startTs, endTs) {
+  const histRef = query(
+    ref(rtdb, `devices/${deviceCode}/history`),
+    orderByChild("ts"),
+    startAt(startTs),
+    endAt(endTs)
+  );
+  const snap = await get(histRef);
+  if (!snap.exists()) return [];
+  const data = snap.val();
+  return Object.entries(data)
+    .map(([key, val]) => ({ key, ...val }))
+    .sort((a, b) => (a.ts || 0) - (b.ts || 0));
+}
+
+// Set analyticsOn flag on device config
+export async function setAnalyticsEnabled(deviceCode, enabled) {
+  await update(ref(rtdb, `devices/${deviceCode}/config`), {
+    analyticsOn: !!enabled,
+  });
+}
 
 // ── Pending Devices (from RTDB, where ESP32 writes) ──
 export async function getPendingDevicesRTDB() {
