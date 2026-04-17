@@ -134,6 +134,9 @@ uint8_t confirmedPct = 0;
 uint8_t flags = 0;        // bit0=sensorError, bit5=sensorOffline
 bool    sensorError = false;
 
+// Analytics
+bool analyticsOn = false;
+
 // Last sent values (for change detection)
 uint8_t lastSentBits = 0xFF;
 uint8_t lastSentPct = 0xFF;
@@ -686,6 +689,30 @@ void checkCommands() {
   }
 }
 
+// Write history entry — only on data change when analyticsOn
+void writeHistory() {
+  if (!analyticsOn) return;
+  FirebaseJson json;
+  json.set("pct", confirmedPct);
+  json.set("bits", sensorBits);
+  json.set("flags", flags);
+  json.set("ts/.sv", "timestamp");
+  if (Firebase.RTDB.pushJSON(&fbdo, ("devices/" + deviceCode + "/history").c_str(), &json)) {
+    Serial.println("[HISTORY] Entry recorded");
+  }
+}
+
+void checkConfig() {
+  String path = "devices/" + deviceCode + "/config/analyticsOn";
+  if (Firebase.RTDB.getBool(&fbdo, path.c_str())) {
+    bool newVal = fbdo.boolData();
+    if (newVal != analyticsOn) {
+      analyticsOn = newVal;
+      Serial.printf("[CONFIG] analyticsOn = %s\n", analyticsOn ? "ON" : "OFF");
+    }
+  }
+}
+
 // ══════════════════════════════════════════════════
 //  CHANGE DETECTION — only push when values change
 // ══════════════════════════════════════════════════
@@ -1090,6 +1117,7 @@ void loop() {
         Serial.printf("Data changed: bits=%d pct=%d flags=%d → pushing\n", sensorBits, confirmedPct, flags);
         if (pushLiveData()) {
           updateDeviceInfo(true);
+          writeHistory();
         }
         handleLED();  // Prevent LED freeze during Firebase calls
       }
@@ -1109,6 +1137,13 @@ void loop() {
         lastCommandCheck = now;
         checkCommands();
         handleLED();
+      }
+
+      // Check config every 30 seconds (analyticsOn)
+      static unsigned long lastConfigCheck = 0;
+      if (now - lastConfigCheck >= 30000) {
+        lastConfigCheck = now;
+        checkConfig();
       }
     }
   } else {
