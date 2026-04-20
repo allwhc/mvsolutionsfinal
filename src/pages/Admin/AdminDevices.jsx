@@ -3,7 +3,7 @@ import { getAllDevices, approvePendingDevice, registerDevice, updateDevice, dele
 import { sendTestCommand, sendRestartCommand, getPendingDevicesRTDB, listenToDeviceLive, listenToDeviceInfo, listenToValveConfig, setAnalyticsEnabled } from "../../firebase/rtdb";
 import { QRCodeSVG } from "qrcode.react";
 
-const DEVICE_CLASS = { 1: "Valve", 2: "Sensor", 3: "Motor" };
+const DEVICE_CLASS = { 1: "Valve", 2: "Sensor", 3: "Motor", "senseflowstandard": "SenseFlow Standard" };
 const SENSOR_TYPE = { 0: "None", 1: "DIP", 2: "Ultrasonic" };
 
 export default function AdminDevices() {

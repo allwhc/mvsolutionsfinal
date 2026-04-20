@@ -133,6 +133,27 @@ export function listenToDeviceHistory(deviceCode, callback, limitCount = 864) {
   return () => off(histRef);
 }
 
+// ── SenseFlow Standard (senseflowstandard) commands ──
+export async function sfsSetAutoMode(deviceCode, enabled) {
+  await update(ref(rtdb, `devices/${deviceCode}/commands`), { setAutoMode: !!enabled });
+}
+
+export async function sfsForcePumpRun(deviceCode, minutes) {
+  await update(ref(rtdb, `devices/${deviceCode}/commands`), { setPumpForceRun: minutes });
+}
+
+export function listenToSfsLogs(deviceCode, callback) {
+  const logsRef = ref(rtdb, `devices/${deviceCode}/logs`);
+  onValue(logsRef, (snap) => {
+    if (!snap.exists()) { callback([]); return; }
+    const data = snap.val();
+    const arr = Object.entries(data).map(([k, v]) => ({ slot: k, ...v }));
+    arr.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+    callback(arr);
+  });
+  return () => off(logsRef);
+}
+
 // ── Check device online status ──
 export function listenToDeviceOnline(deviceCode, callback) {
   const onlineRef = ref(rtdb, `devices/${deviceCode}/info/online`);

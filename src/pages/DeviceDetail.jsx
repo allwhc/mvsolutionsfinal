@@ -9,7 +9,7 @@ import {
 } from "../firebase/db";
 import { doc, updateDoc } from "firebase/firestore";
 import { db } from "../firebase/config";
-import { sendRefreshCommand, sendRestartCommand, sendTestCommand, sendValveCommand, listenToValveConfig, setValveConfig } from "../firebase/rtdb";
+import { sendRefreshCommand, sendRestartCommand, sendTestCommand, sendValveCommand, listenToValveConfig, setValveConfig, sfsSetAutoMode, sfsForcePumpRun, listenToSfsLogs } from "../firebase/rtdb";
 import DeviceCard from "../components/DeviceCard/DeviceCard";
 import AnalyticsChart, { generateCSV, downloadCSV } from "../components/Analytics/AnalyticsChart";
 
@@ -37,7 +37,17 @@ export default function DeviceDetail() {
   const [nameInput, setNameInput] = useState("");
   const [valveAlertOpenHours, setValveAlertOpenHours] = useState("");
   const [valveAlertClosedHours, setValveAlertClosedHours] = useState("");
+  const [sfsLogs, setSfsLogs] = useState([]);
+  const [sfsPumpMinutes, setSfsPumpMinutes] = useState(15);
   const navigate = useNavigate();
+
+  const isSfs = catalog?.deviceClass === "senseflowstandard" || info?.deviceClass === "senseflowstandard";
+
+  useEffect(() => {
+    if (!isSfs) return;
+    const unsub = listenToSfsLogs(code, setSfsLogs);
+    return () => unsub();
+  }, [isSfs, code]);
 
   useEffect(() => {
     async function load() {
@@ -115,7 +125,7 @@ export default function DeviceDetail() {
     return <div className="text-center py-20 text-gray-500">Device not found in catalog</div>;
   }
 
-  const DEVICE_CLASS = { 1: "Valve", 2: "Sensor", 3: "Motor" };
+  const DEVICE_CLASS = { 1: "Valve", 2: "Sensor", 3: "Motor", "senseflowstandard": "SenseFlow Standard" };
   const SENSOR_TYPE = { 0: "None", 1: "DIP", 2: "Ultrasonic" };
   const ACCESS_LABELS = { open: "Open", pin: "PIN Protected", invite: "Invite Only" };
 
@@ -472,6 +482,142 @@ export default function DeviceDetail() {
               Save Valve Alerts
             </button>
           </div>
+        </div>
+      )}
+
+      {/* SenseFlow Standard controls — only for senseflowstandard devices */}
+      {isSfs && (
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200 mt-4 p-4">
+          <h3 className="font-semibold text-gray-900 mb-3">Tank Controller</h3>
+
+          {/* Mode badge */}
+          {live?.modeText && (
+            <div className="flex items-center justify-between bg-gray-50 rounded-lg px-3 py-2 mb-3 text-sm">
+              <span className="text-gray-500">Mode</span>
+              <span className={`font-semibold ${
+                live.mode === 0 ? "text-green-600" :
+                live.mode === 3 ? "text-blue-600" :
+                live.mode === 5 ? "text-red-600" :
+                live.mode === 6 ? "text-orange-600" :
+                "text-gray-700"
+              }`}>{live.modeText}</span>
+            </div>
+          )}
+
+          {/* Pump state */}
+          <div className="flex items-center justify-between bg-gray-50 rounded-lg px-3 py-2 mb-3 text-sm">
+            <span className="text-gray-500">Pump</span>
+            <span className={`font-semibold ${live?.motorState ? "text-green-600" : "text-gray-600"}`}>
+              {live?.motorState ? "ON" : "OFF"}
+            </span>
+          </div>
+
+          {/* Water level detail */}
+          {live?.levelPct != null && live.levelPct >= 0 && (
+            <div className="flex items-center justify-between bg-gray-50 rounded-lg px-3 py-2 mb-3 text-sm">
+              <span className="text-gray-500">Level</span>
+              <span className="font-semibold text-gray-900">
+                {live.levelPct.toFixed(0)}%
+                {live.distanceCm > 0 && ` · ${live.distanceCm.toFixed(1)} cm`}
+                {live.tankLitres > 0 && ` · ~${Math.round((live.levelPct / 100) * live.tankLitres)} L`}
+              </span>
+            </div>
+          )}
+
+          {/* Water presence sensor */}
+          {live?.hasWP && (
+            <div className="flex items-center justify-between bg-gray-50 rounded-lg px-3 py-2 mb-3 text-sm">
+              <span className="text-gray-500">Water Presence</span>
+              <span className={`font-semibold ${live.wpSensorStatus ? "text-blue-600" : "text-gray-500"}`}>
+                {live.wpSensorStatus ? "YES" : "NO"}
+              </span>
+            </div>
+          )}
+
+          {/* Dry run */}
+          {live?.dryRun && (
+            <div className="bg-red-50 border border-red-200 rounded-lg px-3 py-2 mb-3">
+              <span className="text-red-700 text-xs font-semibold">Dry Run Protection Active</span>
+            </div>
+          )}
+
+          {/* Auto mode toggle */}
+          <div className="flex items-center justify-between bg-gray-50 rounded-lg px-3 py-2 mb-3">
+            <span className="text-sm text-gray-700">Auto Mode</span>
+            <button
+              onClick={async () => {
+                const newVal = !live?.autoMode;
+                if (!confirm((newVal ? "Enable" : "Disable") + " auto mode? Change applies within 60 seconds.")) return;
+                await sfsSetAutoMode(code, newVal);
+              }}
+              disabled={!isOnline}
+              className={`px-4 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+                live?.autoMode ? "bg-green-500 text-white hover:bg-green-600" : "bg-gray-200 text-gray-600 hover:bg-gray-300"
+              } disabled:opacity-40`}
+            >
+              {live?.autoMode ? "ON" : "OFF"}
+            </button>
+          </div>
+
+          {/* Schedule status */}
+          <div className="flex items-center justify-between bg-gray-50 rounded-lg px-3 py-2 mb-3 text-sm">
+            <span className="text-gray-500">Schedule Mode</span>
+            <span className={`font-semibold ${live?.scheduleMode ? "text-blue-600" : "text-gray-500"}`}>
+              {live?.scheduleMode ? "ON" : "OFF"}
+            </span>
+          </div>
+
+          {/* Thresholds display */}
+          {(live?.startPct != null || live?.stopPct != null) && (
+            <div className="bg-blue-50 rounded-lg p-3 mb-3 text-sm">
+              <p className="text-xs text-blue-600 font-semibold mb-1">Auto Thresholds</p>
+              <div className="text-gray-700">Start: {live.startPct}% · Stop: {live.stopPct}%</div>
+            </div>
+          )}
+
+          {/* Force pump run */}
+          <div className="bg-gray-50 rounded-lg p-3 mb-3">
+            <p className="text-xs text-gray-600 font-semibold mb-2">Manual Pump Run</p>
+            <div className="flex items-center gap-2">
+              <select value={sfsPumpMinutes} onChange={(e) => setSfsPumpMinutes(parseInt(e.target.value))}
+                className="px-2 py-1.5 border border-gray-200 rounded text-sm">
+                <option value={5}>5 min</option>
+                <option value={10}>10 min</option>
+                <option value={15}>15 min</option>
+                <option value={30}>30 min</option>
+                <option value={60}>60 min</option>
+              </select>
+              <button
+                onClick={async () => {
+                  if (!confirm(`Force pump run for ${sfsPumpMinutes} minutes? Applies within 60 seconds.`)) return;
+                  await sfsForcePumpRun(code, sfsPumpMinutes);
+                }}
+                disabled={!isOnline}
+                className="flex-1 bg-blue-600 text-white py-1.5 rounded-lg text-xs font-semibold hover:bg-blue-700 disabled:opacity-40"
+              >
+                Force Run
+              </button>
+            </div>
+            <p className="text-[11px] text-gray-400 mt-2">Device polls commands every 60 seconds.</p>
+          </div>
+
+          {/* Cloud logs (last 30) */}
+          {sfsLogs.length > 0 && (
+            <div className="mt-4">
+              <p className="text-xs text-gray-600 font-semibold mb-2">Recent Events ({sfsLogs.length})</p>
+              <div className="bg-gray-50 rounded-lg p-2 max-h-60 overflow-y-auto space-y-1">
+                {sfsLogs.slice(0, 30).map((log) => (
+                  <div key={log.slot} className="text-xs px-2 py-1 border-b border-gray-100 last:border-0">
+                    <div className="flex justify-between">
+                      <span className="font-mono text-gray-700">{log.action}</span>
+                      <span className="text-gray-400">{log.timestamp ? new Date(log.timestamp * 1000).toLocaleString() : "—"}</span>
+                    </div>
+                    {log.details && <div className="text-gray-500 mt-0.5">{log.details}</div>}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
