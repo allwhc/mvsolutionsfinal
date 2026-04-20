@@ -131,11 +131,18 @@ export default function AnalyticsChart({ deviceCode, tankCapacityLitres, onHisto
       )}
 
       {/* Chart */}
-      <div className="bg-white rounded-lg" style={{ height: 280 }}>
+      <div className="bg-white rounded-lg" style={{ height: 320 }}>
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={chartData} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-            <XAxis dataKey="time" tick={{ fontSize: 10 }} interval="preserveStartEnd" />
+            <XAxis
+              dataKey="time"
+              tick={{ fontSize: 10 }}
+              interval="preserveStartEnd"
+              angle={-35}
+              textAnchor="end"
+              height={60}
+            />
             <YAxis domain={[0, 100]} tick={{ fontSize: 10 }} tickFormatter={(v) => `${v}%`} />
             <Tooltip
               contentStyle={{ fontSize: 12 }}
