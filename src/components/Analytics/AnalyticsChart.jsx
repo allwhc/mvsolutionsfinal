@@ -4,11 +4,12 @@ import { getHistoryByRange } from "../../firebase/rtdb";
 
 // Interpolate sparse history entries into fixed intervals (step interpolation)
 // Returns array of { ts, pct } with entries every `stepMs` milliseconds
+// Before first data point: pct is null (no line drawn)
 function interpolate(history, startTs, endTs, stepMs) {
   if (history.length === 0) return [];
   const result = [];
   let current = 0;
-  let lastPct = history[0].pct ?? 0;
+  let lastPct = null;  // null until we've seen the first real entry
 
   for (let t = startTs; t <= endTs; t += stepMs) {
     // Advance through history entries <= t
@@ -76,7 +77,7 @@ export default function AnalyticsChart({ deviceCode, tankCapacityLitres, onHisto
         minute: range === "24h" ? "2-digit" : undefined,
       }),
       pct: p.pct,
-      litres: tankCapacityLitres ? Math.round((p.pct / 100) * tankCapacityLitres) : null,
+      litres: (p.pct != null && tankCapacityLitres) ? Math.round((p.pct / 100) * tankCapacityLitres) : null,
     }));
   }, [history, startTs, endTs, stepMs, range, tankCapacityLitres]);
 
@@ -150,6 +151,7 @@ export default function AnalyticsChart({ deviceCode, tankCapacityLitres, onHisto
               strokeWidth={2}
               dot={false}
               isAnimationActive={false}
+              connectNulls={false}
             />
           </LineChart>
         </ResponsiveContainer>
@@ -168,8 +170,12 @@ export function generateCSV(history, tankCapacityLitres, startTs, endTs, stepMs 
   const rows = [["DateTime", "Level %", "Litres"]];
   for (const p of interp) {
     const dt = new Date(p.ts).toISOString().replace("T", " ").slice(0, 19);
-    const litres = tankCapacityLitres ? Math.round((p.pct / 100) * tankCapacityLitres) : "";
-    rows.push([dt, p.pct, litres]);
+    if (p.pct == null) {
+      rows.push([dt, "", ""]);
+    } else {
+      const litres = tankCapacityLitres ? Math.round((p.pct / 100) * tankCapacityLitres) : "";
+      rows.push([dt, p.pct, litres]);
+    }
   }
   return rows.map((r) => r.join(",")).join("\n");
 }
