@@ -2,24 +2,48 @@ import { useState, useEffect, useMemo } from "react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 import { getHistoryByRange } from "../../firebase/rtdb";
 
-// Interpolate sparse history entries into fixed intervals (step interpolation)
-// Returns array of { ts, pct } with entries every `stepMs` milliseconds
+// Merge actual history entries with grid timestamps (every stepMs)
+// Returns array of { ts, pct, source } — source is "actual" or "interpolated"
 // Before first data point: pct is null (no line drawn)
 function interpolate(history, startTs, endTs, stepMs) {
-  if (history.length === 0) return [];
-  const result = [];
-  let current = 0;
-  let lastPct = null;  // null until we've seen the first real entry
+  // Build set of grid timestamps (as numbers)
+  const gridTimes = [];
+  for (let t = startTs; t <= endTs; t += stepMs) gridTimes.push(t);
 
-  for (let t = startTs; t <= endTs; t += stepMs) {
-    // Advance through history entries <= t
-    while (current < history.length && history[current].ts <= t) {
-      lastPct = history[current].pct ?? lastPct;
-      current++;
-    }
-    result.push({ ts: t, pct: lastPct });
+  // Filter history to within range
+  const actuals = history.filter((h) => h.ts >= startTs && h.ts <= endTs);
+
+  // Merge and sort unique timestamps
+  const actualSet = new Set(actuals.map((a) => a.ts));
+  const merged = [];
+  // Add all actuals first
+  for (const a of actuals) {
+    merged.push({ ts: a.ts, pct: a.pct, source: "actual" });
   }
-  return result;
+  // Add grid times that don't coincide with actuals
+  for (const t of gridTimes) {
+    if (!actualSet.has(t)) merged.push({ ts: t, pct: null, source: "interpolated" });
+  }
+  // Sort by timestamp
+  merged.sort((a, b) => a.ts - b.ts);
+
+  // Fill interpolated values with last known actual value
+  // Use global last actual (including before the range start) for carrying value forward
+  let lastKnown = null;
+  // Find last actual before range start to seed lastKnown
+  for (let i = history.length - 1; i >= 0; i--) {
+    if (history[i].ts < startTs) { lastKnown = history[i].pct ?? null; break; }
+  }
+
+  for (const row of merged) {
+    if (row.source === "actual") {
+      lastKnown = row.pct;
+    } else {
+      row.pct = lastKnown;
+    }
+  }
+
+  return merged;
 }
 
 // Calculate litres filled and consumed from raw history (not interpolated)
@@ -77,6 +101,7 @@ export default function AnalyticsChart({ deviceCode, tankCapacityLitres, onHisto
         minute: range === "24h" ? "2-digit" : undefined,
       }),
       pct: p.pct,
+      isActual: p.source === "actual",
       litres: (p.pct != null && tankCapacityLitres) ? Math.round((p.pct / 100) * tankCapacityLitres) : null,
     }));
   }, [history, startTs, endTs, stepMs, range, tankCapacityLitres]);
@@ -156,7 +181,20 @@ export default function AnalyticsChart({ deviceCode, tankCapacityLitres, onHisto
               dataKey="pct"
               stroke="#2563eb"
               strokeWidth={2}
-              dot={false}
+              dot={(props) => {
+                if (!props.payload?.isActual) return null;
+                return (
+                  <circle
+                    key={`dot-${props.index}`}
+                    cx={props.cx}
+                    cy={props.cy}
+                    r={3}
+                    fill="#2563eb"
+                    stroke="#fff"
+                    strokeWidth={1}
+                  />
+                );
+              }}
               isAnimationActive={false}
               connectNulls={false}
             />
@@ -175,15 +213,15 @@ export default function AnalyticsChart({ deviceCode, tankCapacityLitres, onHisto
 export function generateCSV(history, tankCapacityLitres, startTs, endTs, stepMs = 15 * 60000) {
   const interp = interpolate(history, startTs, endTs, stepMs);
   const tzOffset = new Date().getTimezoneOffset() * 60000;
-  const rows = [["DateTime (Local)", "Level %", "Litres"]];
+  const rows = [["DateTime (Local)", "Level %", "Litres", "Source"]];
   for (const p of interp) {
     // Format in local timezone instead of UTC
     const dt = new Date(p.ts - tzOffset).toISOString().replace("T", " ").slice(0, 19);
     if (p.pct == null) {
-      rows.push([dt, "", ""]);
+      rows.push([dt, "", "", "no data"]);
     } else {
       const litres = tankCapacityLitres ? Math.round((p.pct / 100) * tankCapacityLitres) : "";
-      rows.push([dt, p.pct, litres]);
+      rows.push([dt, p.pct, litres, p.source || ""]);
     }
   }
   return rows.map((r) => r.join(",")).join("\n");
