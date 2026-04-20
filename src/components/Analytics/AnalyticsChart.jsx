@@ -167,9 +167,11 @@ export default function AnalyticsChart({ deviceCode, tankCapacityLitres, onHisto
 // Export helper for CSV generation
 export function generateCSV(history, tankCapacityLitres, startTs, endTs, stepMs = 15 * 60000) {
   const interp = interpolate(history, startTs, endTs, stepMs);
-  const rows = [["DateTime", "Level %", "Litres"]];
+  const tzOffset = new Date().getTimezoneOffset() * 60000;
+  const rows = [["DateTime (Local)", "Level %", "Litres"]];
   for (const p of interp) {
-    const dt = new Date(p.ts).toISOString().replace("T", " ").slice(0, 19);
+    // Format in local timezone instead of UTC
+    const dt = new Date(p.ts - tzOffset).toISOString().replace("T", " ").slice(0, 19);
     if (p.pct == null) {
       rows.push([dt, "", ""]);
     } else {
