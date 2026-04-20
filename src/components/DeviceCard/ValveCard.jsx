@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { Link } from "react-router-dom";
 import TankViz, { formatTimestamp } from "./TankViz";
 import { sendRefreshCommand, sendValveCommand, listenToValveConfig } from "../../firebase/rtdb";
 
@@ -82,6 +83,18 @@ export default function ValveCard({ deviceCode, deviceName, live, info, catalog,
           <p className="text-xs text-gray-400">{deviceCode}</p>
         </div>
         <div className="flex items-center gap-1.5">
+          {valveConfig?.analyticsOn && (
+            <Link
+              to={`/device/${deviceCode}#analytics`}
+              onClick={(e) => e.stopPropagation()}
+              title="View analytics"
+              className="text-blue-600 hover:text-blue-800"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 12l3-3 3 3 5-5M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+            </Link>
+          )}
           {isStreamTest && (
             <span className="text-[10px] bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded-full font-semibold">STREAM</span>
           )}

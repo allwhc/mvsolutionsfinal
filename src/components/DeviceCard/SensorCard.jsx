@@ -1,6 +1,8 @@
+import { useState, useEffect } from "react";
+import { Link } from "react-router-dom";
 import TankViz, { formatTimestamp } from "./TankViz";
 import CleaningBadge from "./CleaningBadge";
-import { sendRefreshCommand } from "../../firebase/rtdb";
+import { sendRefreshCommand, listenToValveConfig } from "../../firebase/rtdb";
 
 // Determine card flash class — cleaning never causes flash, only badge
 function getAlertFlash({ sensorError, sensorOffline, confirmedPct, alertLowPct, alertHighPct }) {
@@ -28,6 +30,12 @@ export default function SensorCard({ deviceCode, deviceName, live, info, catalog
     alertLowPct, alertHighPct, lastCleanedAt, cleanIntervalDays,
   }) : "";
 
+  const [analyticsOn, setAnalyticsOn] = useState(false);
+  useEffect(() => {
+    const unsub = listenToValveConfig(deviceCode, (cfg) => setAnalyticsOn(!!cfg?.analyticsOn));
+    return () => unsub();
+  }, [deviceCode]);
+
   return (
     <div className={`bg-white rounded-xl shadow-sm border p-4 transition-all ${
       isOnline ? "border-gray-200" : "border-gray-200 opacity-60"
@@ -39,6 +47,18 @@ export default function SensorCard({ deviceCode, deviceName, live, info, catalog
           <p className="text-xs text-gray-400">{deviceCode}</p>
         </div>
         <div className="flex items-center gap-1.5">
+          {analyticsOn && (
+            <Link
+              to={`/device/${deviceCode}#analytics`}
+              onClick={(e) => e.stopPropagation()}
+              title="View analytics"
+              className="text-blue-600 hover:text-blue-800"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 12l3-3 3 3 5-5M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+            </Link>
+          )}
           <CleaningBadge lastCleanedAt={lastCleanedAt} cleanIntervalDays={cleanIntervalDays} />
           <span className={`w-2 h-2 rounded-full ${isOnline ? "bg-green-500" : "bg-gray-300"}`} />
           <span className="text-xs text-gray-500">{isOnline ? "Online" : "Offline"}</span>

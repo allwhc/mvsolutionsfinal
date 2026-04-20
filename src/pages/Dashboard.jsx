@@ -10,7 +10,19 @@ export default function Dashboard() {
   const { devices, loading } = useDevices();
   const [filter, setFilter] = useState("all"); // "all" | "personal" | "org" | groupId
   const [groups, setGroups] = useState([]);
-  const [locked, setLocked] = useState(true); // Dashboard lock — default locked
+  const [locked, setLocked] = useState(() => {
+    // Persist lock state across navigations — only user toggles it
+    const saved = localStorage.getItem("dashboardLocked");
+    return saved === null ? true : saved === "true";
+  });
+
+  const toggleLock = () => {
+    setLocked((prev) => {
+      const next = !prev;
+      localStorage.setItem("dashboardLocked", String(next));
+      return next;
+    });
+  };
 
   const isOrg = isOrgAdmin || isOrgMember;
   const orgId = userData?.orgId;
@@ -97,7 +109,7 @@ export default function Dashboard() {
           </div>
           <div className="flex items-center gap-2">
             <button
-              onClick={() => setLocked(!locked)}
+              onClick={toggleLock}
               className={`p-2 rounded-lg transition-colors ${locked ? "bg-gray-100 text-gray-500" : "bg-yellow-100 text-yellow-700"}`}
               title={locked ? "Dashboard locked — tap to unlock" : "Dashboard unlocked — tap to lock"}
             >

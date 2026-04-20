@@ -1,4 +1,4 @@
-import { useParams, useNavigate } from "react-router-dom";
+import { useParams, useNavigate, useLocation } from "react-router-dom";
 import { useState, useEffect } from "react";
 import { useAuth } from "../context/AuthContext";
 import { useDevice } from "../hooks/useDevice";
@@ -40,8 +40,17 @@ export default function DeviceDetail() {
   const [sfsLogs, setSfsLogs] = useState([]);
   const [sfsPumpMinutes, setSfsPumpMinutes] = useState(15);
   const navigate = useNavigate();
+  const location = useLocation();
 
   const isSfs = catalog?.deviceClass === "senseflowstandard" || info?.deviceClass === "senseflowstandard";
+
+  // Scroll to anchor when hash is present (e.g. #analytics)
+  useEffect(() => {
+    if (!location.hash || loading) return;
+    const id = location.hash.slice(1);
+    const el = document.getElementById(id);
+    if (el) setTimeout(() => el.scrollIntoView({ behavior: "smooth", block: "start" }), 200);
+  }, [location.hash, loading, valveConfig?.analyticsOn]);
 
   useEffect(() => {
     if (!isSfs) return;
@@ -700,7 +709,7 @@ export default function DeviceDetail() {
       )}
       {/* Analytics — only shown when analyticsOn is true */}
       {valveConfig?.analyticsOn && (
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 mt-4 p-4">
+        <div id="analytics" className="bg-white rounded-xl shadow-sm border border-gray-200 mt-4 p-4 scroll-mt-20">
           <div className="flex items-center justify-between mb-3">
             <h3 className="font-semibold text-gray-900">Analytics</h3>
             <button
