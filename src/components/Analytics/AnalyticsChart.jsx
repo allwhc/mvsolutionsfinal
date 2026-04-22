@@ -118,8 +118,26 @@ export default function AnalyticsChart({ deviceCode, tankCapacityLitres, onHisto
 
   if (history.length === 0) {
     return (
-      <div className="text-center py-12 text-gray-400 text-sm">
-        No history data yet. Analytics needs to be enabled by admin.
+      <div>
+        {/* Range tabs still shown so user can try other ranges */}
+        <div className="flex gap-2 mb-4">
+          {Object.entries(RANGES).map(([key, r]) => (
+            <button
+              key={key}
+              onClick={() => setRange(key)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium ${
+                range === key ? "bg-blue-100 text-blue-700" : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+              }`}
+            >
+              {r.label}
+            </button>
+          ))}
+        </div>
+        <div className="text-center py-12 text-gray-400 text-sm">
+          No data changes recorded in this range.
+          <br />
+          <span className="text-xs">Try a wider range, or device will record on next level change.</span>
+        </div>
       </div>
     );
   }
