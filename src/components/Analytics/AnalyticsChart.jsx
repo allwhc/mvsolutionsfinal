@@ -72,6 +72,7 @@ export default function AnalyticsChart({ deviceCode, tankCapacityLitres, onHisto
   const [range, setRange] = useState("24h");
   const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [actualsOnly, setActualsOnly] = useState(false);
 
   const { startTs, endTs, stepMs } = useMemo(() => {
     const end = Date.now();
@@ -93,18 +94,22 @@ export default function AnalyticsChart({ deviceCode, tankCapacityLitres, onHisto
 
   const chartData = useMemo(() => {
     const interp = interpolate(history, startTs, endTs, stepMs);
-    return interp.map((p) => ({
-      time: new Date(p.ts).toLocaleString([], {
-        month: range === "24h" ? undefined : "short",
-        day: range === "24h" ? undefined : "numeric",
-        hour: "2-digit",
-        minute: range === "24h" ? "2-digit" : undefined,
-      }),
-      pct: p.pct,
-      isActual: p.source === "actual",
-      litres: (p.pct != null && tankCapacityLitres) ? Math.round((p.pct / 100) * tankCapacityLitres) : null,
-    }));
-  }, [history, startTs, endTs, stepMs, range, tankCapacityLitres]);
+    return interp.map((p) => {
+      const isActual = p.source === "actual";
+      const pct = actualsOnly ? (isActual ? p.pct : null) : p.pct;
+      return {
+        time: new Date(p.ts).toLocaleString([], {
+          month: range === "24h" ? undefined : "short",
+          day: range === "24h" ? undefined : "numeric",
+          hour: "2-digit",
+          minute: range === "24h" ? "2-digit" : undefined,
+        }),
+        pct,
+        isActual,
+        litres: (pct != null && tankCapacityLitres) ? Math.round((pct / 100) * tankCapacityLitres) : null,
+      };
+    });
+  }, [history, startTs, endTs, stepMs, range, tankCapacityLitres, actualsOnly]);
 
   const litres = useMemo(() => calcLitres(history, tankCapacityLitres), [history, tankCapacityLitres]);
 
@@ -150,19 +155,30 @@ export default function AnalyticsChart({ deviceCode, tankCapacityLitres, onHisto
 
   return (
     <div>
-      {/* Range tabs */}
-      <div className="flex gap-2 mb-4">
-        {Object.entries(RANGES).map(([key, r]) => (
-          <button
-            key={key}
-            onClick={() => setRange(key)}
-            className={`px-3 py-1.5 rounded-lg text-xs font-medium ${
-              range === key ? "bg-blue-100 text-blue-700" : "bg-gray-100 text-gray-600 hover:bg-gray-200"
-            }`}
-          >
-            {r.label}
-          </button>
-        ))}
+      {/* Range tabs + actuals-only toggle */}
+      <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
+        <div className="flex gap-2">
+          {Object.entries(RANGES).map(([key, r]) => (
+            <button
+              key={key}
+              onClick={() => setRange(key)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium ${
+                range === key ? "bg-blue-100 text-blue-700" : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+              }`}
+            >
+              {r.label}
+            </button>
+          ))}
+        </div>
+        <label className="flex items-center gap-1.5 text-xs text-gray-600 cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={actualsOnly}
+            onChange={(e) => setActualsOnly(e.target.checked)}
+            className="w-3.5 h-3.5 accent-blue-600"
+          />
+          Actual values only
+        </label>
       </div>
 
       {/* Summary */}
