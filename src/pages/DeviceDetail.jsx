@@ -32,6 +32,7 @@ export default function DeviceDetail() {
   const [alertHighPct, setAlertHighPct] = useState("");
   const [alertError, setAlertError] = useState("");
   const [valveConfig, setValveConfigState] = useState(null);
+  const [chartKey, setChartKey] = useState(0);
   const [deviceName, setDeviceName] = useState("");
   const [editingName, setEditingName] = useState(false);
   const [nameInput, setNameInput] = useState("");
@@ -710,24 +711,44 @@ export default function DeviceDetail() {
       {/* Analytics — only shown when analyticsOn is true */}
       {valveConfig?.analyticsOn && (
         <div id="analytics" className="bg-white rounded-xl shadow-sm border border-gray-200 mt-4 p-4 scroll-mt-20">
-          <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center justify-between mb-3 gap-2">
             <h3 className="font-semibold text-gray-900">Analytics</h3>
-            <button
-              onClick={async () => {
-                const { getHistoryByRange } = await import("../firebase/rtdb");
-                const endTs = Date.now();
-                const startTs = endTs - 30 * 86400000;
-                const history = await getHistoryByRange(code, startTs, endTs, true);
-                const csv = generateCSV(history, tankCapacityLitres, startTs, endTs);
-                const safeName = (deviceName || catalog?.deviceName || code).replace(/[^a-zA-Z0-9_-]+/g, "_");
-                downloadCSV(`${safeName}_${code}_30d_history.csv`, csv);
-              }}
-              className="text-xs bg-blue-50 text-blue-600 px-3 py-1 rounded-lg hover:bg-blue-100"
-            >
-              Download CSV (30d)
-            </button>
+            <div className="flex gap-2">
+              <button
+                onClick={async () => {
+                  const { getHistoryByRange } = await import("../firebase/rtdb");
+                  const endTs = Date.now();
+                  const startTs = endTs - 30 * 86400000;
+                  const history = await getHistoryByRange(code, startTs, endTs, true);
+                  const csv = generateCSV(history, tankCapacityLitres, startTs, endTs);
+                  const safeName = (deviceName || catalog?.deviceName || code).replace(/[^a-zA-Z0-9_-]+/g, "_");
+                  downloadCSV(`${safeName}_${code}_30d_history.csv`, csv);
+                }}
+                className="text-xs bg-blue-50 text-blue-600 px-3 py-1 rounded-lg hover:bg-blue-100"
+              >
+                Download CSV (30d)
+              </button>
+              {(isOwner || isSuperAdmin) && (
+                <button
+                  onClick={async () => {
+                    if (!window.confirm("Clear all recorded history for this device? This cannot be undone.")) return;
+                    const { clearDeviceHistory } = await import("../firebase/rtdb");
+                    try {
+                      await clearDeviceHistory(code);
+                      setChartKey((k) => k + 1);
+                      alert("History cleared.");
+                    } catch (e) {
+                      alert("Failed to clear history: " + (e?.message || e));
+                    }
+                  }}
+                  className="text-xs bg-red-50 text-red-600 px-3 py-1 rounded-lg hover:bg-red-100"
+                >
+                  Clear History
+                </button>
+              )}
+            </div>
           </div>
-          <AnalyticsChart deviceCode={code} tankCapacityLitres={tankCapacityLitres} />
+          <AnalyticsChart key={chartKey} deviceCode={code} tankCapacityLitres={tankCapacityLitres} />
         </div>
       )}
 

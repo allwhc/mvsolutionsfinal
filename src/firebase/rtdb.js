@@ -37,6 +37,11 @@ export async function setAnalyticsEnabled(deviceCode, enabled) {
   });
 }
 
+// Clear all history for a device
+export async function clearDeviceHistory(deviceCode) {
+  await remove(ref(rtdb, `devices/${deviceCode}/history`));
+}
+
 // ── Pending Devices (from RTDB, where ESP32 writes) ──
 export async function getPendingDevicesRTDB() {
   const snap = await get(ref(rtdb, "pendingDevices"));
