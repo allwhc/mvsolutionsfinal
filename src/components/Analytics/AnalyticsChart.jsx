@@ -82,7 +82,7 @@ export default function AnalyticsChart({ deviceCode, tankCapacityLitres, onHisto
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    getHistoryByRange(deviceCode, startTs, endTs).then((data) => {
+    getHistoryByRange(deviceCode, startTs, endTs, true).then((data) => {
       if (cancelled) return;
       setHistory(data);
       setLoading(false);
@@ -108,6 +108,12 @@ export default function AnalyticsChart({ deviceCode, tankCapacityLitres, onHisto
 
   const litres = useMemo(() => calcLitres(history, tankCapacityLitres), [history, tankCapacityLitres]);
 
+  const actualsInRange = useMemo(
+    () => history.filter((h) => h.ts >= startTs && h.ts <= endTs),
+    [history, startTs, endTs]
+  );
+  const hasChartData = chartData.some((p) => p.pct != null);
+
   if (loading) {
     return (
       <div className="flex items-center justify-center py-20">
@@ -116,7 +122,7 @@ export default function AnalyticsChart({ deviceCode, tankCapacityLitres, onHisto
     );
   }
 
-  if (history.length === 0) {
+  if (!hasChartData) {
     return (
       <div>
         {/* Range tabs still shown so user can try other ranges */}
@@ -134,9 +140,9 @@ export default function AnalyticsChart({ deviceCode, tankCapacityLitres, onHisto
           ))}
         </div>
         <div className="text-center py-12 text-gray-400 text-sm">
-          No data changes recorded in this range.
+          No data recorded before this range.
           <br />
-          <span className="text-xs">Try a wider range, or device will record on next level change.</span>
+          <span className="text-xs">Device will record on next level change.</span>
         </div>
       </div>
     );
@@ -221,7 +227,7 @@ export default function AnalyticsChart({ deviceCode, tankCapacityLitres, onHisto
       </div>
 
       <p className="text-xs text-gray-400 mt-2 text-center">
-        {history.length} actual data point{history.length !== 1 ? "s" : ""} in this range
+        {actualsInRange.length} actual data point{actualsInRange.length !== 1 ? "s" : ""} in this range
       </p>
     </div>
   );

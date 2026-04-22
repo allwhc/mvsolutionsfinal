@@ -2,7 +2,9 @@ import { ref, onValue, set, update, get, off, push, query, orderByKey, orderByCh
 import { rtdb } from "./config";
 
 // Fetch history entries by timestamp range (ms since epoch)
-export async function getHistoryByRange(deviceCode, startTs, endTs) {
+// If includeSeed is true, also fetches the most recent entry before startTs
+// so callers can carry the last known value forward into the range.
+export async function getHistoryByRange(deviceCode, startTs, endTs, includeSeed = false) {
   const histRef = query(
     ref(rtdb, `devices/${deviceCode}/history`),
     orderByChild("ts"),
@@ -10,11 +12,22 @@ export async function getHistoryByRange(deviceCode, startTs, endTs) {
     endAt(endTs)
   );
   const snap = await get(histRef);
-  if (!snap.exists()) return [];
-  const data = snap.val();
-  return Object.entries(data)
-    .map(([key, val]) => ({ key, ...val }))
-    .sort((a, b) => (a.ts || 0) - (b.ts || 0));
+  const inRange = snap.exists()
+    ? Object.entries(snap.val()).map(([key, val]) => ({ key, ...val })).sort((a, b) => (a.ts || 0) - (b.ts || 0))
+    : [];
+
+  if (!includeSeed) return inRange;
+
+  const seedRef = query(
+    ref(rtdb, `devices/${deviceCode}/history`),
+    orderByChild("ts"),
+    endAt(startTs - 1),
+    limitToLast(1)
+  );
+  const seedSnap = await get(seedRef);
+  if (!seedSnap.exists()) return inRange;
+  const seed = Object.entries(seedSnap.val()).map(([key, val]) => ({ key, ...val }));
+  return [...seed, ...inRange];
 }
 
 // Set analyticsOn flag on device config

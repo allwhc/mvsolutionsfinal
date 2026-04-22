@@ -717,9 +717,10 @@ export default function DeviceDetail() {
                 const { getHistoryByRange } = await import("../firebase/rtdb");
                 const endTs = Date.now();
                 const startTs = endTs - 30 * 86400000;
-                const history = await getHistoryByRange(code, startTs, endTs);
+                const history = await getHistoryByRange(code, startTs, endTs, true);
                 const csv = generateCSV(history, tankCapacityLitres, startTs, endTs);
-                downloadCSV(`${code}_30d_history.csv`, csv);
+                const safeName = (deviceName || catalog?.deviceName || code).replace(/[^a-zA-Z0-9_-]+/g, "_");
+                downloadCSV(`${safeName}_${code}_30d_history.csv`, csv);
               }}
               className="text-xs bg-blue-50 text-blue-600 px-3 py-1 rounded-lg hover:bg-blue-100"
             >
