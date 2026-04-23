@@ -19,7 +19,6 @@
  */
 
 #include <WiFi.h>
-#include <ESPmDNS.h>
 #include <Preferences.h>
 #include <Firebase_ESP_Client.h>
 #include <addons/TokenHelper.h>
@@ -163,10 +162,6 @@ unsigned long lastCommandCheck = 0;
 bool manualWiFiInProgress = false;
 unsigned long manualWiFiStart = 0;
 
-// mDNS
-bool mdnsStarted = false;
-String mdnsName = "";
-
 // Push fail tracking
 int consecutiveFailCount = 0;
 bool pushFailFlash = false;
@@ -222,10 +217,7 @@ void loadOrCreateDeviceCode() {
   apName += "-";
   apName += deviceCode.substring(3, 7);  // First 4 chars of random part
   apName += "_mvstech";
-
-  // mDNS name (lowercase, no underscores)
-  mdnsName = "senseflow-sensor-" + deviceCode.substring(3, 7);
-  mdnsName.toLowerCase();
+  mvs.setDeviceName(String(DEVICE_NAME) + "-" + deviceCode.substring(3, 7));
 }
 
 // ══════════════════════════════════════════════════
@@ -1069,16 +1061,7 @@ void loop() {
   // Handle LED state machine
   handleLED();
 
-  // Start mDNS once WiFi connects
-  if (WiFi.status() == WL_CONNECTED && !mdnsStarted) {
-    if (MDNS.begin(mdnsName.c_str())) {
-      MDNS.addService("http", "tcp", 7689);
-      mdnsStarted = true;
-      Serial.println("mDNS started: http://" + mdnsName + ".local:7689");
-    }
-  } else if (WiFi.status() != WL_CONNECTED && mdnsStarted) {
-    mdnsStarted = false;
-  }
+  // mDNS is handled by MvsConnect library (name: <deviceName>-mvstech.local)
 
   // Internet check — only when Firebase not ready (saves bandwidth once connected)
   if (firebaseReady) {

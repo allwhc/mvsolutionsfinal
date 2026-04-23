@@ -20,7 +20,6 @@
  */
 
 #include <WiFi.h>
-#include <ESPmDNS.h>
 #include <Preferences.h>
 #include <Firebase_ESP_Client.h>
 #include <addons/TokenHelper.h>
@@ -136,10 +135,6 @@ unsigned long lastConfigCheck = 0;
 bool manualWiFiInProgress = false;
 unsigned long manualWiFiStart = 0;
 
-// mDNS
-bool mdnsStarted = false;
-String mdnsName = "";
-
 // Push fail tracking
 int consecutiveFailCount = 0;
 bool pushFailFlash = false;
@@ -187,9 +182,7 @@ void loadOrCreateDeviceCode() {
   apName += "-";
   apName += deviceCode.substring(3, 7);
   apName += "_mvstech";
-
-  mdnsName = "senseflow-vsim-" + deviceCode.substring(3, 7);
-  mdnsName.toLowerCase();
+  mvs.setDeviceName(String(DEVICE_NAME) + "-" + deviceCode.substring(3, 7));
 }
 
 void saveConfig() {
@@ -905,15 +898,7 @@ void loop() {
   handleLED();
   evaluateAutoMode();
 
-  // mDNS
-  if (WiFi.status() == WL_CONNECTED && !mdnsStarted) {
-    if (MDNS.begin(mdnsName.c_str())) {
-      MDNS.addService("http", "tcp", 7689);
-      mdnsStarted = true;
-    }
-  } else if (WiFi.status() != WL_CONNECTED && mdnsStarted) {
-    mdnsStarted = false;
-  }
+  // mDNS handled by MvsConnect library (<deviceName>-mvstech.local)
 
   // Internet check
   if (firebaseReady) {
