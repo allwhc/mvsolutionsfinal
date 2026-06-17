@@ -70,7 +70,7 @@
 
 // Device info
 #define DEVICE_NAME       "SenseFlow-Node-DIP"
-#define FIRMWARE_VERSION  "16.0.0"
+#define FIRMWARE_VERSION  "17.0.2"
 #define FIRMWARE_CODE     "SF-OSC-2026"
 #define AP_PASSWORD       "mvstech9867"
 
@@ -956,7 +956,10 @@ void updateDeviceInfo(bool online) {
   #endif
   json.set("sensorCount", SENSOR_COUNT);
 
-  Firebase.RTDB.setJSON(&fbdo, path.c_str(), &json);
+  // updateNode merges into /info instead of overwriting — preserves
+  // firstBootAt, lastUpdatedAt, lastOtaStatus, otaRetryCount that other
+  // code paths wrote there.
+  Firebase.RTDB.updateNode(&fbdo, path.c_str(), &json);
 }
 
 // Check commands node
@@ -1338,9 +1341,9 @@ h2{font-size:14px;font-weight:600;color:#666;margin-bottom:8px}
     int rssi = WiFi.RSSI();
     String sig;
     if (WiFi.status() != WL_CONNECTED) sig = "Not connected";
-    else if (rssi >= -55) sig = "Excellent";
-    else if (rssi >= -65) sig = "Good";
-    else if (rssi >= -75) sig = "Fair";
+    else if (rssi >= -65) sig = "Excellent";
+    else if (rssi >= -70) sig = "Good";
+    else if (rssi >= -98) sig = "Fair";
     else                  sig = "Weak";
 
     String lastUpd;
