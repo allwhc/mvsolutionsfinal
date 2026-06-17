@@ -47,6 +47,8 @@ export default function AdminFirmware() {
   const [otaUrl, setOtaUrl] = useState("");
   const [otaVersion, setOtaVersion] = useState("");
   const [otaMd5, setOtaMd5] = useState("");
+  const [verifyingUrl, setVerifyingUrl] = useState(false);
+  const [verifyStatus, setVerifyStatus] = useState(""); // "", "ok", "fail:<msg>"
   const [scheduleMode, setScheduleMode] = useState("now");
   const [scheduleDate, setScheduleDate] = useState("");
   const [scheduleTime, setScheduleTime] = useState("");
@@ -69,6 +71,38 @@ export default function AdminFirmware() {
   useEffect(() => {
     loadAll();
   }, []);
+
+  async function loadMd5Lib() {
+    if (window.md5) return window.md5;
+    return new Promise((resolve, reject) => {
+      const s = document.createElement("script");
+      s.src = "https://cdn.jsdelivr.net/npm/js-md5@0.8.3/build/md5.min.js";
+      s.onload = () => resolve(window.md5);
+      s.onerror = () => reject(new Error("Failed to load MD5 library"));
+      document.head.appendChild(s);
+    });
+  }
+
+  async function handleVerifyUrl() {
+    if (!otaUrl) return;
+    setVerifyingUrl(true);
+    setVerifyStatus("");
+    setOtaMd5("");
+    try {
+      const md5fn = await loadMd5Lib();
+      const resp = await fetch(otaUrl);
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const buf = await resp.arrayBuffer();
+      if (buf.byteLength < 1000) throw new Error("File too small (<1 KB)");
+      const hash = md5fn(new Uint8Array(buf));
+      setOtaMd5(hash);
+      setVerifyStatus(`ok:${Math.round(buf.byteLength / 1024)} KB`);
+    } catch (e) {
+      setVerifyStatus(`fail:${e.message}`);
+    } finally {
+      setVerifyingUrl(false);
+    }
+  }
 
   // Filtered list — also resets selection when filter changes
   const filtered = useMemo(() => {
@@ -332,15 +366,36 @@ export default function AdminFirmware() {
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
           <label className="flex flex-col md:col-span-2">
             <span className="text-xs text-gray-500 mb-1">Firmware URL (HTTP or HTTPS)</span>
-            <input value={otaUrl} onChange={(e) => setOtaUrl(e.target.value)} placeholder="https://gitlab.com/.../firmware.bin" className="border rounded px-2 py-1.5" />
+            <div className="flex gap-2">
+              <input
+                value={otaUrl}
+                onChange={(e) => { setOtaUrl(e.target.value); setOtaMd5(""); setVerifyStatus(""); }}
+                placeholder="https://gitlab.com/.../firmware.bin"
+                className="border rounded px-2 py-1.5 flex-1"
+              />
+              <button
+                type="button"
+                onClick={handleVerifyUrl}
+                disabled={!otaUrl || verifyingUrl}
+                className="px-3 py-1.5 text-xs bg-gray-100 hover:bg-gray-200 rounded font-medium disabled:opacity-50"
+              >
+                {verifyingUrl ? "Verifying…" : "Verify + MD5"}
+              </button>
+            </div>
+            {verifyStatus.startsWith("ok") && (
+              <span className="text-xs text-green-700 mt-1">✓ Reachable ({verifyStatus.slice(3)}) — MD5 auto-filled</span>
+            )}
+            {verifyStatus.startsWith("fail") && (
+              <span className="text-xs text-red-700 mt-1">✗ {verifyStatus.slice(5)} — you can still send without MD5</span>
+            )}
           </label>
           <label className="flex flex-col">
             <span className="text-xs text-gray-500 mb-1">Version label (optional)</span>
             <input value={otaVersion} onChange={(e) => setOtaVersion(e.target.value)} placeholder="e.g. 18.0.0" className="border rounded px-2 py-1.5" />
           </label>
           <label className="flex flex-col">
-            <span className="text-xs text-gray-500 mb-1">MD5 (optional)</span>
-            <input value={otaMd5} onChange={(e) => setOtaMd5(e.target.value)} placeholder="32-char hex" className="border rounded px-2 py-1.5 font-mono" />
+            <span className="text-xs text-gray-500 mb-1">MD5 {otaMd5 ? "(auto-filled — read-only)" : "(optional — click Verify above)"}</span>
+            <input value={otaMd5} onChange={(e) => setOtaMd5(e.target.value)} placeholder="32-char hex" className="border rounded px-2 py-1.5 font-mono text-xs" readOnly={!!otaMd5} />
           </label>
           <div className="md:col-span-2 flex items-center gap-4 mt-2">
             <label className="flex items-center gap-1.5">
