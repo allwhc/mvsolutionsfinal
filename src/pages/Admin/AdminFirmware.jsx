@@ -358,18 +358,24 @@ export default function AdminFirmware() {
               </>
             )}
           </div>
-          <label className="flex flex-col">
-            <span className="text-xs text-gray-500 mb-1">Batch size</span>
-            <input type="number" min="1" value={batchSize} onChange={(e) => setBatchSize(Math.max(1, +e.target.value))} className="border rounded px-2 py-1.5 w-24" />
-          </label>
-          <label className="flex flex-col">
-            <span className="text-xs text-gray-500 mb-1">Batch interval (minutes)</span>
-            <input type="number" min="0" value={batchIntervalMin} onChange={(e) => setBatchIntervalMin(Math.max(0, +e.target.value))} className="border rounded px-2 py-1.5 w-24" />
-          </label>
+          {selected.size > 1 && (
+            <>
+              <label className="flex flex-col">
+                <span className="text-xs text-gray-500 mb-1">Batch size</span>
+                <input type="number" min="1" value={batchSize} onChange={(e) => setBatchSize(Math.max(1, +e.target.value))} className="border rounded px-2 py-1.5 w-24" />
+              </label>
+              <label className="flex flex-col">
+                <span className="text-xs text-gray-500 mb-1">Batch interval (minutes)</span>
+                <input type="number" min="0" value={batchIntervalMin} onChange={(e) => setBatchIntervalMin(Math.max(0, +e.target.value))} className="border rounded px-2 py-1.5 w-24" />
+              </label>
+            </>
+          )}
         </div>
-        <p className="text-xs text-gray-500 mt-3">
-          With {batchSize}/batch every {batchIntervalMin} min, {selected.size} device(s) will be staggered across {Math.max(0, Math.ceil(selected.size / Math.max(1, batchSize)) - 1) * batchIntervalMin} min.
-        </p>
+        {selected.size > 1 && (
+          <p className="text-xs text-gray-500 mt-3">
+            With {batchSize}/batch every {batchIntervalMin} min, {selected.size} device(s) will be staggered across {Math.max(0, Math.ceil(selected.size / Math.max(1, batchSize)) - 1) * batchIntervalMin} min.
+          </p>
+        )}
         <button
           onClick={handleSend}
           disabled={selected.size === 0 || !otaUrl}
@@ -389,7 +395,7 @@ export default function AdminFirmware() {
               <p>URL: <span className="font-mono text-xs break-all">{otaUrl}</span></p>
               {otaVersion && <p>Version: {otaVersion}</p>}
               <p>Schedule: {scheduleMode === "now" ? "starting now" : `starting ${scheduleDate} ${scheduleTime}`}</p>
-              <p>Batch: {batchSize} / every {batchIntervalMin} min</p>
+              {selected.size > 1 && <p>Batch: {batchSize} / every {batchIntervalMin} min</p>}
               <p className="text-xs text-amber-600 mt-3">Offline devices will pick up the trigger when they come back online (within 7 days of the scheduled time).</p>
             </div>
             <div className="flex gap-2 mt-5 justify-end">
