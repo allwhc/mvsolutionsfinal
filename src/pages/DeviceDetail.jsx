@@ -13,6 +13,14 @@ import { sendRefreshCommand, sendRestartCommand, sendTestCommand, sendValveComma
 import DeviceCard from "../components/DeviceCard/DeviceCard";
 import AnalyticsChart, { generateCSV, downloadCSV } from "../components/Analytics/AnalyticsChart";
 
+function rssiLabel(rssi) {
+  if (rssi === undefined || rssi === null || rssi === 0) return "N/A";
+  if (rssi >= -55) return `Excellent (${rssi} dBm)`;
+  if (rssi >= -65) return `Good (${rssi} dBm)`;
+  if (rssi >= -75) return `Fair (${rssi} dBm)`;
+  return `Weak (${rssi} dBm)`;
+}
+
 export default function DeviceDetail() {
   const { code } = useParams();
   const { user, isSuperAdmin } = useAuth();
@@ -204,9 +212,9 @@ export default function DeviceDetail() {
           <span className="text-gray-500">Sensor Type</span>
           <span className="text-gray-900">{SENSOR_TYPE[catalog.sensorType] || "Unknown"}</span>
           <span className="text-gray-500">Firmware</span>
-          <span className="text-gray-900">{catalog.firmwareVersion || "Unknown"}</span>
-          <span className="text-gray-500">RSSI</span>
-          <span className="text-gray-900">{live?.rssi ? `${live.rssi} dBm` : "N/A"}</span>
+          <span className="text-gray-900">{info?.firmwareVersion || catalog.firmwareVersion || "Unknown"}</span>
+          <span className="text-gray-500">WiFi Signal</span>
+          <span className="text-gray-900">{rssiLabel(live?.rssi)}</span>
           <span className="text-gray-500">Status</span>
           <span className={isOnline ? "text-green-600" : "text-gray-400"}>{isOnline ? "Online" : "Offline"}</span>
           <span className="text-gray-500">Subscribers</span>
