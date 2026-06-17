@@ -33,6 +33,7 @@ export default function AdminDashboard() {
     { label: "Users", count: stats.users, link: "/admin/users", color: "bg-green-50 text-green-700" },
     { label: "Organisations", count: stats.orgs, link: "/admin/orgs", color: "bg-purple-50 text-purple-700" },
     { label: "Plans", count: stats.plans, link: "/admin/plans", color: "bg-indigo-50 text-indigo-700" },
+    { label: "Firmware Updates", count: "OTA", link: "/admin/firmware", color: "bg-pink-50 text-pink-700" },
   ];
 
   return (
@@ -44,7 +45,7 @@ export default function AdminDashboard() {
           <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
         </div>
       ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {cards.map((c) => (
             <Link key={c.label} to={c.link}>
               <div className={`rounded-xl p-6 hover:shadow-md transition-shadow ${c.color}`}>

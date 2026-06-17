@@ -180,3 +180,46 @@ export function listenToDeviceOnline(deviceCode, callback) {
   });
   return () => off(onlineRef);
 }
+
+// ── OTA Firmware Updates ──
+// Fetch the /info node for a single device (firmware version, OTA status, etc.)
+export async function getDeviceInfo(deviceCode) {
+  const infoRef = ref(rtdb, `devices/${deviceCode}/info`);
+  const snap = await get(infoRef);
+  return snap.exists() ? snap.val() : null;
+}
+
+// Fetch /info for multiple devices in parallel. Returns map of deviceCode → info.
+export async function getDevicesInfoMap(deviceCodes) {
+  const entries = await Promise.all(
+    deviceCodes.map(async (code) => {
+      const info = await getDeviceInfo(code);
+      return [code, info];
+    })
+  );
+  return Object.fromEntries(entries);
+}
+
+// Send an OTA trigger to one or many devices in a single multi-path update.
+// devicesWithSchedule = [{ deviceCode, scheduledAt }]
+// scheduledAt is epoch seconds (0 = now)
+export async function sendOtaTrigger({ devicesWithSchedule, url, version, md5 }) {
+  const updates = {};
+  for (const { deviceCode, scheduledAt } of devicesWithSchedule) {
+    updates[`devices/${deviceCode}/config/otaTrigger`]       = true;
+    updates[`devices/${deviceCode}/config/otaTargetUrl`]     = url;
+    updates[`devices/${deviceCode}/config/otaTargetVersion`] = version || "";
+    updates[`devices/${deviceCode}/config/otaTargetMd5`]     = md5 || "";
+    updates[`devices/${deviceCode}/config/otaScheduledAt`]   = scheduledAt || 0;
+    updates[`devices/${deviceCode}/info/lastOtaStatus`]      = "queued";
+    updates[`devices/${deviceCode}/info/otaRetryCount`]      = 0;
+  }
+  await update(ref(rtdb), updates);
+}
+
+// Cancel a pending OTA on one device (clear trigger)
+export async function cancelOtaTrigger(deviceCode) {
+  await update(ref(rtdb, `devices/${deviceCode}/config`), {
+    otaTrigger: false,
+  });
+}

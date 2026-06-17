@@ -12,6 +12,7 @@ import Profile from "./pages/Profile";
 import JoinOrg from "./pages/JoinOrg";
 import AdminDashboard from "./pages/Admin/AdminDashboard";
 import AdminDevices from "./pages/Admin/AdminDevices";
+import AdminFirmware from "./pages/Admin/AdminFirmware";
 import AdminUsers from "./pages/Admin/AdminUsers";
 import AdminOrgs from "./pages/Admin/AdminOrgs";
 import AdminPlans from "./pages/Admin/AdminPlans";
@@ -51,6 +52,7 @@ export default function App() {
             <Route path="/admin/users" element={<ProtectedRoute roles={["superadmin"]}><AdminUsers /></ProtectedRoute>} />
             <Route path="/admin/orgs" element={<ProtectedRoute roles={["superadmin"]}><AdminOrgs /></ProtectedRoute>} />
             <Route path="/admin/plans" element={<ProtectedRoute roles={["superadmin"]}><AdminPlans /></ProtectedRoute>} />
+            <Route path="/admin/firmware" element={<ProtectedRoute roles={["superadmin"]}><AdminFirmware /></ProtectedRoute>} />
 
             {/* Org routes */}
             <Route path="/org" element={<ProtectedRoute roles={["orgAdmin"]}><OrgDashboard /></ProtectedRoute>} />
