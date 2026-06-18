@@ -6,7 +6,16 @@ import { getDevicesInfoMap, sendOtaTrigger, cancelOtaTrigger } from "../../fireb
 function fmtEpoch(epochSec) {
   if (!epochSec) return "—";
   const d = new Date(epochSec * 1000);
-  return d.toLocaleString();
+  const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  const day = String(d.getDate()).padStart(2, "0");
+  const mon = months[d.getMonth()];
+  const year = d.getFullYear();
+  let h = d.getHours();
+  const m = String(d.getMinutes()).padStart(2, "0");
+  const s = String(d.getSeconds()).padStart(2, "0");
+  const ampm = h >= 12 ? "PM" : "AM";
+  h = h % 12 || 12;
+  return `${day}-${mon}-${year}, ${h}:${m}:${s} ${ampm}`;
 }
 
 function isDeviceOnline(info) {
