@@ -70,7 +70,7 @@
 
 // Device info
 #define DEVICE_NAME       "SenseFlow-Node-DIP"
-#define FIRMWARE_VERSION  "17.0.2"
+#define FIRMWARE_VERSION  "17.0.3"
 #define FIRMWARE_CODE     "SF-OSC-2026"
 #define AP_PASSWORD       "mvstech9867"
 
@@ -128,6 +128,27 @@ const int DIP_PINS[] = {34, 35, 32, 33};
 // Common rod pin — driven by ESP32 GPIO regardless of mode.
 #define DIP_COMMON_PIN       12   // EXCITE on PCB. Strapping pin — external pull-down ensures LOW at boot.
 
+// Set to 1 when GPIO12 drives a transistor (BC547 NPN, common-emitter)
+// that switches the probe-common rod from 5V. With inverted logic:
+//   GPIO12 LOW  → transistor OFF → probe-common floats (parked state)
+//   GPIO12 HIGH → transistor ON  → probe-common pulled to 5V (read state)
+// Boot is safe because GPIO12 external pull-down keeps it LOW → transistor
+// stays OFF until firmware drives it. Use this for >10m probe cables where
+// ESP32 GPIO can't source enough current safely.
+//
+// Set to 0 for direct GPIO drive (short cables only, ESP32 sources 3.3V).
+#define DIP_COMMON_VIA_TRANSISTOR  0
+
+#if DIP_COMMON_VIA_TRANSISTOR
+  // Transistor ON = current flows = common at V+. Logic is inverted vs direct drive.
+  #define DIP_COMMON_DRIVE_ACTIVE   HIGH   // GPIO HIGH → transistor ON  → common HIGH
+  #define DIP_COMMON_DRIVE_IDLE     LOW    // GPIO LOW  → transistor OFF → common floats
+#else
+  // Direct drive — GPIO IS the common rod.
+  #define DIP_COMMON_DRIVE_ACTIVE   HIGH
+  #define DIP_COMMON_DRIVE_IDLE     LOW
+#endif
+
 // Excitation mode for the common rod:
 //   0 = CONSTANT DC — common held HIGH always; probes read with plain
 //       digitalRead(). Simpler but causes electrolytic corrosion of probes
@@ -155,10 +176,11 @@ const int DIP_PINS[] = {34, 35, 32, 33};
     #define DIP_READ_INTERVAL_MS 2000
   #elif PROBE_LIFE_PROFILE == 2
     // Tightened for EMI noise rejection on top-of-water probe:
-    //   - 300 µs settle lets capacitive coupling discharge before sample
+    //   - 600 µs settle (was 300) — long probe cables (~100m) have higher
+    //     capacitance; need ~2x time for the line to fully charge before sampling
     //   - 15 samples = more statistical confidence
     //   - 15/15 agreement (strict) — any noise-aligned glitch fails
-    #define DIP_SETTLE_US         300
+    #define DIP_SETTLE_US         600
     #define DIP_SAMPLES_PER_READ   15
     #define DIP_AGREE_THRESHOLD    15
     #define DIP_READ_INTERVAL_MS 3000
@@ -397,6 +419,16 @@ void loadOrCreateDeviceCode() {
   lastUpdatedAt = prefs.getUInt("lastUpd", 0);
   Serial.printf("[BOOT] NVS firstBootAt=%u  lastUpdatedAt=%u\n",
                 firstBootAt, lastUpdatedAt);
+
+  // Last-sent values from previous boot — used to skip a redundant push if
+  // the new confirmed reading matches what cloud already has. Prevents
+  // double-history entries on reboot when sensor state hasn't changed.
+  // 0xFF sentinel = "nothing stored yet" → force first push.
+  lastSentBits  = prefs.getUChar("lsBits",  0xFF);
+  lastSentPct   = prefs.getUChar("lsPct",   0xFF);
+  lastSentFlags = prefs.getUChar("lsFlags", 0xFF);
+  Serial.printf("[BOOT] NVS lastSent bits=%u pct=%u flags=%u\n",
+                lastSentBits, lastSentPct, lastSentFlags);
   // firstBootAt + lastUpdatedAt finalized later, after NTP sync
 
   prefs.end();
@@ -501,11 +533,11 @@ void initDipSensors() {
   }
   pinMode(DIP_COMMON_PIN, OUTPUT);
 #if EXCITATION_MODE == 0
-  // Constant DC mode — common held HIGH permanently. Probes read with plain digitalRead.
-  digitalWrite(DIP_COMMON_PIN, HIGH);
+  // Constant DC mode — common held active permanently. Probes read with plain digitalRead.
+  digitalWrite(DIP_COMMON_PIN, DIP_COMMON_DRIVE_ACTIVE);
 #else
-  // OCSIL pulsed — common parked LOW between bursts.
-  digitalWrite(DIP_COMMON_PIN, LOW);
+  // OCSIL pulsed — common parked idle between bursts (no current flow, no electrolysis).
+  digitalWrite(DIP_COMMON_PIN, DIP_COMMON_DRIVE_IDLE);
 #endif
 }
 
@@ -530,14 +562,14 @@ uint8_t readDipRaw() {
   uint8_t agreeCount[6] = {0, 0, 0, 0, 0, 0};
 
   for (int s = 0; s < DIP_SAMPLES_PER_READ; s++) {
-    digitalWrite(DIP_COMMON_PIN, HIGH);
+    digitalWrite(DIP_COMMON_PIN, DIP_COMMON_DRIVE_ACTIVE);
     delayMicroseconds(DIP_SETTLE_US);
     uint8_t highSample = 0;
     for (int i = 0; i < SENSOR_COUNT; i++) {
       if (digitalRead(DIP_PINS[i]) == HIGH) highSample |= (1 << i);
     }
 
-    digitalWrite(DIP_COMMON_PIN, LOW);
+    digitalWrite(DIP_COMMON_PIN, DIP_COMMON_DRIVE_IDLE);
     delayMicroseconds(DIP_SETTLE_US);
     uint8_t lowSample = 0;
     for (int i = 0; i < SENSOR_COUNT; i++) {
@@ -550,8 +582,8 @@ uint8_t readDipRaw() {
     }
   }
 
-  // Park common LOW between reads (minimises DC bias, slows electrolysis)
-  digitalWrite(DIP_COMMON_PIN, LOW);
+  // Park common idle between reads (minimises DC bias, slows electrolysis)
+  digitalWrite(DIP_COMMON_PIN, DIP_COMMON_DRIVE_IDLE);
 
   uint8_t bits = 0;
   for (int i = 0; i < SENSOR_COUNT; i++) {
@@ -902,10 +934,18 @@ bool pushLiveDataValues(uint8_t bits, uint8_t pct, uint8_t flg) {
   json.set("rssi", WiFi.RSSI());
   json.set("timestamp/.sv", "timestamp");
 
+  esp_task_wdt_reset();
   if (Firebase.RTDB.setJSON(&fbdo, path.c_str(), &json)) {
     lastSentBits  = bits;
     lastSentPct   = pct;
     lastSentFlags = flg;
+    // Persist so a reboot with the same sensor state doesn't push again.
+    Preferences lp;
+    lp.begin("senseflow", false);
+    lp.putUChar("lsBits",  bits);
+    lp.putUChar("lsPct",   pct);
+    lp.putUChar("lsFlags", flg);
+    lp.end();
     lastDataPush = millis();
     consecutiveFailCount = 0;
     lastSuccessfulPush = millis();
@@ -959,6 +999,7 @@ void updateDeviceInfo(bool online) {
   // updateNode merges into /info instead of overwriting — preserves
   // firstBootAt, lastUpdatedAt, lastOtaStatus, otaRetryCount that other
   // code paths wrote there.
+  esp_task_wdt_reset();
   Firebase.RTDB.updateNode(&fbdo, path.c_str(), &json);
 }
 
@@ -967,6 +1008,7 @@ void checkCommands() {
   if (!firebaseHealthy) return;
   String basePath = "devices/" + deviceCode + "/commands/";
 
+  esp_task_wdt_reset();
   if (Firebase.RTDB.getBool(&fbdo, (basePath + "refreshRequested").c_str())) {
     if (fbdo.boolData()) {
       Serial.println("Refresh requested — force pushing data");
@@ -974,6 +1016,7 @@ void checkCommands() {
       Firebase.RTDB.setBool(&fbdo, (basePath + "refreshRequested").c_str(), false);
     }
   }
+  esp_task_wdt_reset();
   if (Firebase.RTDB.getBool(&fbdo, (basePath + "testRequested").c_str())) {
     if (fbdo.boolData()) {
       Serial.println("Test requested — blinking LED");
@@ -982,6 +1025,7 @@ void checkCommands() {
       Firebase.RTDB.setBool(&fbdo, (basePath + "testRequested").c_str(), false);
     }
   }
+  esp_task_wdt_reset();
   if (Firebase.RTDB.getBool(&fbdo, (basePath + "restartRequested").c_str())) {
     if (fbdo.boolData()) {
       Serial.println("Restart requested — rebooting...");
@@ -1001,6 +1045,7 @@ void writeHistoryValues(uint8_t bits, uint8_t pct, uint8_t flg, const char* tag)
   json.set("bits", bits);
   json.set("flags", flg);
   json.set("ts/.sv", "timestamp");
+  esp_task_wdt_reset();
   if (Firebase.RTDB.pushJSON(&fbdo, ("devices/" + deviceCode + "/history").c_str(), &json)) {
     lastHistoryWriteAt = millis();
     Serial.printf("[HISTORY] Entry recorded (%s)\n", tag);
@@ -1032,6 +1077,7 @@ void writeHistoryIdleIfDue() {
 void checkConfig() {
   if (!firebaseHealthy) return;
   String path = "devices/" + deviceCode + "/config/analyticsOn";
+  esp_task_wdt_reset();
   if (Firebase.RTDB.getBool(&fbdo, path.c_str())) {
     bool newVal = fbdo.boolData();
     if (newVal != analyticsOn) {
@@ -1052,8 +1098,10 @@ void checkConfig() {
 // calls before it's eligible for cloud/MQTT push. This protects against
 // single-read glitches that would otherwise pollute Firebase history.
 // Local UI / LED keep using sensorBits/confirmedPct instantly — only cloud waits.
-// At 3-sec read interval × 3 confirms ≈ 9 sec lag before a real change reaches cloud.
-#define DATA_CONFIRM 3
+// At 3-sec read interval × 5 confirms ≈ 15 sec lag before a real change reaches cloud.
+// Bumped 3→5 to defeat noise on long (~100m) probe cables — same-value
+// glitches that survive the 15-sample read still get caught here.
+#define DATA_CONFIRM 5
 
 bool hasDataChanged() {
   static uint8_t candidateBits  = 0xFF;
@@ -1799,12 +1847,15 @@ void checkOtaTrigger() {
 
   String basePath = "devices/" + deviceCode + "/config/";
 
-  // Read trigger flag
+  // Each Firebase call can stall up to ~2s on a flaky network. Feed the
+  // watchdog between calls so a chain of slow reads doesn't add up to >60s.
+  esp_task_wdt_reset();
   if (!Firebase.RTDB.getBool(&fbdo, (basePath + "otaTrigger").c_str())) return;
   if (!fbdo.boolData()) return;   // not triggered
 
   // Read scheduled time
   uint32_t scheduledAt = 0;
+  esp_task_wdt_reset();
   if (Firebase.RTDB.getInt(&fbdo, (basePath + "otaScheduledAt").c_str())) {
     scheduledAt = (uint32_t)fbdo.intData();
   }
@@ -1826,6 +1877,7 @@ void checkOtaTrigger() {
   // Read retry count + URL + MD5
   uint8_t retries = 0;
   String infoPath = "devices/" + deviceCode + "/info/";
+  esp_task_wdt_reset();
   if (Firebase.RTDB.getInt(&fbdo, (infoPath + "otaRetryCount").c_str())) {
     retries = (uint8_t)fbdo.intData();
   }
@@ -1837,12 +1889,14 @@ void checkOtaTrigger() {
   }
 
   String url, md5;
+  esp_task_wdt_reset();
   if (Firebase.RTDB.getString(&fbdo, (basePath + "otaTargetUrl").c_str())) url = fbdo.stringData();
   if (url.length() == 0) {
     setOtaStatus("fail:no_url", retries);
     clearOtaTrigger();
     return;
   }
+  esp_task_wdt_reset();
   if (Firebase.RTDB.getString(&fbdo, (basePath + "otaTargetMd5").c_str())) md5 = fbdo.stringData();
 
   Serial.printf("[OTA] Starting download: %s\n", url.c_str());
@@ -1909,13 +1963,13 @@ void setup() {
   // ESP32 core 3.x uses a config struct; older cores use (timeout, panic).
   #if ESP_IDF_VERSION_MAJOR >= 5
     esp_task_wdt_config_t wdt_cfg = {
-      .timeout_ms = 30000,
+      .timeout_ms = 60000,
       .idle_core_mask = 0,
       .trigger_panic = true
     };
     esp_task_wdt_init(&wdt_cfg);
   #else
-    esp_task_wdt_init(30, true);
+    esp_task_wdt_init(60, true);
   #endif
   esp_task_wdt_add(NULL);
 
