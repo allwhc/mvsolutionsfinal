@@ -44,7 +44,7 @@ export default function Navbar() {
 
       <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
         <Link to="/dashboard" className="flex items-center gap-2">
-          <img src="/favicon-32x32.png" alt="" className="w-7 h-7" />
+          <img src="/android-chrome-192x192.png" alt="" className="w-9 h-9" />
           <span className="text-xl font-bold" style={{ color: "#1a2e5a" }}>SenseFlow</span>
         </Link>
 

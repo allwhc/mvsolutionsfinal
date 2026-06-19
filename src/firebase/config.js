@@ -2,6 +2,7 @@ import { initializeApp } from "firebase/app";
 import { getAuth } from "firebase/auth";
 import { getFirestore } from "firebase/firestore";
 import { getDatabase } from "firebase/database";
+import { getFunctions } from "firebase/functions";
 
 const firebaseConfig = {
   apiKey: "AIzaSyAyx29tFxNbERqbuM9iTFvWbVcehwtURw4",
@@ -18,4 +19,7 @@ const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);
 export const db = getFirestore(app);
 export const rtdb = getDatabase(app);
+// Cloud Functions are deployed to asia-southeast1 to keep latency low.
+// Frontend must match the region or the call will 404.
+export const functions = getFunctions(app, "asia-southeast1");
 export default app;

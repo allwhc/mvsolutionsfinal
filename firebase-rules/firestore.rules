@@ -6,6 +6,12 @@ service cloud.firestore {
     match /users/{uid} {
       allow read: if request.auth != null && (request.auth.uid == uid || isSuperAdmin());
       allow write: if request.auth != null && (request.auth.uid == uid || isSuperAdmin());
+
+      // FCM tokens subcollection — only the owning user can manage their tokens.
+      // Cloud Functions use Admin SDK so they bypass these rules.
+      match /fcmTokens/{token} {
+        allow read, write: if request.auth != null && request.auth.uid == uid;
+      }
     }
 
     // Orgs — members can read, orgAdmin/superadmin can write

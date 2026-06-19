@@ -7,9 +7,9 @@ export default function DeactivatedScreen() {
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
       <div className="bg-white rounded-xl shadow-md p-8 w-full max-w-sm text-center">
-        <div className="flex items-center justify-center gap-2 mb-4">
-          <img src="/favicon-32x32.png" alt="" className="w-8 h-8" />
-          <h1 className="text-2xl font-bold" style={{ color: "#1a2e5a" }}>SenseFlow</h1>
+        <div className="flex items-center justify-center gap-3 mb-4">
+          <img src="/android-chrome-192x192.png" alt="" className="w-12 h-12" />
+          <h1 className="text-3xl font-bold" style={{ color: "#1a2e5a" }}>SenseFlow</h1>
         </div>
 
         <div className="w-16 h-16 bg-red-50 rounded-full flex items-center justify-center mx-auto mb-4">

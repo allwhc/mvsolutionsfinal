@@ -50,9 +50,9 @@ export default function LoginForm() {
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-50">
       <div className="bg-white p-8 rounded-lg shadow-md w-full max-w-md">
-        <div className="flex items-center justify-center gap-2 mb-6">
-          <img src="/favicon-32x32.png" alt="" className="w-8 h-8" />
-          <h1 className="text-2xl font-bold" style={{ color: "#1a2e5a" }}>SenseFlow</h1>
+        <div className="flex items-center justify-center gap-3 mb-6">
+          <img src="/android-chrome-192x192.png" alt="" className="w-12 h-12" />
+          <h1 className="text-3xl font-bold" style={{ color: "#1a2e5a" }}>SenseFlow</h1>
         </div>
 
         <button

@@ -20,12 +20,12 @@
 
 // Channel toggles must come before includes so the right libraries are pulled in.
 #define ENABLE_CLOUD                 1
-#define ENABLE_LOCAL_MQTT            1
+#define ENABLE_LOCAL_MQTT            0
 // MQTT broker location: 0 = LAN Pi gateway, 1 = cloud broker (HiveMQ/EMQX/VPS).
 // Detailed config block lives further down — these top-level defines exist
 // here only so the WiFiClientSecure include can be conditionally pulled in.
 #define USE_CLOUD_MQTT               0
-#define CLOUD_MQTT_USE_TLS           1
+#define CLOUD_MQTT_USE_TLS           0
 #if ENABLE_CLOUD == 0 && ENABLE_LOCAL_MQTT == 0
   #warning "Both cloud and MQTT disabled — device will be local-AP-only"
 #endif
@@ -70,7 +70,7 @@
 
 // Device info
 #define DEVICE_NAME       "SenseFlow-Node-DIP"
-#define FIRMWARE_VERSION  "17.0.3"
+#define FIRMWARE_VERSION  "17.0.5"
 #define FIRMWARE_CODE     "SF-OSC-2026"
 #define AP_PASSWORD       "mvstech9867"
 
@@ -128,21 +128,30 @@ const int DIP_PINS[] = {34, 35, 32, 33};
 // Common rod pin — driven by ESP32 GPIO regardless of mode.
 #define DIP_COMMON_PIN       12   // EXCITE on PCB. Strapping pin — external pull-down ensures LOW at boot.
 
-// Set to 1 when GPIO12 drives a transistor (BC547 NPN, common-emitter)
-// that switches the probe-common rod from 5V. With inverted logic:
-//   GPIO12 LOW  → transistor OFF → probe-common floats (parked state)
-//   GPIO12 HIGH → transistor ON  → probe-common pulled to 5V (read state)
-// Boot is safe because GPIO12 external pull-down keeps it LOW → transistor
-// stays OFF until firmware drives it. Use this for >10m probe cables where
-// ESP32 GPIO can't source enough current safely.
+// Set to 1 when GPIO12 drives an NPN common-emitter transistor (BC547 or
+// similar) that switches the probe-common rod. Schematic on the PCB:
+//
+//   EXCITE (GPIO12) ── EX_B (base resistor) ── Base
+//                                              Collector ── EX_C (pull-up) ── 5V (or 3.3V via J2)
+//                                                                          ── EX (probe common rod)
+//                                              Emitter ── GND
+//   EX_G keeps the base pulled down to GND during boot.
+//
+// Output is taken at the collector (common-emitter config), so the logic
+// INVERTS:
+//   GPIO12 LOW  → transistor OFF → collector pulled HIGH via EX_C → common HIGH (excite ON)
+//   GPIO12 HIGH → transistor ON  → collector shorted to GND        → common LOW  (excite OFF)
+//
+// Boot is safe because EX_G holds the base LOW → transistor OFF → common
+// sits at 5V via EX_C. No current is being driven from GPIO12 at boot.
 //
 // Set to 0 for direct GPIO drive (short cables only, ESP32 sources 3.3V).
-#define DIP_COMMON_VIA_TRANSISTOR  0
+#define DIP_COMMON_VIA_TRANSISTOR  1
 
 #if DIP_COMMON_VIA_TRANSISTOR
-  // Transistor ON = current flows = common at V+. Logic is inverted vs direct drive.
-  #define DIP_COMMON_DRIVE_ACTIVE   HIGH   // GPIO HIGH → transistor ON  → common HIGH
-  #define DIP_COMMON_DRIVE_IDLE     LOW    // GPIO LOW  → transistor OFF → common floats
+  // NPN common-emitter inverts the GPIO sense (see schematic comment above).
+  #define DIP_COMMON_DRIVE_ACTIVE   LOW    // GPIO LOW  → transistor OFF → common HIGH (excite)
+  #define DIP_COMMON_DRIVE_IDLE     HIGH   // GPIO HIGH → transistor ON  → common LOW  (idle)
 #else
   // Direct drive — GPIO IS the common rod.
   #define DIP_COMMON_DRIVE_ACTIVE   HIGH

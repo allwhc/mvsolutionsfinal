@@ -20,6 +20,7 @@ import OrgDashboard from "./pages/Org/OrgDashboard";
 import OrgMembers from "./pages/Org/OrgMembers";
 import OrgGroups from "./pages/Org/OrgGroups";
 import OrgInvite from "./pages/Org/OrgInvite";
+import NotificationListener from "./components/NotificationListener";
 
 // Redirect superadmin to /admin, others to /dashboard
 function HomeRedirect() {
@@ -32,6 +33,7 @@ export default function App() {
   return (
     <BrowserRouter>
       <AuthProvider>
+        <NotificationListener />
         <Routes>
           {/* Public routes */}
           <Route path="/login" element={<LoginForm />} />

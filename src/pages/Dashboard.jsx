@@ -4,6 +4,7 @@ import { useAuth } from "../context/AuthContext";
 import { useDevices } from "../hooks/useDevices";
 import { getOrgGroups } from "../firebase/db";
 import DeviceCard from "../components/DeviceCard/DeviceCard";
+import NotificationPermissionBanner from "../components/NotificationPermissionBanner";
 
 export default function Dashboard() {
   const { userData, isOrgAdmin, isOrgMember } = useAuth();
@@ -91,6 +92,8 @@ export default function Dashboard() {
 
   return (
     <div>
+      <NotificationPermissionBanner />
+
       {/* Welcome header */}
       <div className="mb-6">
         <div className="flex items-center justify-between">
