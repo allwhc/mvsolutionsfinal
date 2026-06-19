@@ -7,7 +7,13 @@ import { getMessaging, getToken, onMessage, isSupported } from "firebase/messagi
 import { doc, setDoc, deleteDoc, serverTimestamp } from "firebase/firestore";
 import app, { db } from "./config";
 
-const VAPID_KEY = import.meta.env.VITE_FCM_VAPID_KEY;
+// VAPID public key. This is the PUBLIC half of the keypair and is meant to
+// be embedded in frontend code — it's how the browser identifies our app
+// to the push service. The matching PRIVATE key stays inside Firebase.
+// (Allow VITE_FCM_VAPID_KEY env var to override for dev/testing.)
+const VAPID_KEY =
+  import.meta.env.VITE_FCM_VAPID_KEY ||
+  "BPeOoplxsVFdIVuqu7dcfM2MaT35aZeqIDZsM_Xj12H_QeGh-69-yu-qqpbY4fbOGWKFMxuA0lOlmBEgM2bOxlw";
 
 let messagingInstance = null;
 async function getMessagingIfSupported() {
