@@ -70,7 +70,7 @@
 
 // Device info
 #define DEVICE_NAME       "SenseFlow-Node-DIP"
-#define FIRMWARE_VERSION  "17.0.5"
+#define FIRMWARE_VERSION  "17.0.6"
 #define FIRMWARE_CODE     "SF-OSC-2026"
 #define AP_PASSWORD       "mvstech9867"
 
@@ -1061,15 +1061,16 @@ void writeHistoryValues(uint8_t bits, uint8_t pct, uint8_t flg, const char* tag)
   }
 }
 
-// Minimum spacing between any history writes (change-driven or idle).
-// Multiple confirmed changes within this window collapse to one entry.
+// Spacing for IDLE-only history writes (heartbeat fallback so the chart
+// isn't blank when level is steady). Change-driven writes ignore this —
+// real level changes go to history immediately, otherwise the chart would
+// show the wrong value for up to an hour after a fill/drain event.
 #define HISTORY_MIN_INTERVAL (60UL * 60UL * 1000UL)   // 1 hour
 
-// Change-driven write — current values; only when analyticsOn AND at least
-// HISTORY_MIN_INTERVAL has passed since the last history entry.
+// Change-driven write — fires on every confirmed level change. NO time
+// gate: history must reflect what live just published, or the chart lags.
 void writeHistory() {
   if (!analyticsOn) return;
-  if (lastHistoryWriteAt != 0 && millis() - lastHistoryWriteAt < HISTORY_MIN_INTERVAL) return;
   writeHistoryValues(sensorBits, confirmedPct, flags, "change");
 }
 
