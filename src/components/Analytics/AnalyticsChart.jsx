@@ -68,11 +68,191 @@ const RANGES = {
   "30d": { ms: 30 * 86400000, stepMs: 6 * 60 * 60000, label: "Last 30 days" },
 };
 
+// ── Insights generator ─────────────────────────────────────────────
+// Event detection thresholds — tune here if customer usage patterns differ.
+//   Refill = level rose >= 25% within 30 minutes (motor pump / tanker)
+//   Drain  = level dropped >= 10% within 2 hours (household consumption)
+const REFILL_PCT_THRESHOLD = 25;
+const REFILL_MAX_DURATION_MS = 30 * 60 * 1000;
+const DRAIN_PCT_THRESHOLD = 10;
+const DRAIN_MAX_DURATION_MS = 2 * 60 * 60 * 1000;
+const MIN_POINTS_FOR_INSIGHTS = 5;
+
+function detectEvents(history) {
+  if (history.length < 2) return [];
+  const events = [];
+  let i = 0;
+  while (i < history.length - 1) {
+    const a = history[i];
+    const aPct = a.pct ?? 0;
+    let j = i + 1;
+    let bestDelta = 0;
+    let bestIdx = i + 1;
+    // Look ahead while staying within the larger window (use refill window since it's tighter)
+    while (j < history.length) {
+      const b = history[j];
+      const dt = b.ts - a.ts;
+      const dp = (b.pct ?? 0) - aPct;
+      if (dp > bestDelta && dt <= REFILL_MAX_DURATION_MS) {
+        bestDelta = dp;
+        bestIdx = j;
+      }
+      if (dt > DRAIN_MAX_DURATION_MS) break;
+      j++;
+    }
+    // Refill check
+    if (bestDelta >= REFILL_PCT_THRESHOLD) {
+      events.push({
+        type: "refill",
+        startTs: a.ts,
+        endTs: history[bestIdx].ts,
+        pctDelta: bestDelta,
+      });
+      i = bestIdx;
+      continue;
+    }
+    // Drain check (look ahead for biggest drop)
+    let worstDelta = 0;
+    let worstIdx = i + 1;
+    j = i + 1;
+    while (j < history.length) {
+      const b = history[j];
+      const dt = b.ts - a.ts;
+      if (dt > DRAIN_MAX_DURATION_MS) break;
+      const dp = (b.pct ?? 0) - aPct;
+      if (dp < worstDelta) {
+        worstDelta = dp;
+        worstIdx = j;
+      }
+      j++;
+    }
+    if (-worstDelta >= DRAIN_PCT_THRESHOLD) {
+      events.push({
+        type: "drain",
+        startTs: a.ts,
+        endTs: history[worstIdx].ts,
+        pctDelta: worstDelta,
+      });
+      i = worstIdx;
+      continue;
+    }
+    i++;
+  }
+  return events;
+}
+
+function formatHour(hour) {
+  if (hour === 0) return "12 AM";
+  if (hour < 12) return `${hour} AM`;
+  if (hour === 12) return "12 PM";
+  return `${hour - 12} PM`;
+}
+
+function formatLitres(l) {
+  if (l >= 1000000) return `${(l / 1000000).toFixed(2)} ML`;
+  if (l >= 1000) return `${(l / 1000).toFixed(1)} KL`;
+  return `${Math.round(l)} L`;
+}
+
+function generateInsights(history, tankCapacity, rangeKey) {
+  if (history.length < MIN_POINTS_FOR_INSIGHTS) {
+    return {
+      enough: false,
+      bullets: [`Not enough data to talk about yet — only ${history.length} reading${history.length === 1 ? "" : "s"} in this period. Insights need at least ${MIN_POINTS_FOR_INSIGHTS}.`],
+    };
+  }
+
+  const bullets = [];
+  const totals = calcLitres(history, tankCapacity);
+
+  // Volume summary
+  if (tankCapacity > 0) {
+    bullets.push(`💧 Refilled ${formatLitres(totals.filled)} in this period`);
+    bullets.push(`🚰 Consumed ${formatLitres(totals.consumed)} in this period`);
+  } else {
+    bullets.push(`💧 Filled ${totals.filled}% worth of tank levels`);
+    bullets.push(`🚰 Drained ${totals.consumed}% worth of tank levels`);
+  }
+
+  // Daily average
+  const spanMs = history[history.length - 1].ts - history[0].ts;
+  const days = Math.max(1, spanMs / 86400000);
+  if (tankCapacity > 0 && days >= 1) {
+    bullets.push(`📅 Daily average consumption: ${formatLitres(totals.consumed / days)}`);
+  }
+
+  // Detect refill / drain events
+  const events = detectEvents(history);
+  const refills = events.filter((e) => e.type === "refill");
+  const drains = events.filter((e) => e.type === "drain");
+
+  if (refills.length > 0) {
+    bullets.push(`🔁 ${refills.length} refill event${refills.length > 1 ? "s" : ""}`);
+    // Peak refill hour
+    const refillHours = refills.map((e) => new Date(e.startTs).getHours());
+    const refillPeak = mode(refillHours);
+    if (refillPeak != null) bullets.push(`⏰ Tank usually fills around ${formatHour(refillPeak)}`);
+  } else {
+    bullets.push(`🔁 No refill events detected`);
+  }
+
+  if (drains.length > 0) {
+    const drainHours = drains.map((e) => new Date(e.startTs).getHours());
+    const drainPeak = mode(drainHours);
+    if (drainPeak != null) bullets.push(`🔥 Heaviest use around ${formatHour(drainPeak)}`);
+  }
+
+  // Min level
+  const pcts = history.map((h) => h.pct ?? 0);
+  const lowest = Math.min(...pcts);
+  const highest = Math.max(...pcts);
+  bullets.push(`📉 Lowest level reached: ${lowest}%   |   📈 Highest: ${highest}%`);
+
+  // Longest stretch at 0% (dry period) within range
+  let longestDry = 0;
+  let dryStart = null;
+  for (const h of history) {
+    if ((h.pct ?? 100) === 0) {
+      if (dryStart == null) dryStart = h.ts;
+      longestDry = Math.max(longestDry, h.ts - dryStart);
+    } else {
+      dryStart = null;
+    }
+  }
+  if (longestDry > 60 * 60 * 1000) {
+    const dryHrs = (longestDry / (60 * 60 * 1000)).toFixed(1);
+    bullets.push(`⚠ Longest dry stretch: ${dryHrs} hours at 0%`);
+  }
+
+  // Data coverage disclaimer
+  bullets.push(`ℹ Based on ${history.length} data point${history.length > 1 ? "s" : ""} from cloud history.`);
+
+  return { enough: true, bullets };
+}
+
+function mode(arr) {
+  if (arr.length === 0) return null;
+  const counts = {};
+  for (const v of arr) counts[v] = (counts[v] || 0) + 1;
+  let best = null, bestCount = 0;
+  for (const k in counts) {
+    if (counts[k] > bestCount) { bestCount = counts[k]; best = parseInt(k); }
+  }
+  return best;
+}
+
 export default function AnalyticsChart({ deviceCode, tankCapacityLitres, onHistoryLoaded }) {
   const [range, setRange] = useState("24h");
   const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(true);
   const [actualsOnly, setActualsOnly] = useState(false);
+  const [showInsights, setShowInsights] = useState(false);
+
+  // Generate insights on demand (lazy — only computed when expanded)
+  const insights = useMemo(
+    () => (showInsights ? generateInsights(history, tankCapacityLitres, range) : null),
+    [showInsights, history, tankCapacityLitres, range]
+  );
 
   const { startTs, endTs, stepMs } = useMemo(() => {
     const end = Date.now();
@@ -184,13 +364,13 @@ export default function AnalyticsChart({ deviceCode, tankCapacityLitres, onHisto
       {/* Summary */}
       {tankCapacityLitres > 0 && (
         <div className="grid grid-cols-2 gap-3 mb-4">
-          <div className="bg-blue-50 rounded-lg p-3 text-center">
-            <p className="text-xs text-blue-600 font-semibold">Water Filled</p>
-            <p className="text-2xl font-bold text-blue-700">{litres.filled.toLocaleString()}L</p>
+          <div className="bg-blue-50 rounded-lg p-4 text-center">
+            <p className="text-sm text-blue-600 font-semibold">Water Filled</p>
+            <p className="text-4xl font-extrabold text-blue-700">{litres.filled.toLocaleString()}L</p>
           </div>
-          <div className="bg-orange-50 rounded-lg p-3 text-center">
-            <p className="text-xs text-orange-600 font-semibold">Water Consumed</p>
-            <p className="text-2xl font-bold text-orange-700">{litres.consumed.toLocaleString()}L</p>
+          <div className="bg-orange-50 rounded-lg p-4 text-center">
+            <p className="text-sm text-orange-600 font-semibold">Water Consumed</p>
+            <p className="text-4xl font-extrabold text-orange-700">{litres.consumed.toLocaleString()}L</p>
           </div>
         </div>
       )}
@@ -245,6 +425,26 @@ export default function AnalyticsChart({ deviceCode, tankCapacityLitres, onHisto
       <p className="text-xs text-gray-400 mt-2 text-center">
         {actualsInRange.length} actual data point{actualsInRange.length !== 1 ? "s" : ""} in this range
       </p>
+
+      {/* Insights panel — collapsed by default, expand on click */}
+      <div className="mt-3 border-t border-gray-100 pt-3">
+        <button
+          onClick={() => setShowInsights((s) => !s)}
+          className="w-full flex items-center justify-between text-sm font-semibold text-gray-700 hover:text-blue-700"
+        >
+          <span>💬 Tell me about my analytics ({RANGES[range].label})</span>
+          <span className="text-xs text-gray-400">{showInsights ? "▲ Hide" : "▼ Show"}</span>
+        </button>
+        {showInsights && insights && (
+          <div className="mt-3 bg-gradient-to-br from-blue-50 to-indigo-50 border border-blue-100 rounded-lg p-3">
+            <ul className="space-y-1.5 text-sm text-gray-800">
+              {insights.bullets.map((b, i) => (
+                <li key={i} className="leading-snug">{b}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

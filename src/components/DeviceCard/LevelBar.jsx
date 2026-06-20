@@ -45,7 +45,7 @@ export default function LevelBar({ sensorBits, sensorCount, confirmedPct, sensor
             style={{ width: `${Math.min(confirmedPct, 100)}%` }}
           />
         </div>
-        <span className={`text-lg font-bold min-w-[3rem] text-right ${getLevelTextColor(confirmedPct)}`}>
+        <span className={`text-2xl font-extrabold min-w-[3.5rem] text-right ${getLevelTextColor(confirmedPct)}`}>
           {confirmedPct}%
         </span>
       </div>

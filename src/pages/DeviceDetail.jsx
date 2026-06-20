@@ -252,7 +252,11 @@ export default function DeviceDetail() {
               <input type="number" min="0" max="100000" value={tankCapacityLitres}
                 onChange={(e) => setTankCapacityLitres(parseInt(e.target.value) || 0)}
                 className="w-20 px-2 py-0.5 border border-gray-200 rounded text-sm" />
-              <span className="text-gray-500 text-xs">litres</span>
+              <span className="text-gray-500 text-xs">
+                {tankCapacityLitres >= 1000
+                  ? `= ${(tankCapacityLitres / 1000).toFixed(tankCapacityLitres % 1000 === 0 ? 0 : 1)} KL`
+                  : "litres"}
+              </span>
               <button onClick={async () => {
                 await updateDoc(doc(db, "subscriptions", user.uid, "devices", code), { tankCapacityLitres });
               }} className="text-xs text-blue-600 hover:underline ml-1">Save</button>

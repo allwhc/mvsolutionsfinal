@@ -70,7 +70,7 @@
 
 // Device info
 #define DEVICE_NAME       "SenseFlow-Node-DIP"
-#define FIRMWARE_VERSION  "17.0.6"
+#define FIRMWARE_VERSION  "17.0.7"
 #define FIRMWARE_CODE     "SF-OSC-2026"
 #define AP_PASSWORD       "mvstech9867"
 
@@ -550,6 +550,21 @@ void initDipSensors() {
 #endif
 }
 
+// CRITICAL: GPIO12 is the MTDI strapping pin. On boot it MUST be LOW —
+// HIGH would force the ESP32 bootloader to set internal flash voltage to
+// 1.8V instead of 3.3V, soft-bricking the chip until power-cycle.
+//
+// In normal operation we may be parking GPIO12 HIGH (transistor mode idle).
+// Before any intentional reset we explicitly drive it LOW so the next boot
+// sees the correct strapping value. The external EX_G pulldown is the
+// fallback for unexpected power-loss resets.
+void safeRestart() {
+  pinMode(DIP_COMMON_PIN, OUTPUT);
+  digitalWrite(DIP_COMMON_PIN, LOW);
+  delay(50);   // let the pin actually settle to LOW
+  ESP.restart();
+}
+
 #if EXCITATION_MODE == 0
 // CONSTANT DC read — common is held HIGH all the time; just sample each probe.
 uint8_t readDipRaw() {
@@ -945,16 +960,22 @@ bool pushLiveDataValues(uint8_t bits, uint8_t pct, uint8_t flg) {
 
   esp_task_wdt_reset();
   if (Firebase.RTDB.setJSON(&fbdo, path.c_str(), &json)) {
+    // Persist lastSent* to NVS ONLY when value actually changes vs RAM
+    // copy — otherwise heartbeat (288/day) would wear out NVS in ~1.8 yr.
+    bool valueChanged = (bits != lastSentBits) ||
+                        (pct  != lastSentPct)  ||
+                        (flg  != lastSentFlags);
     lastSentBits  = bits;
     lastSentPct   = pct;
     lastSentFlags = flg;
-    // Persist so a reboot with the same sensor state doesn't push again.
-    Preferences lp;
-    lp.begin("senseflow", false);
-    lp.putUChar("lsBits",  bits);
-    lp.putUChar("lsPct",   pct);
-    lp.putUChar("lsFlags", flg);
-    lp.end();
+    if (valueChanged) {
+      Preferences lp;
+      lp.begin("senseflow", false);
+      lp.putUChar("lsBits",  bits);
+      lp.putUChar("lsPct",   pct);
+      lp.putUChar("lsFlags", flg);
+      lp.end();
+    }
     lastDataPush = millis();
     consecutiveFailCount = 0;
     lastSuccessfulPush = millis();
@@ -1041,7 +1062,7 @@ void checkCommands() {
       Firebase.RTDB.setBool(&fbdo, (basePath + "restartRequested").c_str(), false);
       updateDeviceInfo(false);
       delay(500);
-      ESP.restart();
+      safeRestart();
     }
   }
 }
@@ -1589,7 +1610,7 @@ void mqttCommandCallback(char* topic, byte* payload, unsigned int len) {
   }
   else if (t == base + "restart") {
     delay(500);
-    ESP.restart();
+    safeRestart();
   }
   else if (t == base + "analytics") {
     bool on = (p == "1" || p == "true" || p == "ON");
@@ -1928,7 +1949,7 @@ void checkOtaTrigger() {
     clearOtaTrigger();
     Serial.println("[OTA] Success — rebooting into new firmware");
     delay(1000);
-    ESP.restart();
+    safeRestart();
   } else {
     // Fail — increment retry, set next scheduled time with random backoff
     retries++;
@@ -2070,7 +2091,7 @@ void setup() {
     WebServer* srv = mvs.getServer();
     srv->send(200, "text/html", "<html><body><h2>Restarting...</h2><script>setTimeout(()=>history.back(),3000)</script></body></html>");
     delay(1000);
-    ESP.restart();
+    safeRestart();
   });
 
   mvs.addEndpoint("/sstatus", []() {
@@ -2215,7 +2236,7 @@ void loop() {
     if (freeHeap < 30000) {
       Serial.println("[HEAP] Below 30 KB — restarting cleanly");
       delay(500);
-      ESP.restart();
+      safeRestart();
     }
   }
 
@@ -2228,7 +2249,7 @@ void loop() {
     Serial.println("[REBOOT] Scheduled 7-day restart");
     if (firebaseReady) updateDeviceInfo(false);
     delay(500);
-    ESP.restart();
+    safeRestart();
   }
 
   // MvsConnect always runs (AP mode web server)
@@ -2420,13 +2441,13 @@ void handleSerialCommand(String cmd) {
   else if (cmd == "RESTART" || cmd == "RESET") {
     Serial.println("Restarting...");
     delay(500);
-    ESP.restart();
+    safeRestart();
   }
   else if (cmd == "RESET_WIFI") {
     Serial.println("Clearing WiFi credentials...");
     mvs.clearSavedWiFi();
     delay(500);
-    ESP.restart();
+    safeRestart();
   }
   else if (cmd == "AP_ON") {
     Serial.println("Re-enabling AP (clears 10-min timer)");
@@ -2467,7 +2488,7 @@ void handleSerialCommand(String cmd) {
     wifiPrefs.end();
     Serial.println("Credentials saved. Restarting...");
     delay(500);
-    ESP.restart();
+    safeRestart();
   }
   else if (cmd == "HELP") {
     Serial.println("\nCommands: STATUS, ADMIN, FIREBASE, RESTART, RESET_WIFI, WIFI <ssid> <pass>, HELP\n");
