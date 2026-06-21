@@ -93,7 +93,7 @@ export default function TankViz({ confirmedPct, sensorBits, sensorCount, sensorE
         />
         {/* Percentage text */}
         <div className="absolute inset-0 flex items-center justify-center">
-          <span className={`font-bold drop-shadow-[0_1px_1px_rgba(255,255,255,0.5)] ${count === 1 ? "text-[9px]" : "text-xs"} text-gray-900`}>
+          <span className={`font-extrabold drop-shadow-[0_1px_1px_rgba(255,255,255,0.5)] ${count === 1 ? "text-xs" : "text-base"} text-gray-900`}>
             {sensorError ? "ERR" : count === 1 ? (pct > 0 ? "Present" : "Empty") : `${pct}%`}
           </span>
         </div>
@@ -114,11 +114,17 @@ export default function TankViz({ confirmedPct, sensorBits, sensorCount, sensorE
         {!trend && (
           <div className="w-3 h-0.5 bg-gray-300 rounded" />
         )}
-        {!sensorError && tankCapacityLitres > 0 && (
-          <span className="text-[10px] font-semibold text-gray-600">
-            {Math.round((pct / 100) * tankCapacityLitres)}L
-          </span>
-        )}
+        {!sensorError && tankCapacityLitres > 0 && (() => {
+          const litres = Math.round((pct / 100) * tankCapacityLitres);
+          const display = litres >= 1000
+            ? `${(litres / 1000).toFixed(litres % 1000 === 0 ? 0 : 1)} KL`
+            : `${litres} L`;
+          return (
+            <span className="text-sm font-bold text-gray-700 whitespace-nowrap">
+              {display}
+            </span>
+          );
+        })()}
       </div>
     </div>
   );
