@@ -32,13 +32,16 @@ export const sendTestNotification = onCall(
   }
 
   const tokens = tokensSnap.docs.map((d) => d.id);
+  // Send DATA-ONLY message (no `notification` field). The browser SDK only
+  // auto-displays when `notification` is present, which would duplicate the
+  // popup our service worker / foreground listener already shows with the
+  // correct branding. Keeping the title/body inside `data` lets our handlers
+  // render the notification themselves with our logo.
   const message = {
-    notification: {
-      title: "SenseFlow Test",
-      body: "Notifications are working — you'll get tank/valve/pump alerts here.",
-    },
     data: {
       type: "test",
+      title: "SenseFlow Test",
+      body: "Notifications are working — you'll get tank/valve/pump alerts here.",
       sentAt: String(Date.now()),
     },
     tokens,

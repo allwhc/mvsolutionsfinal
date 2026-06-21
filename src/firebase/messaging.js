@@ -38,11 +38,15 @@ export async function requestAndSaveFcmToken(uid) {
   const perm = await Notification.requestPermission();
   if (perm !== "granted") return { status: "denied" };
 
-  // Register the service worker FCM expects at /firebase-messaging-sw.js,
-  // then WAIT until it's active. register() returns immediately while the
-  // worker is still installing/activating — pushManager.subscribe() fails
-  // with "no active Service Worker" if we proceed too early.
-  const swReg = await navigator.serviceWorker.register("/firebase-messaging-sw.js");
+  // Register the service worker FCM expects at /firebase-messaging-sw.js.
+  // updateViaCache:"none" tells the browser to ALWAYS fetch the SW file
+  // fresh from the server (not from HTTP cache) so changes are detected
+  // immediately. Combined with skipWaiting/clients.claim in the SW itself,
+  // a new SW activates without users having to close/reopen tabs.
+  const swReg = await navigator.serviceWorker.register("/firebase-messaging-sw.js", {
+    updateViaCache: "none",
+  });
+  await swReg.update();   // explicitly check for new version on every call
   await navigator.serviceWorker.ready;   // resolves once any SW is active for this scope
   if (!swReg.active) {
     // Belt-and-braces: poll until this specific registration has an active worker.

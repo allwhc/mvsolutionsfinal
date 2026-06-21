@@ -11,9 +11,9 @@ export default function NotificationListener() {
     let unsub = () => {};
     (async () => {
       unsub = await onForegroundMessage(async (payload) => {
-        const title = payload.notification?.title || "SenseFlow";
-        const body  = payload.notification?.body  || "";
         const data  = payload.data || {};
+        const title = data.title || payload.notification?.title || "SenseFlow";
+        const body  = data.body  || payload.notification?.body  || "";
         try {
           const reg = await navigator.serviceWorker.getRegistration("/firebase-messaging-sw.js");
           if (reg) {
