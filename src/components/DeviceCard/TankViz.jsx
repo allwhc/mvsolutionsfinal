@@ -59,72 +59,114 @@ export default function TankViz({ confirmedPct, sensorBits, sensorCount, sensorE
     }
   }
 
-  return (
-    <div className="flex items-center justify-center gap-2 my-2">
-      {/* DIP sensor dots (left side) */}
-      {sensorType === 1 && (
-        <div className={`flex flex-col ${count === 1 ? "justify-center" : "justify-between"} h-16 py-1`}>
-          {sensors.map((s, i) => (
-            <div
-              key={i}
-              className={`w-2 h-2 rounded-full transition-all ${
-                s.gap
-                  ? "bg-red-500 shadow-sm shadow-red-400 ring-2 ring-red-200"
-                  : s.on
-                  ? "bg-blue-500 shadow-sm shadow-blue-400"
-                  : "bg-gray-200 border border-gray-300"
-              }`}
-            />
-          ))}
-        </div>
-      )}
+  const litres = !sensorError && tankCapacityLitres > 0
+    ? Math.round((pct / 100) * tankCapacityLitres)
+    : null;
+  const litreDisplay = litres == null
+    ? null
+    : litres >= 1000
+      ? `${(litres / 1000).toFixed(litres % 1000 === 0 ? 0 : 1)} KL`
+      : `${litres} L`;
 
-      {/* Tank body */}
-      <div className="relative w-14 h-16 border-2 border-gray-300 rounded-sm bg-gray-50 overflow-hidden">
-        {/* Water fill — always blue */}
-        <div
-          className="absolute bottom-0 left-0 right-0 transition-all duration-700 ease-in-out rounded-b-sm"
-          style={{
-            height: `${Math.min(pct, 100)}%`,
-            background: sensorError
-              ? "linear-gradient(to top, #9333EA, #C084FC)"
-              : "linear-gradient(to top, #1E40AF, #60A5FA)",
-          }}
-        />
-        {/* Percentage text */}
-        <div className="absolute inset-0 flex items-center justify-center">
-          <span className={`font-extrabold drop-shadow-[0_1px_1px_rgba(255,255,255,0.5)] ${count === 1 ? "text-xs" : "text-base"} text-gray-900`}>
-            {sensorError ? "ERR" : count === 1 ? (pct > 0 ? "Present" : "Empty") : `${pct}%`}
-          </span>
+  return (
+    <div className="flex flex-col items-center gap-3 my-2">
+      {/* Top row: probes + tank + trend */}
+      <div className="flex items-center justify-center gap-3">
+        {/* DIP sensor dots (left side) */}
+        {sensorType === 1 && (
+          <div className={`flex flex-col ${count === 1 ? "justify-center" : "justify-between"} h-20 py-1`}>
+            {sensors.map((s, i) => (
+              <div
+                key={i}
+                className={`w-2.5 h-2.5 rounded-full transition-all ${
+                  s.gap
+                    ? "bg-red-500 shadow-sm shadow-red-400 ring-2 ring-red-200"
+                    : s.on
+                    ? "bg-blue-500 shadow-sm shadow-blue-400"
+                    : "bg-gray-200 border border-gray-300"
+                }`}
+              />
+            ))}
+          </div>
+        )}
+
+        {/* Tank body — taller + glossier */}
+        <div className="relative w-16 h-20 border-2 border-gray-400 rounded-md bg-gradient-to-b from-gray-50 to-gray-100 overflow-hidden shadow-inner">
+          {/* Water fill */}
+          <div
+            className="absolute bottom-0 left-0 right-0 transition-all duration-700 ease-in-out rounded-b-md"
+            style={{
+              height: `${Math.min(pct, 100)}%`,
+              background: sensorError
+                ? "linear-gradient(to top, #7e22ce 0%, #a855f7 60%, #d8b4fe 100%)"
+                : "linear-gradient(to top, #1e3a8a 0%, #2563eb 50%, #60a5fa 100%)",
+              boxShadow: "inset 0 2px 4px rgba(255,255,255,0.25)",
+            }}
+          />
+          {/* Subtle gloss highlight */}
+          <div
+            className="absolute top-0 left-0 w-1/3 h-full pointer-events-none rounded-l-md"
+            style={{
+              background: "linear-gradient(to right, rgba(255,255,255,0.18), rgba(255,255,255,0))",
+            }}
+          />
+          {/* Tank lid accent */}
+          <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-b from-gray-300 to-gray-400 border-b border-gray-500/30" />
+        </div>
+
+        {/* Trend arrow on right */}
+        <div className="flex flex-col items-center justify-center h-20">
+          {trend === "up" && (
+            <div className="bg-green-50 rounded-full p-1 ring-1 ring-green-200">
+              <svg className="w-4 h-4 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 15l7-7 7 7" />
+              </svg>
+            </div>
+          )}
+          {trend === "down" && (
+            <div className="bg-red-50 rounded-full p-1 ring-1 ring-red-200">
+              <svg className="w-4 h-4 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M19 9l-7 7-7-7" />
+              </svg>
+            </div>
+          )}
+          {!trend && (
+            <div className="bg-gray-100 rounded-full p-1 ring-1 ring-gray-200">
+              <div className="w-4 h-0.5 bg-gray-400 rounded" />
+            </div>
+          )}
         </div>
       </div>
 
-      {/* Trend arrow + Litres */}
-      <div className="flex flex-col items-center justify-end h-16 gap-1">
-        {trend === "up" && (
-          <svg className="w-4 h-4 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 15l7-7 7 7" />
-          </svg>
+      {/* Bottom row: highlighted % + KL chips */}
+      <div className={`flex items-stretch ${litreDisplay ? "gap-2" : ""} w-full max-w-[220px]`}>
+        {/* Percentage chip */}
+        <div
+          className={`flex-1 rounded-lg px-3 py-1.5 text-center shadow-sm ${
+            sensorError
+              ? "bg-gradient-to-br from-purple-50 to-purple-100 ring-1 ring-purple-200"
+              : "bg-gradient-to-br from-blue-50 to-blue-100 ring-1 ring-blue-200"
+          }`}
+        >
+          <div className={`text-[10px] uppercase tracking-wider font-semibold ${sensorError ? "text-purple-600" : "text-blue-600"}`}>
+            Level
+          </div>
+          <div className={`text-2xl font-extrabold leading-tight ${sensorError ? "text-purple-700" : "text-blue-700"}`}>
+            {sensorError ? "ERR" : count === 1 ? (pct > 0 ? "ON" : "OFF") : `${pct}%`}
+          </div>
+        </div>
+
+        {/* Litres chip — only when capacity configured */}
+        {litreDisplay && (
+          <div className="flex-1 rounded-lg px-3 py-1.5 text-center bg-gradient-to-br from-cyan-50 to-cyan-100 ring-1 ring-cyan-200 shadow-sm">
+            <div className="text-[10px] uppercase tracking-wider font-semibold text-cyan-700">
+              Volume
+            </div>
+            <div className="text-2xl font-extrabold leading-tight text-cyan-700 whitespace-nowrap">
+              {litreDisplay}
+            </div>
+          </div>
         )}
-        {trend === "down" && (
-          <svg className="w-4 h-4 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M19 9l-7 7-7-7" />
-          </svg>
-        )}
-        {!trend && (
-          <div className="w-3 h-0.5 bg-gray-300 rounded" />
-        )}
-        {!sensorError && tankCapacityLitres > 0 && (() => {
-          const litres = Math.round((pct / 100) * tankCapacityLitres);
-          const display = litres >= 1000
-            ? `${(litres / 1000).toFixed(litres % 1000 === 0 ? 0 : 1)} KL`
-            : `${litres} L`;
-          return (
-            <span className="text-sm font-bold text-gray-700 whitespace-nowrap">
-              {display}
-            </span>
-          );
-        })()}
       </div>
     </div>
   );
