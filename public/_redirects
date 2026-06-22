@@ -1,4 +1,0 @@
-# SPA fallback for client-side routing (React Router).
-# Cloudflare requires a 200 (rewrite) and the wildcard must NOT match
-# index.html itself, otherwise the rule loops on the rewritten path.
-/*  /index.html  200!
