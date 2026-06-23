@@ -7,10 +7,12 @@ service cloud.firestore {
       allow read: if request.auth != null && (request.auth.uid == uid || isSuperAdmin());
       allow write: if request.auth != null && (request.auth.uid == uid || isSuperAdmin());
 
-      // FCM tokens subcollection — only the owning user can manage their tokens.
+      // FCM tokens subcollection — owning user can manage their own tokens.
+      // Superadmin can also read/revoke so the admin notifications page can
+      // show a user's registered devices and clean up stale ones.
       // Cloud Functions use Admin SDK so they bypass these rules.
       match /fcmTokens/{token} {
-        allow read, write: if request.auth != null && request.auth.uid == uid;
+        allow read, write: if request.auth != null && (request.auth.uid == uid || isSuperAdmin());
       }
     }
 

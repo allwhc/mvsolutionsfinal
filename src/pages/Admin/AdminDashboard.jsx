@@ -65,6 +65,7 @@ export default function AdminDashboard() {
     { label: "Organisations", count: stats.orgs, link: "/admin/orgs", color: "bg-purple-50 text-purple-700" },
     { label: "Plans", count: stats.plans, link: "/admin/plans", color: "bg-indigo-50 text-indigo-700" },
     { label: "Firmware Updates", count: "OTA", link: "/admin/firmware", color: "bg-pink-50 text-pink-700" },
+    { label: "Notifications", count: "🔔", link: "/admin/notifications", color: "bg-orange-50 text-orange-700" },
   ];
 
   return (

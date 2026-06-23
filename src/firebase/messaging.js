@@ -4,7 +4,10 @@
 // surface incoming messages via onMessage so the React app can react.
 
 import { getMessaging, getToken, onMessage, isSupported } from "firebase/messaging";
-import { doc, setDoc, deleteDoc, serverTimestamp } from "firebase/firestore";
+import {
+  doc, setDoc, deleteDoc, serverTimestamp,
+  collection, getDocs, writeBatch,
+} from "firebase/firestore";
 import app, { db } from "./config";
 
 // VAPID public key. This is the PUBLIC half of the keypair and is meant to
@@ -62,11 +65,33 @@ export async function requestAndSaveFcmToken(uid) {
 
   if (!token) return { status: "denied" };
 
+  // Dedupe: remove any older tokens registered from the same browser/device.
+  // We identify "same device" by an exact userAgent match (truncated to 200
+  // chars, same as what we store). Different physical devices have different
+  // userAgents, so this keeps multi-device users intact while killing the
+  // duplicate-on-same-browser case (different tab sessions / token rotation
+  // create new tokens without expiring the old).
+  const userAgent = navigator.userAgent.slice(0, 200);
+  try {
+    const snap = await getDocs(collection(db, "users", uid, "fcmTokens"));
+    const batch = writeBatch(db);
+    let deletedAny = false;
+    snap.forEach((d) => {
+      if (d.id !== token && d.data().userAgent === userAgent) {
+        batch.delete(d.ref);
+        deletedAny = true;
+      }
+    });
+    if (deletedAny) await batch.commit();
+  } catch (_) {
+    // Non-fatal — proceed even if dedupe read fails (offline, rules etc.).
+  }
+
   await setDoc(
     doc(db, "users", uid, "fcmTokens", token),
     {
       platform: "web",
-      userAgent: navigator.userAgent.slice(0, 200),
+      userAgent,
       addedAt: serverTimestamp(),
     },
     { merge: true }
