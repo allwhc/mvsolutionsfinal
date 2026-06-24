@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { useSearchParams } from "react-router-dom";
 import { getAllDevices, approvePendingDevice, registerDevice, updateDevice, deleteDeviceFromCatalog } from "../../firebase/db";
 import { sendTestCommand, sendRestartCommand, getPendingDevicesRTDB, listenToDeviceLive, listenToDeviceInfo, listenToValveConfig, setAnalyticsEnabled } from "../../firebase/rtdb";
 import { QRCodeSVG } from "qrcode.react";
@@ -7,10 +8,17 @@ const DEVICE_CLASS = { 1: "Valve", 2: "Sensor", 3: "Motor", "senseflowstandard":
 const SENSOR_TYPE = { 0: "None", 1: "DIP", 2: "Ultrasonic" };
 
 export default function AdminDevices() {
+  const [searchParams] = useSearchParams();
   const [pending, setPending] = useState([]);
   const [registered, setRegistered] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [tab, setTab] = useState("pending");
+  // Default tab driven by ?tab= URL param. Lets the AdminDashboard cards
+  // open the page already focused on the right list. Falls back to
+  // "registered" because that's what 90% of the time the admin wants to see.
+  const [tab, setTab] = useState(() => {
+    const t = searchParams.get("tab");
+    return t === "pending" || t === "registered" ? t : "registered";
+  });
   const [registerModal, setRegisterModal] = useState(null);
   const [extraFields, setExtraFields] = useState({ deviceName: "", location: "", notes: "" });
   const [qrDevice, setQrDevice] = useState(null);

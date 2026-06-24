@@ -59,8 +59,8 @@ export default function AdminDashboard() {
   }, []);
 
   const cards = [
-    { label: "Registered Devices", count: stats.devices, link: "/admin/devices", color: "bg-blue-50 text-blue-700" },
-    { label: "Pending Devices", count: stats.pending, link: "/admin/devices", color: "bg-yellow-50 text-yellow-700" },
+    { label: "Registered Devices", count: stats.devices, link: "/admin/devices?tab=registered", color: "bg-blue-50 text-blue-700" },
+    { label: "Pending Devices", count: stats.pending, link: "/admin/devices?tab=pending", color: "bg-yellow-50 text-yellow-700" },
     { label: "Users", count: stats.users, link: "/admin/users", color: "bg-green-50 text-green-700" },
     { label: "Organisations", count: stats.orgs, link: "/admin/orgs", color: "bg-purple-50 text-purple-700" },
     { label: "Plans", count: stats.plans, link: "/admin/plans", color: "bg-indigo-50 text-indigo-700" },
