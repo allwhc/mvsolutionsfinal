@@ -70,7 +70,7 @@
 
 // Device info
 #define DEVICE_NAME       "SenseFlow-Node-DIP"
-#define FIRMWARE_VERSION  "17.0.7"
+#define FIRMWARE_VERSION  "17.0.8"
 #define FIRMWARE_CODE     "SF-OSC-2026"
 #define AP_PASSWORD       "mvstech9867"
 
@@ -314,6 +314,14 @@ uint8_t lastConfirmedFlags = 0;
 bool    haveConfirmedValue = false;
 unsigned long lastHistoryWriteAt = 0;
 
+// Last values actually written to /history. Separate from lastSent* (which
+// gates /live pushes). Guarantees we never write a duplicate row even if
+// some other path (boot, reboot, NVS reset) would otherwise force one.
+// 0xFF sentinel = nothing written yet → first push always goes through.
+uint8_t lastHistoryBits  = 0xFF;
+uint8_t lastHistoryPct   = 0xFF;
+uint8_t lastHistoryFlags = 0xFF;
+
 // ── OTA + NTP state ────────────────────────────────────────────────
 uint32_t firstBootAt    = 0;   // epoch seconds — set once, persisted in NVS
 uint32_t lastUpdatedAt  = 0;   // epoch seconds — last successful OTA (or firstBootAt if never)
@@ -438,6 +446,14 @@ void loadOrCreateDeviceCode() {
   lastSentFlags = prefs.getUChar("lsFlags", 0xFF);
   Serial.printf("[BOOT] NVS lastSent bits=%u pct=%u flags=%u\n",
                 lastSentBits, lastSentPct, lastSentFlags);
+
+  // Last values pushed to /history — separate gate so we never write
+  // duplicate rows even when /live state changes are valid.
+  lastHistoryBits  = prefs.getUChar("lhBits",  0xFF);
+  lastHistoryPct   = prefs.getUChar("lhPct",   0xFF);
+  lastHistoryFlags = prefs.getUChar("lhFlags", 0xFF);
+  Serial.printf("[BOOT] NVS lastHistory bits=%u pct=%u flags=%u\n",
+                lastHistoryBits, lastHistoryPct, lastHistoryFlags);
   // firstBootAt + lastUpdatedAt finalized later, after NTP sync
 
   prefs.end();
@@ -1070,6 +1086,24 @@ void checkCommands() {
 // Internal: write a history entry with explicit values + tag.
 void writeHistoryValues(uint8_t bits, uint8_t pct, uint8_t flg, const char* tag) {
   if (!firebaseHealthy) return;
+
+  // Dedupe guard — if this exact value is already the most recent /history
+  // entry, skip the write entirely. The change-driven path and idle-1h
+  // fallback both come through here, so this is the single funnel that
+  // guarantees /history can never have two consecutive identical rows.
+  // 0xFF sentinel = nothing written yet → first push always goes through.
+  if (lastHistoryPct   != 0xFF &&
+      bits == lastHistoryBits &&
+      pct  == lastHistoryPct  &&
+      flg  == lastHistoryFlags) {
+    Serial.printf("[HISTORY] Skipped duplicate (%s, pct=%u)\n", tag, pct);
+    // Update lastHistoryWriteAt anyway so the idle-1h fallback restarts its
+    // hour clock from this skipped attempt — keeps the fallback rhythm
+    // honest instead of trying again on the next loop iteration.
+    lastHistoryWriteAt = millis();
+    return;
+  }
+
   FirebaseJson json;
   json.set("pct", pct);
   json.set("bits", bits);
@@ -1078,6 +1112,15 @@ void writeHistoryValues(uint8_t bits, uint8_t pct, uint8_t flg, const char* tag)
   esp_task_wdt_reset();
   if (Firebase.RTDB.pushJSON(&fbdo, ("devices/" + deviceCode + "/history").c_str(), &json)) {
     lastHistoryWriteAt = millis();
+    lastHistoryBits  = bits;
+    lastHistoryPct   = pct;
+    lastHistoryFlags = flg;
+    Preferences hp;
+    hp.begin("senseflow", false);
+    hp.putUChar("lhBits",  bits);
+    hp.putUChar("lhPct",   pct);
+    hp.putUChar("lhFlags", flg);
+    hp.end();
     Serial.printf("[HISTORY] Entry recorded (%s)\n", tag);
   }
 }

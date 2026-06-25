@@ -75,8 +75,8 @@
 // ── Valve pins ──────────────────────────────────
 #define BTN_FORWARD    21
 #define BTN_REVERSE    22
-#define RELAY_FORWARD   4
-#define RELAY_REVERSE   5
+#define RELAY_FORWARD   4    // REL1_PMPSTRT_VLVOP on PCB
+#define RELAY_REVERSE  16    // REL2_PMPSTOP_VLVCLS on PCB
 #define FB_FORWARD     18    // Limit switch OPEN
 #define FB_REVERSE     19    // Limit switch CLOSE
 #define LED_OPEN       23    // Green LED
