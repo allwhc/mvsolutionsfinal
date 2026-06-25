@@ -70,7 +70,7 @@
 
 // Device info
 #define DEVICE_NAME       "SenseFlow-Node-DIP"
-#define FIRMWARE_VERSION  "17.0.8"
+#define FIRMWARE_VERSION  "17.0.9"
 #define FIRMWARE_CODE     "SF-OSC-2026"
 #define AP_PASSWORD       "mvstech9867"
 
@@ -301,6 +301,18 @@ bool    sensorError = false;
 // Analytics — write history on data change
 bool analyticsOn = false;
 
+// Notifications — when ON, change-driven pushes are mirrored to
+// /devices/<code>/notify_trigger. A Cloud Function watches that path and
+// dispatches FCM. Free devices keep this OFF → zero Cloud Function
+// invocations for non-paying customers. Admin sets via /admin/notifications.
+bool notifyOn = false;
+
+// Diagnostics — when ON, firmware uploads boot log to RTDB on boot. Pure
+// data (no Cloud Function watching). Admin-set per device for debugging.
+// Independent of notifyOn — admin can troubleshoot a free customer's device
+// without granting them notifications.
+bool diagnosticsOn = false;
+
 // Last sent values (for change detection)
 uint8_t lastSentBits = 0xFF;
 uint8_t lastSentPct = 0xFF;
@@ -321,6 +333,59 @@ unsigned long lastHistoryWriteAt = 0;
 uint8_t lastHistoryBits  = 0xFF;
 uint8_t lastHistoryPct   = 0xFF;
 uint8_t lastHistoryFlags = 0xFF;
+
+// ── Diagnostics: boot log ──────────────────────────────────────────
+// 50-entry circular buffer in NVS records every restart with its reason
+// and how long the previous session ran. Retrievable via cloud (when
+// diagnosticsOn=true) or always via serial `BOOTLOG` command. Lets admin
+// diagnose flaky devices remotely — brownouts → bad PSU, repeated WDT
+// → firmware hang, etc.
+#define BOOTLOG_CAPACITY 50
+
+struct BootLogEntry {
+  uint32_t epoch;          // unix timestamp at boot (0 if NTP wasn't synced yet)
+  uint32_t uptimeBefore;   // seconds the previous session ran before dying
+  uint32_t freeHeapAtBoot; // bytes free heap right after setup()
+  uint8_t  reason;         // esp_reset_reason_t code (1=POWERON, 7=WDT, 15=BROWNOUT, etc.)
+  uint8_t  fwMajor;        // firmware version captured at this boot
+  uint8_t  fwMinor;
+  uint8_t  fwPatch;
+};   // 16 bytes per entry
+
+// In-RAM circular buffer; mirrors the NVS-persisted version. We don't
+// reload all 50 on boot — only the new entry is appended. On cloud upload
+// we read the latest from RAM (boot path) or all 50 from NVS (admin pull).
+uint8_t boot_logIdx = 0;     // next slot to write (0..49)
+uint32_t bootCount  = 0;     // total boots ever — survives NVS persistence
+
+// Most recent boot log entry (in RAM, written by checkConfig on first
+// diagnosticsOn=true read, then used by uploadLatestBootLog).
+BootLogEntry latestBootEntry = {0};
+bool hasLatestBootEntry = false;
+
+// RAM-only capture from setup() — held until checkConfig() learns whether
+// diagnosticsOn is true. If yes → materialised into NVS+RTDB. If no →
+// discarded (free customers never write to NVS for diagnostics). Once
+// materialised, pendingBootCaptured is cleared so we don't double-log
+// when admin flips the flag mid-session.
+uint8_t  pendingBootReason     = 0;
+uint32_t pendingBootPrevUptime = 0;
+bool     pendingBootCaptured   = false;
+
+// Set true once the current boot has been logged to NVS (either at first
+// diagnosticsOn=true read OR — if diagnosticsOn was already true at boot
+// and stayed true — at any later flip). Prevents duplicate writes.
+bool diagnosticsLoggedThisBoot = false;
+
+// While true, loop() persists current uptime to NVS adaptively. Mirrors
+// diagnosticsOn but only flips true after we've seen the flag at least
+// once (so the very first config read doesn't lose data).
+bool diagnosticsLoggingActive = false;
+
+// Forward decls — defined later, called by checkConfig (which lives in
+// the Firebase block above the boot log section in the file).
+void uploadLatestBootLog();
+void persistCurrentUptime();
 
 // ── OTA + NTP state ────────────────────────────────────────────────
 uint32_t firstBootAt    = 0;   // epoch seconds — set once, persisted in NVS
@@ -923,6 +988,9 @@ bool checkFirebaseReady() {
       reportFirmwareInfoIfChanged();   // push firmwareVersion + firstBootAt + lastUpdatedAt (only if changed)
       // No initial pushLiveData() — wait for the 3-confirm gate to produce
       // first stable reading. Avoids polluting /history with boot-default 0%.
+      // Boot log entry: NOT uploaded here. checkConfig() materialises it
+      // from the in-RAM pendingBoot* values once it reads diagnosticsOn,
+      // so free customers' devices stay quiet.
       Serial.println("Waiting for first confirmed sensor read");
     }
     return true;
@@ -1016,6 +1084,27 @@ bool pushLiveData() {
   return pushLiveDataValues(sensorBits, confirmedPct, flags);
 }
 
+// Premium-tier mirror — writes a tiny snapshot to /notify_trigger so the
+// dispatcher Cloud Function fires. Only called when notifyOn=true, only
+// on change-driven pushes (NOT heartbeat — heartbeat would spam the
+// dispatcher with no real event behind it). Minimal payload: just pct,
+// flags, ts. The Cloud Function reads /live for full context if it needs
+// more. Path mirrors trigger pattern from project memory.
+void pushNotifyTrigger(uint8_t pct, uint8_t flg) {
+  if (!notifyOn)        return;
+  if (!firebaseHealthy) return;
+  String path = "devices/" + deviceCode + "/notify_trigger";
+  FirebaseJson json;
+  json.set("pct",       pct);
+  json.set("flags",     flg);
+  json.set("ts/.sv",    "timestamp");
+  esp_task_wdt_reset();
+  Firebase.RTDB.setJSON(&fbdo, path.c_str(), &json);
+  // No retry on fail — the Cloud Function dispatcher is best-effort
+  // anyway; missing a single ping for a free-paying customer is fine,
+  // the next change will fire it.
+}
+
 // Heartbeat push — always sends last-confirmed-stable value (or current
 // if no confirmed value yet). Cloud sees device online without absorbing glitch.
 bool pushLiveDataHeartbeat() {
@@ -1079,6 +1168,25 @@ void checkCommands() {
       updateDeviceInfo(false);
       delay(500);
       safeRestart();
+    }
+  }
+  // Diagnostics: admin wants a fresh /diagnostics/now snapshot.
+  esp_task_wdt_reset();
+  if (Firebase.RTDB.getBool(&fbdo, (basePath + "refreshDiagRequested").c_str())) {
+    if (fbdo.boolData()) {
+      Firebase.RTDB.setBool(&fbdo, (basePath + "refreshDiagRequested").c_str(), false);
+      uploadDiagnosticsNow();
+      Serial.println("[DIAG] On-demand snapshot uploaded");
+    }
+  }
+  // Diagnostics: admin wants the boot log wiped (both NVS and RTDB).
+  esp_task_wdt_reset();
+  if (Firebase.RTDB.getBool(&fbdo, (basePath + "clearDiagLogRequested").c_str())) {
+    if (fbdo.boolData()) {
+      Firebase.RTDB.setBool(&fbdo, (basePath + "clearDiagLogRequested").c_str(), false);
+      clearBootLog();
+      clearBootLogRtdb();
+      Serial.println("[DIAG] Boot log cleared (NVS + RTDB)");
     }
   }
 }
@@ -1147,16 +1255,59 @@ void writeHistoryIdleIfDue() {
   writeHistoryValues(lastConfirmedBits, lastConfirmedPct, lastConfirmedFlags, "idle-1h");
 }
 
-// Check config — read analyticsOn flag
+// Check config — read analyticsOn, notifyOn, diagnosticsOn flags.
+// Polled every 30 sec from the main loop. Off → on transitions trigger
+// one-shot side effects (boot log upload on diagnosticsOn flip).
 void checkConfig() {
   if (!firebaseHealthy) return;
-  String path = "devices/" + deviceCode + "/config/analyticsOn";
+  String base = "devices/" + deviceCode + "/config/";
+
   esp_task_wdt_reset();
-  if (Firebase.RTDB.getBool(&fbdo, path.c_str())) {
+  if (Firebase.RTDB.getBool(&fbdo, (base + "analyticsOn").c_str())) {
     bool newVal = fbdo.boolData();
     if (newVal != analyticsOn) {
       analyticsOn = newVal;
       Serial.printf("[CONFIG] analyticsOn = %s\n", analyticsOn ? "ON" : "OFF");
+    }
+  }
+
+  esp_task_wdt_reset();
+  if (Firebase.RTDB.getBool(&fbdo, (base + "notifyOn").c_str())) {
+    bool newVal = fbdo.boolData();
+    if (newVal != notifyOn) {
+      notifyOn = newVal;
+      Serial.printf("[CONFIG] notifyOn = %s\n", notifyOn ? "ON" : "OFF");
+    }
+  }
+
+  esp_task_wdt_reset();
+  if (Firebase.RTDB.getBool(&fbdo, (base + "diagnosticsOn").c_str())) {
+    bool newVal = fbdo.boolData();
+    if (newVal != diagnosticsOn) {
+      diagnosticsOn = newVal;
+      Serial.printf("[CONFIG] diagnosticsOn = %s\n", diagnosticsOn ? "ON" : "OFF");
+    }
+    // Materialise the pending boot capture if (a) diagnostics is now on,
+    // and (b) we haven't already logged this boot. Triggers on first
+    // confirmation after boot AND on later off→on flips within the same
+    // session. Free-customer device that never flips on → nothing happens.
+    if (diagnosticsOn && pendingBootCaptured && !diagnosticsLoggedThisBoot) {
+      appendBootLogEntry(pendingBootReason, pendingBootPrevUptime);
+      // Reset NVS uptime to 0 so the next persistCurrentUptime() records
+      // THIS session's uptime, not the previous one.
+      persistCurrentUptime();
+      uploadLatestBootLog();
+      diagnosticsLoggedThisBoot = true;
+      pendingBootCaptured       = false;
+      diagnosticsLoggingActive  = true;
+    } else if (diagnosticsOn && !diagnosticsLoggingActive) {
+      // Already logged this boot but admin re-enabled later — restart the
+      // periodic uptime save loop so we still catch the next crash.
+      diagnosticsLoggingActive = true;
+    } else if (!diagnosticsOn && diagnosticsLoggingActive) {
+      // Admin turned it off — stop persistent uptime saves. Existing log
+      // entries stay in NVS + RTDB until cleared.
+      diagnosticsLoggingActive = false;
     }
   }
 }
@@ -2016,6 +2167,238 @@ void reportFirmwareInfo() {}
 void checkOtaTrigger() {}
 #endif  // ENABLE_CLOUD
 
+// ══════════════════════════════════════════════════
+//  DIAGNOSTICS — BOOT LOG
+// ══════════════════════════════════════════════════
+//
+// Tracks every restart so admin can diagnose flaky devices remotely.
+// Storage: 50-entry circular buffer in NVS, ~800 bytes total. Indexed by
+// `bootCount % 50` so we never overflow and the latest 50 are always there.
+// Cloud upload is gated by `diagnosticsOn` to avoid bandwidth waste on
+// healthy devices.
+//
+// Uptime tracking: persistCurrentUptime() saves millis()/1000 to NVS
+// every 10 min (every 60 s during first 10 min after boot, to catch
+// early-boot brownouts). Next boot reads this — that's how we know how
+// long the previous session ran before dying.
+
+#define BOOTLOG_NVS_NS "diag"
+
+// Parse "17.0.9" → 17, 0, 9
+void parseFwVersion(const char* v, uint8_t* maj, uint8_t* min, uint8_t* patch) {
+  *maj = *min = *patch = 0;
+  int dots = 0;
+  uint8_t acc = 0;
+  for (const char* p = v; *p; p++) {
+    if (*p == '.') {
+      if (dots == 0) *maj = acc;
+      else if (dots == 1) *min = acc;
+      dots++;
+      acc = 0;
+    } else if (*p >= '0' && *p <= '9') {
+      acc = acc * 10 + (*p - '0');
+    }
+  }
+  if (dots >= 2) *patch = acc;
+}
+
+// Append a new boot log entry to NVS. Called once from setup() after we
+// know the reset reason + previous uptime. Updates the in-RAM
+// latestBootEntry so the cloud upload path can grab it.
+void appendBootLogEntry(uint8_t reason, uint32_t uptimeBefore) {
+  Preferences p;
+  p.begin(BOOTLOG_NVS_NS, false);
+  boot_logIdx = p.getUChar("idx", 0);
+  bootCount   = p.getUInt("count", 0);
+
+  BootLogEntry e;
+  e.epoch          = nowEpoch();              // 0 if NTP not yet synced — Cloud Function tolerates
+  e.uptimeBefore   = uptimeBefore;
+  e.freeHeapAtBoot = ESP.getFreeHeap();
+  e.reason         = (uint8_t)reason;
+  parseFwVersion(FIRMWARE_VERSION, &e.fwMajor, &e.fwMinor, &e.fwPatch);
+
+  // Persist this slot
+  char key[8];
+  snprintf(key, sizeof(key), "e%u", boot_logIdx);
+  p.putBytes(key, &e, sizeof(e));
+
+  // Advance index circularly
+  boot_logIdx = (boot_logIdx + 1) % BOOTLOG_CAPACITY;
+  bootCount++;
+  p.putUChar("idx", boot_logIdx);
+  p.putUInt("count", bootCount);
+  p.end();
+
+  latestBootEntry    = e;
+  hasLatestBootEntry = true;
+  Serial.printf("[DIAG] Boot logged: reason=%u uptimeBefore=%us heap=%u (#%u)\n",
+                e.reason, e.uptimeBefore, e.freeHeapAtBoot, bootCount);
+}
+
+// Persist current millis()/1000 to NVS so the next boot knows how long
+// this session ran. Adaptive cadence — caller decides when to call.
+void persistCurrentUptime() {
+  uint32_t up = (uint32_t)(millis() / 1000);
+  Preferences p;
+  p.begin(BOOTLOG_NVS_NS, false);
+  p.putUInt("up", up);
+  p.end();
+}
+
+// Read previous session's uptime from NVS (set by persistCurrentUptime()
+// during last run). Returns 0 if NVS is fresh (first boot ever).
+uint32_t readPreviousUptime() {
+  Preferences p;
+  p.begin(BOOTLOG_NVS_NS, true);   // read-only
+  uint32_t prev = p.getUInt("up", 0);
+  p.end();
+  return prev;
+}
+
+// Reset reason → human-readable string for log + serial dump.
+const char* resetReasonStr(uint8_t r) {
+  switch ((esp_reset_reason_t)r) {
+    case ESP_RST_POWERON:  return "power-on";
+    case ESP_RST_EXT:      return "external-pin";
+    case ESP_RST_SW:       return "software";
+    case ESP_RST_PANIC:    return "panic";
+    case ESP_RST_INT_WDT:  return "int-wdt";
+    case ESP_RST_TASK_WDT: return "task-wdt";
+    case ESP_RST_WDT:      return "other-wdt";
+    case ESP_RST_DEEPSLEEP:return "deep-sleep";
+    case ESP_RST_BROWNOUT: return "brownout";
+    case ESP_RST_SDIO:     return "sdio";
+    default:               return "unknown";
+  }
+}
+
+// Read entry at slot i (0..49). Returns true if a valid entry was loaded.
+bool readBootLogEntry(uint8_t i, BootLogEntry* out) {
+  if (i >= BOOTLOG_CAPACITY) return false;
+  Preferences p;
+  p.begin(BOOTLOG_NVS_NS, true);
+  char key[8];
+  snprintf(key, sizeof(key), "e%u", i);
+  size_t n = p.getBytes(key, out, sizeof(BootLogEntry));
+  p.end();
+  return (n == sizeof(BootLogEntry));
+}
+
+// Wipe NVS boot log + RTDB upload. Triggered by clearDiagLogRequested
+// command from admin or `DIAG CLEAR` serial command.
+void clearBootLog() {
+  Preferences p;
+  p.begin(BOOTLOG_NVS_NS, false);
+  p.clear();
+  p.end();
+  boot_logIdx = 0;
+  bootCount   = 0;
+  hasLatestBootEntry = false;
+  Serial.println("[DIAG] Boot log NVS cleared");
+}
+
+// Dump the last 50 entries to Serial (human-readable). Bound to the
+// `BOOTLOG` serial command — always available regardless of diagnosticsOn,
+// since this is local-only and helps installer diagnose USB-attached devices.
+void dumpBootLogToSerial() {
+  Preferences p;
+  p.begin(BOOTLOG_NVS_NS, true);
+  uint8_t  idx   = p.getUChar("idx", 0);
+  uint32_t total = p.getUInt("count", 0);
+  p.end();
+
+  Serial.println("\n--- BOOT LOG (oldest first, max 50) ---");
+  Serial.printf("Total boots ever: %u\n", total);
+  if (total == 0) {
+    Serial.println("(empty)\n");
+    return;
+  }
+
+  uint8_t toShow = total < BOOTLOG_CAPACITY ? (uint8_t)total : BOOTLOG_CAPACITY;
+  // Walk circularly starting from the oldest slot.
+  uint8_t start = (total < BOOTLOG_CAPACITY) ? 0 : idx;
+  for (uint8_t k = 0; k < toShow; k++) {
+    uint8_t slot = (start + k) % BOOTLOG_CAPACITY;
+    BootLogEntry e;
+    if (!readBootLogEntry(slot, &e)) continue;
+    Serial.printf("%2u) epoch=%u  ran=%us  reason=%u (%s)  heap=%u  fw=%u.%u.%u\n",
+                  k + 1, e.epoch, e.uptimeBefore, e.reason,
+                  resetReasonStr(e.reason), e.freeHeapAtBoot,
+                  e.fwMajor, e.fwMinor, e.fwPatch);
+  }
+  Serial.println("--------------------------------------\n");
+}
+
+#if ENABLE_CLOUD
+// Upload the most recent boot log entry to RTDB. Path:
+//   /devices/<code>/diagnostics/boots/<slot>
+// where <slot> = (bootCount - 1) % 50. Admin UI reads from there.
+void uploadLatestBootLog() {
+  if (!firebaseHealthy) return;
+  if (!diagnosticsOn)   return;
+  if (!hasLatestBootEntry) return;
+
+  BootLogEntry& e = latestBootEntry;
+  uint8_t slot = (bootCount == 0) ? 0 : (uint8_t)((bootCount - 1) % BOOTLOG_CAPACITY);
+
+  char path[128];
+  snprintf(path, sizeof(path), "devices/%s/diagnostics/boots/%u",
+           deviceCode.c_str(), slot);
+
+  FirebaseJson json;
+  json.set("epoch",          e.epoch);
+  json.set("uptimeBefore",   e.uptimeBefore);
+  json.set("freeHeapAtBoot", e.freeHeapAtBoot);
+  json.set("reason",         e.reason);
+  json.set("reasonStr",      resetReasonStr(e.reason));
+  json.set("fwVersion",      String(e.fwMajor) + "." + String(e.fwMinor) + "." + String(e.fwPatch));
+  json.set("bootNumber",     bootCount);
+
+  esp_task_wdt_reset();
+  if (Firebase.RTDB.setJSON(&fbdo, path, &json)) {
+    Serial.printf("[DIAG] Boot log uploaded to slot %u\n", slot);
+  } else {
+    Serial.printf("[DIAG] Boot log upload failed: %s\n", fbdo.errorReason().c_str());
+  }
+}
+
+// Snapshot live diagnostics to RTDB. Called on refreshDiagRequested
+// command (admin clicks button in UI). Cheap, single write.
+void uploadDiagnosticsNow() {
+  if (!firebaseHealthy) return;
+  if (!diagnosticsOn)   return;
+
+  String path = "devices/" + deviceCode + "/diagnostics/now";
+
+  FirebaseJson json;
+  json.set("uptime",                 (uint32_t)(millis() / 1000));
+  json.set("freeHeap",               ESP.getFreeHeap());
+  json.set("rssi",                   WiFi.RSSI());
+  json.set("internetAvailable",      internetAvailable);
+  json.set("firebaseHealthy",        firebaseHealthy);
+  json.set("consecutivePushFails",   consecutiveFailCount);
+  json.set("lastNtpSyncAt",          (uint32_t)(lastNtpSyncAt / 1000));
+  json.set("ts/.sv",                 "timestamp");
+
+  esp_task_wdt_reset();
+  Firebase.RTDB.setJSON(&fbdo, path.c_str(), &json);
+}
+
+// Wipe RTDB boot log path. Called from clearDiagLogRequested command.
+void clearBootLogRtdb() {
+  if (!firebaseHealthy) return;
+  String path = "devices/" + deviceCode + "/diagnostics/boots";
+  esp_task_wdt_reset();
+  Firebase.RTDB.deleteNode(&fbdo, path.c_str());
+}
+
+#else
+void uploadLatestBootLog() {}
+void uploadDiagnosticsNow() {}
+void clearBootLogRtdb()    {}
+#endif  // ENABLE_CLOUD
+
 void setup() {
   Serial.begin(115200);
   delay(500);
@@ -2023,7 +2406,7 @@ void setup() {
 
   // Log reset reason so installer/log can see if device crashed
   esp_reset_reason_t reason = esp_reset_reason();
-  Serial.printf("[BOOT] Reset reason: %d\n", (int)reason);
+  Serial.printf("[BOOT] Reset reason: %d (%s)\n", (int)reason, resetReasonStr((uint8_t)reason));
   if (reason == ESP_RST_PANIC || reason == ESP_RST_INT_WDT ||
       reason == ESP_RST_TASK_WDT || reason == ESP_RST_WDT ||
       reason == ESP_RST_BROWNOUT) {
@@ -2031,6 +2414,15 @@ void setup() {
     crashedLastBoot = true;
     crashIndicatorStart = millis();
   }
+
+  // Capture reset reason + previous-session uptime to RAM only. NO NVS
+  // write here — we don't know yet whether diagnosticsOn is true (config
+  // hasn't been read). If it IS on, checkConfig() will materialise this
+  // into NVS + cloud later. Free customers' devices that never enable
+  // diagnostics will never write to NVS for diagnostics. Zero wear.
+  pendingBootReason       = (uint8_t)reason;
+  pendingBootPrevUptime   = readPreviousUptime();
+  pendingBootCaptured     = true;
 
   // Hardware watchdog — reboot if main loop ever blocks > 30 s.
   // (Firebase TLS at worst case ~3s now thanks to timeout tightening.)
@@ -2283,6 +2675,22 @@ void loop() {
     }
   }
 
+  // Diagnostics — persist current uptime to NVS so the NEXT boot knows
+  // how long this session ran before dying. GATED on diagnosticsLoggingActive
+  // so devices with diagnostics OFF never write to NVS for diagnostics
+  // (zero wear for free customers). Adaptive cadence when ON: every 60s
+  // in the first 10 min (catches early-boot brownouts), then every 10 min.
+  static unsigned long lastUptimeSave = 0;
+  const unsigned long UPTIME_SAVE_EARLY  = 60UL  * 1000UL;
+  const unsigned long UPTIME_SAVE_NORMAL = 600UL * 1000UL;
+  unsigned long uptimeSaveInterval = (now < 10UL * 60UL * 1000UL)
+                                     ? UPTIME_SAVE_EARLY
+                                     : UPTIME_SAVE_NORMAL;
+  if (diagnosticsLoggingActive && now - lastUptimeSave >= uptimeSaveInterval) {
+    lastUptimeSave = now;
+    persistCurrentUptime();
+  }
+
   // Scheduled auto-restart (industrial practice): reboot after 7 days uptime
   // to clear any TLS/heap fragmentation. Skip if OTA in progress or a push
   // happened in the last 2 minutes (avoid interrupting active transfer).
@@ -2367,6 +2775,9 @@ void loop() {
         if (pushLiveData()) {
           updateDeviceInfo(true);
           writeHistory();
+          // Premium tier: also ping the notification dispatcher. No-op when
+          // notifyOn=false (free customers cost nothing).
+          pushNotifyTrigger(confirmedPct, flags);
         }
         handleLED();
       }
@@ -2533,7 +2944,29 @@ void handleSerialCommand(String cmd) {
     delay(500);
     safeRestart();
   }
+  else if (cmd == "BOOTLOG") {
+    dumpBootLogToSerial();
+  }
+  else if (cmd == "DIAG") {
+    Serial.println("\n--- LIVE DIAGNOSTICS ---");
+    Serial.printf("Uptime:              %us\n", (uint32_t)(millis() / 1000));
+    Serial.printf("Free heap:           %u bytes\n", ESP.getFreeHeap());
+    Serial.printf("RSSI:                %d dBm\n", WiFi.RSSI());
+    Serial.printf("Internet available:  %s\n", internetAvailable ? "yes" : "no");
+    Serial.printf("Firebase healthy:    %s\n", firebaseHealthy ? "yes" : "no");
+    Serial.printf("Push fails (cons):   %d\n", consecutiveFailCount);
+    Serial.printf("NTP synced:          %s (last sync %lu ms ago)\n",
+                  ntpSynced ? "yes" : "no",
+                  ntpSynced ? (millis() - lastNtpSyncAt) : 0);
+    Serial.printf("notifyOn flag:       %s\n", notifyOn ? "ON" : "OFF");
+    Serial.printf("diagnosticsOn flag:  %s\n", diagnosticsOn ? "ON" : "OFF");
+    Serial.println("------------------------\n");
+  }
+  else if (cmd == "DIAG CLEAR") {
+    clearBootLog();
+    Serial.println("Boot log cleared (local NVS only — RTDB not touched).");
+  }
   else if (cmd == "HELP") {
-    Serial.println("\nCommands: STATUS, ADMIN, FIREBASE, RESTART, RESET_WIFI, WIFI <ssid> <pass>, HELP\n");
+    Serial.println("\nCommands: STATUS, ADMIN, FIREBASE, RESTART, RESET_WIFI, WIFI <ssid> <pass>, BOOTLOG, DIAG, DIAG CLEAR, HELP\n");
   }
 }

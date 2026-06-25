@@ -1,7 +1,7 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { useSearchParams } from "react-router-dom";
-import { getAllDevices, approvePendingDevice, registerDevice, updateDevice, deleteDeviceFromCatalog } from "../../firebase/db";
-import { sendTestCommand, sendRestartCommand, getPendingDevicesRTDB, listenToDeviceLive, listenToDeviceInfo, listenToValveConfig, setAnalyticsEnabled } from "../../firebase/rtdb";
+import { getAllDevices, approvePendingDevice, registerDevice, updateDevice, deleteDeviceFromCatalog, getAllUsers, getAllOrgs } from "../../firebase/db";
+import { sendTestCommand, sendRestartCommand, getPendingDevicesRTDB, listenToDeviceLive, listenToDeviceInfo, listenToValveConfig, setAnalyticsEnabled, setDiagnosticsEnabled, setNotifyEnabled, bulkSetConfigFlag, getDevicesInfoMap, getDevicesConfigMap } from "../../firebase/rtdb";
 import { QRCodeSVG } from "qrcode.react";
 
 const DEVICE_CLASS = { 1: "Valve", 2: "Sensor", 3: "Motor", "senseflowstandard": "SenseFlow Standard" };
@@ -44,6 +44,58 @@ export default function AdminDevices() {
   const [selectedForPrint, setSelectedForPrint] = useState(new Set());
   const [showBulkPrint, setShowBulkPrint] = useState(false);
 
+  // Registered-tab filter bar (same UX as /admin/firmware — admin already
+  // knows the pattern there). Lets admin slice the list before bulk-
+  // toggling flags, e.g. "all sensor devices on 17.0.9 with diagnostics
+  // OFF" → enable in one click.
+  const [infoMap, setInfoMap]               = useState({});
+  const [configMap, setConfigMap]           = useState({});
+  const [usersMap, setUsersMap]             = useState({});       // uid -> user doc (name, orgId, role)
+  const [orgsMap, setOrgsMap]               = useState({});       // orgId -> org doc (name)
+  const [filterClass, setFilterClass]       = useState("all");
+  const [filterFirmware, setFilterFirmware] = useState("");
+  const [filterStatus, setFilterStatus]     = useState("all");    // all/online/offline
+  const [filterDiag, setFilterDiag]         = useState("all");    // all/on/off
+  const [filterNotify, setFilterNotify]     = useState("all");    // all/on/off
+  const [filterOwnerType, setFilterOwnerType] = useState("all");  // all/individual/group
+  const [filterOrg, setFilterOrg]           = useState("all");    // all / specific orgId
+  const [filterOwner, setFilterOwner]       = useState("");       // free-text owner name/email
+  const [filterSearch, setFilterSearch]     = useState("");
+  const [showFilters, setShowFilters]       = useState(false);    // collapsed by default
+
+  // Bulk config flag toggle (diagnostics / premium notifications / analytics).
+  // Each feature has explicit ON / OFF buttons so admin can't pick the wrong
+  // verb by accident. Clicking any button confirms the device count before
+  // firing — single batched RTDB write under the hood.
+  const [bulkBusy, setBulkBusy] = useState(null);   // string key of in-flight op
+  async function applyBulkFlag(flag, enable) {
+    const codes = Array.from(selectedForPrint);
+    if (codes.length === 0) return;
+    const label =
+      flag === "diagnosticsOn" ? "Diagnostics" :
+      flag === "notifyOn"      ? "Premium notifications" :
+      flag === "analyticsOn"   ? "Analytics" : flag;
+    const verb = enable ? "Enable" : "Disable";
+    if (!confirm(`${verb} ${label} on ${codes.length} device${codes.length !== 1 ? "s" : ""}?`)) return;
+    const opKey = `${flag}:${enable ? "on" : "off"}`;
+    setBulkBusy(opKey);
+    try {
+      await bulkSetConfigFlag(codes, flag, enable);
+      // Optimistically reflect the change in the local configMap so the
+      // filter bar updates without waiting for the next page load.
+      setConfigMap((prev) => {
+        const next = { ...prev };
+        codes.forEach((c) => { next[c] = { ...(next[c] || {}), [flag]: enable }; });
+        return next;
+      });
+      alert(`${label} ${enable ? "enabled" : "disabled"} on ${codes.length} device(s).`);
+    } catch (e) {
+      alert("Bulk update failed: " + e.message);
+    } finally {
+      setBulkBusy(null);
+    }
+  }
+
   // Device live viewer
   const [viewDevice, setViewDevice] = useState(null);  // device code being viewed
   const [viewLive, setViewLive] = useState(null);
@@ -58,6 +110,24 @@ export default function AdminDevices() {
     setPending(p.filter(d => !registeredCodes.has(d.deviceCode)));
     setRegistered(r);
     setLoading(false);
+    // Background-load info + config + users + orgs maps for the filter bar.
+    // Don't block initial render on these — filters degrade gracefully if
+    // any map is empty (it just won't filter by that dimension until data lands).
+    const codes = r.map((d) => d.deviceCode);
+    Promise.all([
+      getDevicesInfoMap(codes),
+      getDevicesConfigMap(codes),
+      getAllUsers(),
+      getAllOrgs(),
+    ]).then(([info, cfg, users, orgs]) => {
+      setInfoMap(info);
+      setConfigMap(cfg);
+      // Index users + orgs by id for O(1) lookup per device when filtering.
+      const uMap = {}; users.forEach((u) => { uMap[u.uid] = u; });
+      const oMap = {}; orgs.forEach((o)  => { oMap[o.orgId] = o; });
+      setUsersMap(uMap);
+      setOrgsMap(oMap);
+    }).catch(() => { /* non-fatal, filter just lacks live data */ });
   }
 
   useEffect(() => { load(); }, []);
@@ -301,7 +371,110 @@ export default function AdminDevices() {
     setSelectedForPrint((prev) => { const next = new Set(prev); if (next.has(code)) next.delete(code); else next.add(code); return next; });
   }
   function selectAllForPrint() {
-    setSelectedForPrint(selectedForPrint.size === registered.length ? new Set() : new Set(registered.map((d) => d.deviceCode)));
+    setSelectedForPrint(selectedForPrint.size === filteredRegistered.length ? new Set() : new Set(filteredRegistered.map((d) => d.deviceCode)));
+  }
+
+  // Helper — pull owner info for a device. Devices store ownerUid; we look
+  // up the user, then their org if any. Returns null for unowned/orphan devices.
+  function ownerInfoFor(device) {
+    const owner = usersMap[device.ownerUid];
+    if (!owner) return null;
+    const org = owner.orgId ? orgsMap[owner.orgId] : null;
+    return {
+      uid:      owner.uid,
+      name:     owner.displayName || owner.email || owner.uid,
+      email:    owner.email || "",
+      orgId:    owner.orgId || null,
+      orgName:  org ? (org.name || org.orgId) : null,
+      // Treat anyone with an orgId as "group", everyone else as "individual".
+      // Matches your existing user model: registerWithEmail sets role:individual
+      // when there's no org and orgId:null.
+      type:     owner.orgId ? "group" : "individual",
+    };
+  }
+
+  // Apply the filter bar to the registered list. Each filter is independent
+  // and skipped when set to "all" / empty.
+  const filteredRegistered = useMemo(() => {
+    return registered.filter((d) => {
+      const info  = infoMap[d.deviceCode] || {};
+      const cfg   = configMap[d.deviceCode] || {};
+      const owner = ownerInfoFor(d);
+
+      if (filterClass !== "all" && String(d.deviceClass) !== filterClass) return false;
+      if (filterFirmware && !String(info.firmwareVersion || "").toLowerCase().includes(filterFirmware.toLowerCase())) return false;
+      if (filterStatus === "online"  && !info.online) return false;
+      if (filterStatus === "offline" &&  info.online) return false;
+      if (filterDiag   === "on"  && !cfg.diagnosticsOn) return false;
+      if (filterDiag   === "off" &&  cfg.diagnosticsOn) return false;
+      if (filterNotify === "on"  && !cfg.notifyOn) return false;
+      if (filterNotify === "off" &&  cfg.notifyOn) return false;
+
+      // Owner-type filter — group customers vs individual buyers.
+      if (filterOwnerType === "individual" && (!owner || owner.type !== "individual")) return false;
+      if (filterOwnerType === "group"      && (!owner || owner.type !== "group"))      return false;
+
+      // Specific org filter — used to onboard one customer's whole fleet.
+      if (filterOrg !== "all" && (!owner || owner.orgId !== filterOrg)) return false;
+
+      // Free-text owner search — matches user name, email, or org name.
+      if (filterOwner) {
+        const t = filterOwner.toLowerCase();
+        const blob = owner
+          ? `${owner.name} ${owner.email} ${owner.orgName || ""}`.toLowerCase()
+          : "";
+        if (!blob.includes(t)) return false;
+      }
+
+      if (filterSearch) {
+        const t = filterSearch.toLowerCase();
+        const blob = `${d.deviceCode} ${d.deviceName || ""} ${d.location || ""}`.toLowerCase();
+        if (!blob.includes(t)) return false;
+      }
+      return true;
+    });
+  }, [registered, infoMap, configMap, usersMap, orgsMap, filterClass, filterFirmware, filterStatus, filterDiag, filterNotify, filterOwnerType, filterOrg, filterOwner, filterSearch]);
+
+  // Drop selections that no longer match the active filter so the bulk
+  // "Apply to N" count stays honest. Without this, admin could narrow the
+  // filter and still have stale codes hidden from view but counted.
+  useEffect(() => {
+    setSelectedForPrint((prev) => {
+      const visible = new Set(filteredRegistered.map((d) => d.deviceCode));
+      const next = new Set();
+      prev.forEach((c) => { if (visible.has(c)) next.add(c); });
+      return next.size === prev.size ? prev : next;
+    });
+  }, [filteredRegistered]);
+
+  // Distinct firmware versions seen across the fleet (for the datalist).
+  const firmwareVersionOptions = useMemo(() => {
+    const set = new Set();
+    Object.values(infoMap).forEach((info) => { if (info?.firmwareVersion) set.add(info.firmwareVersion); });
+    return Array.from(set).sort();
+  }, [infoMap]);
+
+  const activeFilterCount =
+    (filterClass     !== "all" ? 1 : 0) +
+    (filterStatus    !== "all" ? 1 : 0) +
+    (filterDiag      !== "all" ? 1 : 0) +
+    (filterNotify    !== "all" ? 1 : 0) +
+    (filterOwnerType !== "all" ? 1 : 0) +
+    (filterOrg       !== "all" ? 1 : 0) +
+    (filterFirmware ? 1 : 0) +
+    (filterOwner    ? 1 : 0) +
+    (filterSearch   ? 1 : 0);
+
+  function clearAllFilters() {
+    setFilterClass("all");
+    setFilterFirmware("");
+    setFilterStatus("all");
+    setFilterDiag("all");
+    setFilterNotify("all");
+    setFilterOwnerType("all");
+    setFilterOrg("all");
+    setFilterOwner("");
+    setFilterSearch("");
   }
 
   function openDeviceViewer(code) {
@@ -485,23 +658,189 @@ export default function AdminDevices() {
       {/* Registered devices */}
       {tab === "registered" && (
         <div>
+          {/* Filter bar — collapsed by default, same UX as /admin/firmware.
+              Lets admin narrow the list before bulk-toggling Diagnostics or
+              Premium for a batch (e.g. "all sensor devices on 17.0.9 with
+              diagnostics OFF" → 1 click). */}
           {registered.length > 0 && (
-            <div className="flex items-center gap-3 mb-3">
-              <label className="flex items-center gap-1.5 text-xs text-gray-500 cursor-pointer">
-                <input type="checkbox" checked={selectedForPrint.size === registered.length && registered.length > 0} onChange={selectAllForPrint} className="rounded" />
-                Select all
-              </label>
+            <div className="bg-white rounded-xl shadow-sm border border-gray-200 mb-3">
+              <button
+                onClick={() => setShowFilters(!showFilters)}
+                className="w-full flex items-center justify-between px-4 py-3 text-left"
+              >
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-semibold text-gray-700">Filters</span>
+                  {activeFilterCount > 0 && (
+                    <span className="text-[10px] bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full font-medium">
+                      {activeFilterCount} active
+                    </span>
+                  )}
+                  <span className="text-xs text-gray-500">
+                    {filteredRegistered.length} of {registered.length} device{registered.length !== 1 ? "s" : ""}
+                  </span>
+                </div>
+                <span className="text-xs text-gray-400">{showFilters ? "Hide ▲" : "Show ▼"}</span>
+              </button>
+              {showFilters && (
+                <div className="px-4 pb-4 border-t border-gray-100">
+                  <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 text-sm mt-3">
+                    <label className="flex flex-col">
+                      <span className="text-xs text-gray-500 mb-1">Class</span>
+                      <select value={filterClass} onChange={(e) => setFilterClass(e.target.value)} className="border rounded px-2 py-1 text-sm">
+                        <option value="all">All</option>
+                        <option value="1">Valve</option>
+                        <option value="2">Sensor</option>
+                        <option value="3">Motor</option>
+                      </select>
+                    </label>
+                    <label className="flex flex-col">
+                      <span className="text-xs text-gray-500 mb-1">Online status</span>
+                      <select value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)} className="border rounded px-2 py-1 text-sm">
+                        <option value="all">All</option>
+                        <option value="online">Online</option>
+                        <option value="offline">Offline</option>
+                      </select>
+                    </label>
+                    <label className="flex flex-col">
+                      <span className="text-xs text-gray-500 mb-1">Diagnostics</span>
+                      <select value={filterDiag} onChange={(e) => setFilterDiag(e.target.value)} className="border rounded px-2 py-1 text-sm">
+                        <option value="all">All</option>
+                        <option value="on">ON</option>
+                        <option value="off">OFF</option>
+                      </select>
+                    </label>
+                    <label className="flex flex-col">
+                      <span className="text-xs text-gray-500 mb-1">Premium notifications</span>
+                      <select value={filterNotify} onChange={(e) => setFilterNotify(e.target.value)} className="border rounded px-2 py-1 text-sm">
+                        <option value="all">All</option>
+                        <option value="on">ON</option>
+                        <option value="off">OFF</option>
+                      </select>
+                    </label>
+                    <label className="flex flex-col">
+                      <span className="text-xs text-gray-500 mb-1">Firmware version</span>
+                      <input
+                        list="reg-fw-versions"
+                        value={filterFirmware}
+                        onChange={(e) => setFilterFirmware(e.target.value)}
+                        placeholder="e.g. 17.0.9"
+                        className="border rounded px-2 py-1 text-sm"
+                      />
+                      <datalist id="reg-fw-versions">
+                        {firmwareVersionOptions.map((v) => (<option key={v} value={v} />))}
+                      </datalist>
+                    </label>
+                    <label className="flex flex-col">
+                      <span className="text-xs text-gray-500 mb-1">Owner type</span>
+                      <select value={filterOwnerType} onChange={(e) => setFilterOwnerType(e.target.value)} className="border rounded px-2 py-1 text-sm">
+                        <option value="all">All</option>
+                        <option value="individual">Individual</option>
+                        <option value="group">Group / Org</option>
+                      </select>
+                    </label>
+                    <label className="flex flex-col">
+                      <span className="text-xs text-gray-500 mb-1">Organisation</span>
+                      <select value={filterOrg} onChange={(e) => setFilterOrg(e.target.value)} className="border rounded px-2 py-1 text-sm">
+                        <option value="all">All</option>
+                        {Object.values(orgsMap).sort((a, b) => (a.name || a.orgId).localeCompare(b.name || b.orgId)).map((o) => (
+                          <option key={o.orgId} value={o.orgId}>{o.name || o.orgId}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="flex flex-col">
+                      <span className="text-xs text-gray-500 mb-1">Owner name / email</span>
+                      <input
+                        value={filterOwner}
+                        onChange={(e) => setFilterOwner(e.target.value)}
+                        placeholder="customer name or email"
+                        className="border rounded px-2 py-1 text-sm"
+                      />
+                    </label>
+                    <label className="flex flex-col md:col-span-2 lg:col-span-2">
+                      <span className="text-xs text-gray-500 mb-1">Search (code, device name, location)</span>
+                      <input
+                        value={filterSearch}
+                        onChange={(e) => setFilterSearch(e.target.value)}
+                        placeholder="SF-… or location"
+                        className="border rounded px-2 py-1 text-sm"
+                      />
+                    </label>
+                  </div>
+                  {activeFilterCount > 0 && (
+                    <button onClick={clearAllFilters} className="mt-3 text-xs text-blue-600 hover:underline">
+                      Clear all filters
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {registered.length > 0 && (
+            <div className="mb-3">
+              <div className="flex items-center gap-3 mb-2 flex-wrap">
+                <label className="flex items-center gap-1.5 text-xs text-gray-500 cursor-pointer">
+                  <input type="checkbox" checked={filteredRegistered.length > 0 && selectedForPrint.size === filteredRegistered.length} onChange={selectAllForPrint} className="rounded" />
+                  Select all {activeFilterCount > 0 ? "filtered" : ""}
+                </label>
+                {selectedForPrint.size > 0 && (
+                  <button onClick={() => setShowBulkPrint(true)} className="px-3 py-1.5 bg-indigo-600 text-white rounded-lg text-xs font-medium hover:bg-indigo-700">
+                    Print {selectedForPrint.size} QR Sticker{selectedForPrint.size !== 1 ? "s" : ""}
+                  </button>
+                )}
+              </div>
+
+              {/* Bulk actions panel — appears once at least one device is
+                  selected. Three feature rows × ON/OFF buttons. Each click
+                  confirms the count before firing. Same selection drives
+                  any number of actions back-to-back. */}
               {selectedForPrint.size > 0 && (
-                <button onClick={() => setShowBulkPrint(true)} className="px-3 py-1.5 bg-indigo-600 text-white rounded-lg text-xs font-medium hover:bg-indigo-700">
-                  Print {selectedForPrint.size} QR Sticker{selectedForPrint.size !== 1 ? "s" : ""}
-                </button>
+                <div className="bg-blue-50 border border-blue-200 rounded-xl p-3">
+                  <div className="text-xs font-semibold text-blue-900 mb-2">
+                    Bulk actions on {selectedForPrint.size} selected device{selectedForPrint.size !== 1 ? "s" : ""}
+                  </div>
+                  <div className="space-y-2">
+                    {[
+                      { flag: "diagnosticsOn", label: "Diagnostics",            hint: "Boot log + restart reasons. Admin-only." },
+                      { flag: "notifyOn",      label: "Premium notifications",  hint: "Fires Cloud Function for paying customers." },
+                      { flag: "analyticsOn",   label: "Analytics (history)",    hint: "Records change-driven history rows." },
+                    ].map(({ flag, label, hint }) => (
+                      <div key={flag} className="flex items-center justify-between bg-white rounded-lg px-3 py-2">
+                        <div className="min-w-0 mr-3">
+                          <div className="text-sm font-medium text-gray-900">{label}</div>
+                          <div className="text-[10px] text-gray-500 truncate">{hint}</div>
+                        </div>
+                        <div className="flex gap-2 flex-shrink-0">
+                          <button
+                            onClick={() => applyBulkFlag(flag, true)}
+                            disabled={bulkBusy !== null}
+                            className="px-3 py-1 text-xs font-semibold rounded-lg bg-green-600 text-white hover:bg-green-700 disabled:opacity-40"
+                          >
+                            {bulkBusy === `${flag}:on` ? "…" : "Enable"}
+                          </button>
+                          <button
+                            onClick={() => applyBulkFlag(flag, false)}
+                            disabled={bulkBusy !== null}
+                            className="px-3 py-1 text-xs font-semibold rounded-lg bg-gray-500 text-white hover:bg-gray-600 disabled:opacity-40"
+                          >
+                            {bulkBusy === `${flag}:off` ? "…" : "Disable"}
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
               )}
             </div>
           )}
           <div className="space-y-3">
             {registered.length === 0 ? (
               <p className="text-gray-500 text-sm py-10 text-center">No registered devices</p>
-            ) : registered.map((d) => {
+            ) : filteredRegistered.length === 0 ? (
+              <p className="text-gray-500 text-sm py-10 text-center">
+                No devices match the current filters. <button onClick={clearAllFilters} className="text-blue-600 hover:underline">Clear filters</button>
+              </p>
+            ) : filteredRegistered.map((d) => {
               const devActive = d.isActive !== false;
               return (
                 <div key={d.deviceCode} className={`bg-white rounded-xl border p-4 ${devActive ? "border-gray-200" : "border-red-200 bg-red-50"}`}>
@@ -686,21 +1025,67 @@ export default function AdminDevices() {
                 </div>
               )}
 
-              {/* Analytics toggle */}
-              <div className="flex items-center justify-between bg-gray-50 rounded-lg px-3 py-2 mt-3">
-                <span className="text-sm text-gray-700">Analytics (history tracking)</span>
-                <button
-                  onClick={async () => {
-                    await setAnalyticsEnabled(viewDevice, !viewConfig?.analyticsOn);
-                  }}
-                  className={`px-4 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
-                    viewConfig?.analyticsOn
-                      ? "bg-green-500 text-white"
-                      : "bg-gray-200 text-gray-600"
-                  }`}
-                >
-                  {viewConfig?.analyticsOn ? "ON" : "OFF"}
-                </button>
+              {/* Device config toggles */}
+              <div className="space-y-2 mt-3">
+                {/* Analytics — history tracking */}
+                <div className="flex items-center justify-between bg-gray-50 rounded-lg px-3 py-2">
+                  <div>
+                    <div className="text-sm text-gray-700">Analytics</div>
+                    <div className="text-[10px] text-gray-500">History/chart data writes to RTDB.</div>
+                  </div>
+                  <button
+                    onClick={async () => {
+                      await setAnalyticsEnabled(viewDevice, !viewConfig?.analyticsOn);
+                    }}
+                    className={`px-4 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+                      viewConfig?.analyticsOn
+                        ? "bg-green-500 text-white"
+                        : "bg-gray-200 text-gray-600"
+                    }`}
+                  >
+                    {viewConfig?.analyticsOn ? "ON" : "OFF"}
+                  </button>
+                </div>
+
+                {/* Diagnostics — boot log (admin remote-debug, 17.0.9+) */}
+                <div className="flex items-center justify-between bg-gray-50 rounded-lg px-3 py-2">
+                  <div>
+                    <div className="text-sm text-gray-700">Diagnostics</div>
+                    <div className="text-[10px] text-gray-500">Boot log + restart reasons. Admin-only.</div>
+                  </div>
+                  <button
+                    onClick={async () => {
+                      await setDiagnosticsEnabled(viewDevice, !viewConfig?.diagnosticsOn);
+                    }}
+                    className={`px-4 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+                      viewConfig?.diagnosticsOn
+                        ? "bg-blue-500 text-white"
+                        : "bg-gray-200 text-gray-600"
+                    }`}
+                  >
+                    {viewConfig?.diagnosticsOn ? "ON" : "OFF"}
+                  </button>
+                </div>
+
+                {/* Premium / Notifications gate (17.0.9+) */}
+                <div className="flex items-center justify-between bg-gray-50 rounded-lg px-3 py-2">
+                  <div>
+                    <div className="text-sm text-gray-700">Premium notifications</div>
+                    <div className="text-[10px] text-gray-500">Fires Cloud Function on changes. Paid feature.</div>
+                  </div>
+                  <button
+                    onClick={async () => {
+                      await setNotifyEnabled(viewDevice, !viewConfig?.notifyOn);
+                    }}
+                    className={`px-4 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+                      viewConfig?.notifyOn
+                        ? "bg-purple-500 text-white"
+                        : "bg-gray-200 text-gray-600"
+                    }`}
+                  >
+                    {viewConfig?.notifyOn ? "ON" : "OFF"}
+                  </button>
+                </div>
               </div>
 
               <div className="flex gap-2 mt-4">

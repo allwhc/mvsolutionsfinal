@@ -37,6 +37,98 @@ export async function setAnalyticsEnabled(deviceCode, enabled) {
   });
 }
 
+// Set diagnosticsOn flag (firmware 17.0.9+). Admin-only feature for
+// remote debug — toggling on tells the firmware to start logging boot
+// reasons + uploading them to /diagnostics/boots. Toggling off stops new
+// uploads but doesn't wipe existing log entries.
+export async function setDiagnosticsEnabled(deviceCode, enabled) {
+  await update(ref(rtdb, `devices/${deviceCode}/config`), {
+    diagnosticsOn: !!enabled,
+  });
+}
+
+// Set notifyOn flag (firmware 17.0.9+). Premium-tier gate — when true
+// the firmware mirrors change-driven pushes to /notify_trigger and the
+// Cloud Function dispatcher fires. Free devices keep this OFF so no
+// Cloud Function executions are triggered by their writes.
+export async function setNotifyEnabled(deviceCode, enabled) {
+  await update(ref(rtdb, `devices/${deviceCode}/config`), {
+    notifyOn: !!enabled,
+  });
+}
+
+// Batch-fetch /config blocks for a set of device codes. Returns
+// { deviceCode: { analyticsOn, diagnosticsOn, notifyOn, ... }, ... }
+// Used by /admin/devices to filter by current toggle state. Single
+// snapshot read per device, no listeners (we don't need live updates
+// for filtering — admin refreshes the page if they want fresh data).
+export async function getDevicesConfigMap(deviceCodes) {
+  if (!Array.isArray(deviceCodes) || deviceCodes.length === 0) return {};
+  const out = {};
+  await Promise.all(
+    deviceCodes.map(async (code) => {
+      const snap = await get(ref(rtdb, `devices/${code}/config`));
+      out[code] = snap.exists() ? snap.val() : {};
+    })
+  );
+  return out;
+}
+
+// Bulk-apply a config flag to many devices in a single RTDB call. Used
+// by /admin/devices bulk-actions UI to flip diagnostics / premium for a
+// selection of devices at once. Each entry in `updates` is keyed by the
+// full RTDB path so we don't pay N round-trips.
+export async function bulkSetConfigFlag(deviceCodes, flag, enabled) {
+  if (!Array.isArray(deviceCodes) || deviceCodes.length === 0) return;
+  if (!["analyticsOn", "diagnosticsOn", "notifyOn"].includes(flag)) {
+    throw new Error(`bulkSetConfigFlag: unknown flag ${flag}`);
+  }
+  const updates = {};
+  for (const code of deviceCodes) {
+    updates[`devices/${code}/config/${flag}`] = !!enabled;
+  }
+  await update(ref(rtdb), updates);
+}
+
+// Read the boot log for a device. Returns array of entries sorted by
+// bootNumber descending (most recent first). Empty array if no log yet.
+export async function getDeviceBootLog(deviceCode) {
+  const snap = await get(ref(rtdb, `devices/${deviceCode}/diagnostics/boots`));
+  if (!snap.exists()) return [];
+  const data = snap.val();
+  // Firmware writes to slots 0..49 circularly. Sort by bootNumber to get
+  // chronological order, descending so newest is first in the UI.
+  return Object.entries(data)
+    .map(([slot, val]) => ({ slot: parseInt(slot), ...val }))
+    .sort((a, b) => (b.bootNumber || 0) - (a.bootNumber || 0));
+}
+
+// Read the live diagnostics snapshot (uptime, heap, RSSI, etc.). Returns
+// null if device has never uploaded one (admin hasn't pressed Refresh).
+export async function getDeviceDiagnosticsNow(deviceCode) {
+  const snap = await get(ref(rtdb, `devices/${deviceCode}/diagnostics/now`));
+  return snap.exists() ? snap.val() : null;
+}
+
+// Ask the firmware for a fresh /diagnostics/now snapshot. The device
+// picks up the command on its next 5-sec poll (~5 sec round-trip), pushes
+// the snapshot, then clears the flag. Admin re-reads after a short delay.
+export async function requestDiagnosticsRefresh(deviceCode) {
+  await update(ref(rtdb, `devices/${deviceCode}/commands`), {
+    refreshDiagRequested: true,
+  });
+}
+
+// Ask the firmware to wipe its boot log (both local NVS and the RTDB
+// path under /diagnostics/boots). One-shot — firmware clears the flag.
+export async function requestDiagnosticsClear(deviceCode) {
+  await update(ref(rtdb, `devices/${deviceCode}/commands`), {
+    clearDiagLogRequested: true,
+  });
+  // Also wipe immediately from admin side so UI updates without round-trip.
+  await remove(ref(rtdb, `devices/${deviceCode}/diagnostics/boots`));
+}
+
 // Clear all history for a device
 export async function clearDeviceHistory(deviceCode) {
   await remove(ref(rtdb, `devices/${deviceCode}/history`));

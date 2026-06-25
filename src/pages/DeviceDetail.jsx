@@ -9,9 +9,61 @@ import {
 } from "../firebase/db";
 import { doc, updateDoc } from "firebase/firestore";
 import { db } from "../firebase/config";
-import { sendRefreshCommand, sendRestartCommand, sendTestCommand, sendValveCommand, listenToValveConfig, setValveConfig, sfsSetAutoMode, sfsForcePumpRun, listenToSfsLogs } from "../firebase/rtdb";
+import { sendRefreshCommand, sendRestartCommand, sendTestCommand, sendValveCommand, listenToValveConfig, setValveConfig, sfsSetAutoMode, sfsForcePumpRun, listenToSfsLogs, getDeviceBootLog, getDeviceDiagnosticsNow, requestDiagnosticsRefresh, requestDiagnosticsClear } from "../firebase/rtdb";
 import DeviceCard from "../components/DeviceCard/DeviceCard";
 import AnalyticsChart, { generateCSV, downloadCSV } from "../components/Analytics/AnalyticsChart";
+
+// Notification rule catalogue — kept here so the UI knows what to show and
+// the Cloud Function dispatcher uses the same keys / default delays.
+const NOTIF_EVENTS = [
+  {
+    key: "level_empty",
+    label: "Tank Empty",
+    defaultDelaySec: 60 * 60,
+    options: [
+      { label: "Immediate", sec: 0 },
+      { label: "After 15 min", sec: 15 * 60 },
+      { label: "After 30 min", sec: 30 * 60 },
+      { label: "After 1 hour", sec: 60 * 60 },
+      { label: "After 2 hours", sec: 2 * 60 * 60 },
+      { label: "After 3 hours", sec: 3 * 60 * 60 },
+      { label: "After 4 hours", sec: 4 * 60 * 60 },
+    ],
+  },
+  {
+    key: "level_full",
+    label: "Tank Full",
+    defaultDelaySec: 0,
+    options: [
+      { label: "Immediate", sec: 0 },
+      { label: "After 15 min", sec: 15 * 60 },
+      { label: "After 30 min", sec: 30 * 60 },
+      { label: "After 1 hour", sec: 60 * 60 },
+    ],
+  },
+  {
+    key: "device_offline",
+    label: "Device Offline",
+    defaultDelaySec: 30 * 60,
+    options: [
+      { label: "After 15 min", sec: 15 * 60 },
+      { label: "After 30 min", sec: 30 * 60 },
+      { label: "After 1 hour", sec: 60 * 60 },
+      { label: "After 2 hours", sec: 2 * 60 * 60 },
+      { label: "After 4 hours", sec: 4 * 60 * 60 },
+    ],
+  },
+  {
+    key: "sensor_error",
+    label: "Sensor Error",
+    defaultDelaySec: 0,
+    options: [
+      { label: "Immediate", sec: 0 },
+      { label: "After 15 min", sec: 15 * 60 },
+      { label: "After 30 min", sec: 30 * 60 },
+    ],
+  },
+];
 
 function rssiLabel(rssi) {
   if (rssi === undefined || rssi === null || rssi === 0) return "N/A";
@@ -38,6 +90,8 @@ export default function DeviceDetail() {
   const [tankCapacityLitres, setTankCapacityLitres] = useState(0);
   const [alertLowPct, setAlertLowPct] = useState("");
   const [alertHighPct, setAlertHighPct] = useState("");
+  const [notifRules, setNotifRules] = useState({});   // { level_empty: {enabled, delaySec}, ... }
+  const [savingRule, setSavingRule] = useState({});   // event -> bool
   const [alertError, setAlertError] = useState("");
   const [valveConfig, setValveConfigState] = useState(null);
   const [chartKey, setChartKey] = useState(0);
@@ -88,6 +142,7 @@ export default function DeviceDetail() {
           setTankCapacityLitres(subData.tankCapacityLitres || 0);
           setAlertLowPct(subData.alertLowPct ?? "");
           setAlertHighPct(subData.alertHighPct ?? "");
+          setNotifRules(subData.notificationRules || {});
           setDeviceName(subData.deviceName || "");
           setValveAlertOpenHours(subData.valveAlertOpenHours ?? "");
           setValveAlertClosedHours(subData.valveAlertClosedHours ?? "");
@@ -377,6 +432,81 @@ export default function DeviceDetail() {
           </div>
         );
       })()}
+
+      {/* Notifications — per-user, per-device alert rules.
+          GATED OFF until Phase 2 wiring is complete (Cloud Function needs
+          to be repointed from /live to /notify_trigger AND isPremium
+          gating needs to land). See memory project_notifications_phase2_plan
+          for the full sequence. UI is fully built but inert — flip this
+          flag to true once the backend supports it. */}
+      {false && (
+      <div className="bg-white rounded-xl shadow-sm border border-gray-200 mt-4 p-4">
+        <h3 className="font-semibold text-gray-900 mb-3">Notifications</h3>
+        <p className="text-xs text-gray-500 mb-3">
+          Get a push notification when these conditions hit. All events are OFF by default — turn on what you want.
+        </p>
+        <div className="space-y-2">
+          {NOTIF_EVENTS.map((ev) => {
+            const rule = notifRules[ev.key] || {};
+            const enabled = rule.enabled === true;
+            const currentDelay = typeof rule.delaySec === "number" ? rule.delaySec : ev.defaultDelaySec;
+            return (
+              <div key={ev.key} className="flex items-center justify-between gap-2 border border-gray-100 rounded-lg p-2.5">
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-medium text-gray-900">{ev.label}</div>
+                </div>
+                <div className="flex items-center gap-2 flex-shrink-0">
+                  <select
+                    value={currentDelay}
+                    disabled={!enabled || !!savingRule[ev.key]}
+                    onChange={async (e) => {
+                      const delaySec = parseInt(e.target.value);
+                      const next = { ...notifRules, [ev.key]: { enabled: true, delaySec } };
+                      setNotifRules(next);
+                      setSavingRule((s) => ({ ...s, [ev.key]: true }));
+                      await updateDoc(doc(db, "subscriptions", user.uid, "devices", code), {
+                        notificationRules: next,
+                      });
+                      setSavingRule((s) => ({ ...s, [ev.key]: false }));
+                    }}
+                    className="text-xs border rounded px-2 py-1 bg-white disabled:bg-gray-50 disabled:text-gray-400"
+                  >
+                    {ev.options.map((o) => (
+                      <option key={o.sec} value={o.sec}>{o.label}</option>
+                    ))}
+                  </select>
+                  <button
+                    onClick={async () => {
+                      const next = {
+                        ...notifRules,
+                        [ev.key]: { enabled: !enabled, delaySec: currentDelay },
+                      };
+                      setNotifRules(next);
+                      setSavingRule((s) => ({ ...s, [ev.key]: true }));
+                      await updateDoc(doc(db, "subscriptions", user.uid, "devices", code), {
+                        notificationRules: next,
+                      });
+                      setSavingRule((s) => ({ ...s, [ev.key]: false }));
+                    }}
+                    disabled={!!savingRule[ev.key]}
+                    className={`text-xs px-3 py-1 rounded-full font-semibold transition-colors disabled:opacity-50 ${
+                      enabled
+                        ? "bg-green-100 text-green-700 hover:bg-green-200"
+                        : "bg-gray-200 text-gray-600 hover:bg-gray-300"
+                    }`}
+                  >
+                    {savingRule[ev.key] ? "…" : enabled ? "ON" : "OFF"}
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        <p className="text-xs text-gray-400 mt-3">
+          Repeated alerts wait 1 hour before firing again for the same condition.
+        </p>
+      </div>
+      )}
 
       {/* Valve Controls — only for valve devices */}
       {(catalog?.deviceClass === 1 || info?.deviceClass === 1) && (
@@ -764,6 +894,11 @@ export default function DeviceDetail() {
         </div>
       )}
 
+      {/* Diagnostics — admin-only, only visible when diagnosticsOn=true on device */}
+      {isSuperAdmin && valveConfigState?.diagnosticsOn && (
+        <DiagnosticsCard code={code} />
+      )}
+
       {/* Actions — at bottom */}
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 mt-4 p-4">
         <h3 className="font-semibold text-gray-900 mb-3">Actions</h3>
@@ -778,6 +913,191 @@ export default function DeviceDetail() {
             className="px-4 py-2 bg-red-50 text-red-600 rounded-lg text-sm hover:bg-red-100">Unsubscribe</button>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ── Diagnostics Card ──────────────────────────────────────────────
+// Admin-only restart history viewer. Reads /devices/<code>/diagnostics/boots
+// (populated by firmware 17.0.9+ when diagnosticsOn=true) and renders a
+// clean restart table with reason, timestamp, uptime, and firmware version.
+// Refresh button asks firmware for a fresh /diagnostics/now snapshot.
+// Clear wipes both NVS (via command) and the RTDB log.
+function DiagnosticsCard({ code }) {
+  const [boots, setBoots] = useState([]);
+  const [now, setNow] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [showAll, setShowAll] = useState(false);
+
+  async function reload() {
+    setLoading(true);
+    const [bootList, snapshot] = await Promise.all([
+      getDeviceBootLog(code),
+      getDeviceDiagnosticsNow(code),
+    ]);
+    setBoots(bootList);
+    setNow(snapshot);
+    setLoading(false);
+  }
+
+  useEffect(() => { reload(); }, [code]);
+
+  async function handleRefreshSnapshot() {
+    setRefreshing(true);
+    await requestDiagnosticsRefresh(code);
+    // Wait ~6s for firmware to pick up the command + push the snapshot.
+    // Firmware polls commands every 5 sec.
+    setTimeout(async () => {
+      const fresh = await getDeviceDiagnosticsNow(code);
+      setNow(fresh);
+      setRefreshing(false);
+    }, 6000);
+  }
+
+  async function handleClear() {
+    if (!confirm("Clear ALL boot log entries for this device? This wipes both cloud and the on-device NVS log.")) return;
+    await requestDiagnosticsClear(code);
+    setBoots([]);
+  }
+
+  // Format unix epoch → "25 Jun, 14:32"
+  function fmtTs(epoch) {
+    if (!epoch) return "—";
+    const d = new Date(epoch * 1000);
+    return d.toLocaleString(undefined, { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
+  }
+
+  // Format seconds → "6h 23m" / "18m" / "45s"
+  function fmtDur(sec) {
+    if (!sec || sec === 0) return "—";
+    if (sec < 60)    return `${sec}s`;
+    if (sec < 3600)  return `${Math.floor(sec / 60)}m`;
+    const h = Math.floor(sec / 3600);
+    const m = Math.floor((sec % 3600) / 60);
+    return m > 0 ? `${h}h ${m}m` : `${h}h`;
+  }
+
+  // Reset reason → friendly label + colour for chip
+  function reasonChip(reasonStr, reasonCode) {
+    const map = {
+      "power-on":     { bg: "bg-gray-100",   text: "text-gray-700",   label: "Power-on" },
+      "external-pin": { bg: "bg-gray-100",   text: "text-gray-700",   label: "External" },
+      "software":     { bg: "bg-blue-100",   text: "text-blue-700",   label: "Software" },
+      "panic":        { bg: "bg-red-100",    text: "text-red-700",    label: "Panic" },
+      "int-wdt":      { bg: "bg-orange-100", text: "text-orange-700", label: "Int WDT" },
+      "task-wdt":     { bg: "bg-orange-100", text: "text-orange-700", label: "Task WDT" },
+      "other-wdt":    { bg: "bg-orange-100", text: "text-orange-700", label: "WDT" },
+      "deep-sleep":   { bg: "bg-purple-100", text: "text-purple-700", label: "Deep sleep" },
+      "brownout":     { bg: "bg-red-100",    text: "text-red-700",    label: "Brownout" },
+      "sdio":         { bg: "bg-gray-100",   text: "text-gray-700",   label: "SDIO" },
+    };
+    const cfg = map[reasonStr] || { bg: "bg-gray-100", text: "text-gray-700", label: `Reason ${reasonCode}` };
+    return (
+      <span className={`inline-block text-[11px] font-medium px-2 py-0.5 rounded ${cfg.bg} ${cfg.text}`}>
+        {cfg.label}
+      </span>
+    );
+  }
+
+  const visible = showAll ? boots : boots.slice(0, 10);
+
+  return (
+    <div className="bg-white rounded-xl shadow-sm border border-gray-200 mt-4 p-4">
+      <div className="flex items-center justify-between mb-3">
+        <h3 className="font-semibold text-gray-900">Diagnostics <span className="text-xs font-normal text-gray-500">(admin only)</span></h3>
+        <div className="flex gap-2">
+          <button
+            onClick={handleRefreshSnapshot}
+            disabled={refreshing}
+            className="text-xs px-3 py-1.5 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100 disabled:opacity-50"
+          >
+            {refreshing ? "Refreshing…" : "Refresh snapshot"}
+          </button>
+          <button
+            onClick={handleClear}
+            disabled={boots.length === 0}
+            className="text-xs px-3 py-1.5 bg-red-50 text-red-600 rounded-lg hover:bg-red-100 disabled:opacity-50"
+          >
+            Clear log
+          </button>
+        </div>
+      </div>
+
+      {/* Live snapshot */}
+      {now ? (
+        <div className="bg-gray-50 rounded-lg p-3 mb-3 grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+          <div>
+            <div className="text-gray-500">Uptime</div>
+            <div className="font-semibold text-gray-900">{fmtDur(now.uptime)}</div>
+          </div>
+          <div>
+            <div className="text-gray-500">Free heap</div>
+            <div className="font-semibold text-gray-900">{Math.round((now.freeHeap || 0) / 1024)} KB</div>
+          </div>
+          <div>
+            <div className="text-gray-500">RSSI</div>
+            <div className="font-semibold text-gray-900">{now.rssi} dBm</div>
+          </div>
+          <div>
+            <div className="text-gray-500">Push fails</div>
+            <div className="font-semibold text-gray-900">{now.consecutivePushFails || 0}</div>
+          </div>
+        </div>
+      ) : (
+        <div className="bg-gray-50 rounded-lg p-3 mb-3 text-xs text-gray-500">
+          No live snapshot yet. Click <strong>Refresh snapshot</strong> to ask the device.
+        </div>
+      )}
+
+      {/* Boot log */}
+      <div className="text-xs font-semibold text-gray-700 mb-2">Restart history</div>
+      {loading ? (
+        <div className="text-xs text-gray-500 py-4 text-center">Loading…</div>
+      ) : boots.length === 0 ? (
+        <div className="text-xs text-gray-500 py-4 text-center bg-gray-50 rounded-lg">
+          No restart entries yet. Device will start logging on its next boot.
+        </div>
+      ) : (
+        <>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="text-left text-gray-500 border-b border-gray-200">
+                  <th className="py-2 font-medium">#</th>
+                  <th className="py-2 font-medium">When</th>
+                  <th className="py-2 font-medium">Reason</th>
+                  <th className="py-2 font-medium">Ran before</th>
+                  <th className="py-2 font-medium">Heap</th>
+                  <th className="py-2 font-medium">FW</th>
+                </tr>
+              </thead>
+              <tbody>
+                {visible.map((b) => (
+                  <tr key={b.slot} className="border-b border-gray-100">
+                    <td className="py-2 text-gray-500">{b.bootNumber || "—"}</td>
+                    <td className="py-2 text-gray-700">{fmtTs(b.epoch)}</td>
+                    <td className="py-2">{reasonChip(b.reasonStr, b.reason)}</td>
+                    <td className="py-2 text-gray-700">{fmtDur(b.uptimeBefore)}</td>
+                    <td className="py-2 text-gray-700">{Math.round((b.freeHeapAtBoot || 0) / 1024)} KB</td>
+                    <td className="py-2 text-gray-500">{b.fwVersion || "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {boots.length > 10 && (
+            <div className="text-center mt-2">
+              <button
+                onClick={() => setShowAll(!showAll)}
+                className="text-xs text-blue-600 hover:text-blue-800"
+              >
+                {showAll ? "Show less" : `Show all ${boots.length}`}
+              </button>
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }
