@@ -2,9 +2,25 @@ import { useState, useEffect, useMemo } from "react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 import { getHistoryByRange } from "../../firebase/rtdb";
 
+// Maximum gap between an "actual" value and the next interpolated grid
+// point before we treat the line as broken (device offline / unknown).
+// Heartbeat is every 5 min; allow a 4× safety factor before declaring the
+// gap a true outage. Tuned to swallow brief WiFi blips but flag a real
+// disconnect (anything > 20 min without a heartbeat).
+const GAP_TIMEOUT_MS = 20 * 60 * 1000;
+
 // Merge actual history entries with grid timestamps (every stepMs)
 // Returns array of { ts, pct, source } — source is "actual" or "interpolated"
-// Before first data point: pct is null (no line drawn)
+//
+// Forward-fill rule: an interpolated grid point inherits the most recent
+// actual value ONLY when that actual value is younger than GAP_TIMEOUT_MS.
+// Otherwise the point's pct stays null and the chart breaks the line —
+// that's the segment where the device was offline and we honestly don't
+// know what the level was.
+//
+// Before first data point in range: also null. This is the fix for the
+// "device offline but estimated line still shows" bug — we used to seed
+// lastKnown from ANY history regardless of how old it was.
 function interpolate(history, startTs, endTs, stepMs) {
   // Build set of grid timestamps (as numbers)
   const gridTimes = [];
@@ -16,30 +32,39 @@ function interpolate(history, startTs, endTs, stepMs) {
   // Merge and sort unique timestamps
   const actualSet = new Set(actuals.map((a) => a.ts));
   const merged = [];
-  // Add all actuals first
   for (const a of actuals) {
     merged.push({ ts: a.ts, pct: a.pct, source: "actual" });
   }
-  // Add grid times that don't coincide with actuals
   for (const t of gridTimes) {
     if (!actualSet.has(t)) merged.push({ ts: t, pct: null, source: "interpolated" });
   }
-  // Sort by timestamp
   merged.sort((a, b) => a.ts - b.ts);
 
-  // Fill interpolated values with last known actual value
-  // Use global last actual (including before the range start) for carrying value forward
+  // Seed lastKnown from the most recent actual BEFORE range start, but
+  // only if it falls within the gap window. An older value means the
+  // device was offline at the start of the range — leave lastKnown null
+  // so we don't paint a fictional flat line.
   let lastKnown = null;
-  // Find last actual before range start to seed lastKnown
+  let lastKnownAt = -Infinity;
   for (let i = history.length - 1; i >= 0; i--) {
-    if (history[i].ts < startTs) { lastKnown = history[i].pct ?? null; break; }
+    if (history[i].ts < startTs) {
+      const age = startTs - history[i].ts;
+      if (age <= GAP_TIMEOUT_MS) {
+        lastKnown   = history[i].pct ?? null;
+        lastKnownAt = history[i].ts;
+      }
+      break;
+    }
   }
 
   for (const row of merged) {
     if (row.source === "actual") {
-      lastKnown = row.pct;
+      lastKnown   = row.pct;
+      lastKnownAt = row.ts;
     } else {
-      row.pct = lastKnown;
+      // Only carry the value forward if the most recent actual is still
+      // within the gap window. Otherwise null → chart breaks the line.
+      row.pct = (row.ts - lastKnownAt <= GAP_TIMEOUT_MS) ? lastKnown : null;
     }
   }
 
@@ -376,7 +401,7 @@ export default function AnalyticsChart({ deviceCode, tankCapacityLitres, onHisto
       )}
 
       {/* Chart */}
-      <div className="bg-white rounded-lg" style={{ height: 320 }}>
+      <div className="bg-white rounded-lg relative" style={{ height: 320 }}>
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={chartData} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
@@ -420,6 +445,23 @@ export default function AnalyticsChart({ deviceCode, tankCapacityLitres, onHisto
             />
           </LineChart>
         </ResponsiveContainer>
+
+        {/* Empty-state overlay — covers the chart grid when there's literally
+            nothing to draw. Stops "Actual values only" from looking like the
+            chart broke when in reality the user just has zero actuals in the
+            window. Also fires when the device was offline the whole range. */}
+        {!hasChartData && (
+          <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+            <div className="bg-white/90 rounded-lg px-4 py-3 text-center max-w-xs">
+              <p className="text-sm font-medium text-gray-700">No data in this window</p>
+              <p className="text-xs text-gray-500 mt-1">
+                {actualsOnly
+                  ? "No actual readings in this range. Uncheck 'Actual values only' to see the carried-forward line."
+                  : "Device may have been offline. Try a wider range."}
+              </p>
+            </div>
+          </div>
+        )}
       </div>
 
       <p className="text-xs text-gray-400 mt-2 text-center">
