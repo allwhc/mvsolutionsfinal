@@ -225,7 +225,10 @@ export default function DeviceDetail() {
       </button>
 
       <DeviceCard deviceCode={code} deviceName={deviceName || catalog.deviceName || code}
-        live={live} info={info} catalog={catalog} isOnline={isOnline} />
+        live={live} info={info} catalog={catalog} isOnline={isOnline}
+        tankCapacityLitres={tankCapacityLitres}
+        lastCleanedAt={lastCleanedAt} cleanIntervalDays={cleanIntervalDays}
+        alertLowPct={alertLowPct} alertHighPct={alertHighPct} />
 
       {/* Device Name — editable */}
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 mt-4 p-4">
