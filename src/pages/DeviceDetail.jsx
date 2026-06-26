@@ -439,7 +439,7 @@ export default function DeviceDetail() {
           knows the feature exists and how to get it. If ON, show the rules
           UI. Cloud Function on /notify_trigger only fires for premium
           devices, so zero infrastructure cost for free customers. */}
-      {!valveConfigState?.notifyOn ? (
+      {!valveConfig?.notifyOn ? (
         <div className="bg-gradient-to-br from-purple-50 to-blue-50 border border-purple-200 rounded-xl mt-4 p-4">
           <div className="flex items-start gap-3">
             <div className="text-2xl flex-shrink-0">🔔</div>
@@ -910,7 +910,7 @@ export default function DeviceDetail() {
       )}
 
       {/* Diagnostics — admin-only, only visible when diagnosticsOn=true on device */}
-      {isSuperAdmin && valveConfigState?.diagnosticsOn && (
+      {isSuperAdmin && valveConfig?.diagnosticsOn && (
         <DiagnosticsCard code={code} />
       )}
 
