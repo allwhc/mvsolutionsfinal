@@ -2,25 +2,19 @@ import { useState, useEffect, useMemo } from "react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 import { getHistoryByRange } from "../../firebase/rtdb";
 
-// Maximum gap between an "actual" value and the next interpolated grid
-// point before we treat the line as broken (device offline / unknown).
-// Heartbeat is every 5 min; allow a 4× safety factor before declaring the
-// gap a true outage. Tuned to swallow brief WiFi blips but flag a real
-// disconnect (anything > 20 min without a heartbeat).
-const GAP_TIMEOUT_MS = 20 * 60 * 1000;
-
 // Merge actual history entries with grid timestamps (every stepMs)
 // Returns array of { ts, pct, source } — source is "actual" or "interpolated"
 //
-// Forward-fill rule: an interpolated grid point inherits the most recent
-// actual value ONLY when that actual value is younger than GAP_TIMEOUT_MS.
-// Otherwise the point's pct stays null and the chart breaks the line —
-// that's the segment where the device was offline and we honestly don't
-// know what the level was.
+// Forward-fill rule: every interpolated grid point inherits the most
+// recent actual value, regardless of how old that value is. This is
+// correct because firmware 17.0.8+ writes to /history ONLY on confirmed
+// level change — a "no new entry" period means the level was steady, not
+// that the device was offline. We can't tell offline from steady-state
+// just by looking at /history; for that the user has the device's online
+// badge elsewhere in the UI plus the "Actual values only" toggle which
+// suppresses the forward-fill.
 //
-// Before first data point in range: also null. This is the fix for the
-// "device offline but estimated line still shows" bug — we used to seed
-// lastKnown from ANY history regardless of how old it was.
+// Before first data point in range: pct stays null (no line drawn).
 function interpolate(history, startTs, endTs, stepMs) {
   // Build set of grid timestamps (as numbers)
   const gridTimes = [];
@@ -40,31 +34,18 @@ function interpolate(history, startTs, endTs, stepMs) {
   }
   merged.sort((a, b) => a.ts - b.ts);
 
-  // Seed lastKnown from the most recent actual BEFORE range start, but
-  // only if it falls within the gap window. An older value means the
-  // device was offline at the start of the range — leave lastKnown null
-  // so we don't paint a fictional flat line.
+  // Seed lastKnown from the most recent actual BEFORE range start.
+  // No staleness check — last known truth is what we paint forward.
   let lastKnown = null;
-  let lastKnownAt = -Infinity;
   for (let i = history.length - 1; i >= 0; i--) {
-    if (history[i].ts < startTs) {
-      const age = startTs - history[i].ts;
-      if (age <= GAP_TIMEOUT_MS) {
-        lastKnown   = history[i].pct ?? null;
-        lastKnownAt = history[i].ts;
-      }
-      break;
-    }
+    if (history[i].ts < startTs) { lastKnown = history[i].pct ?? null; break; }
   }
 
   for (const row of merged) {
     if (row.source === "actual") {
-      lastKnown   = row.pct;
-      lastKnownAt = row.ts;
+      lastKnown = row.pct;
     } else {
-      // Only carry the value forward if the most recent actual is still
-      // within the gap window. Otherwise null → chart breaks the line.
-      row.pct = (row.ts - lastKnownAt <= GAP_TIMEOUT_MS) ? lastKnown : null;
+      row.pct = lastKnown;
     }
   }
 
