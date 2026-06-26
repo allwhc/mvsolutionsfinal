@@ -434,12 +434,27 @@ export default function DeviceDetail() {
       })()}
 
       {/* Notifications — per-user, per-device alert rules.
-          GATED OFF until Phase 2 wiring is complete (Cloud Function needs
-          to be repointed from /live to /notify_trigger AND isPremium
-          gating needs to land). See memory project_notifications_phase2_plan
-          for the full sequence. UI is fully built but inert — flip this
-          flag to true once the backend supports it. */}
-      {false && (
+          Gated on the device's notifyOn config flag, which the admin sets
+          when granting premium. If OFF, show an enrollment CTA so the user
+          knows the feature exists and how to get it. If ON, show the rules
+          UI. Cloud Function on /notify_trigger only fires for premium
+          devices, so zero infrastructure cost for free customers. */}
+      {!valveConfigState?.notifyOn ? (
+        <div className="bg-gradient-to-br from-purple-50 to-blue-50 border border-purple-200 rounded-xl mt-4 p-4">
+          <div className="flex items-start gap-3">
+            <div className="text-2xl flex-shrink-0">🔔</div>
+            <div className="flex-1 min-w-0">
+              <h3 className="font-semibold text-gray-900 text-sm mb-1">Want notifications for this device?</h3>
+              <p className="text-xs text-gray-600 mb-2">
+                Get alerted when the tank goes empty, fills up, or the sensor faults — even when the app is closed.
+              </p>
+              <p className="text-xs text-purple-700 font-medium">
+                Premium subscription required. Contact your administrator to get enrolled.
+              </p>
+            </div>
+          </div>
+        </div>
+      ) : (
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 mt-4 p-4">
         <h3 className="font-semibold text-gray-900 mb-3">Notifications</h3>
         <p className="text-xs text-gray-500 mb-3">
