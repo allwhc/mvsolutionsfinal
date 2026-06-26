@@ -65,12 +65,28 @@ const NOTIF_EVENTS = [
   },
 ];
 
-function rssiLabel(rssi) {
+// RSSI is reported by the device on each /live push. Once the device
+// drops offline, that last-known value is stale (could be hours old).
+// Treat it as N/A in that state instead of misrepresenting a remembered
+// number as a current signal reading.
+function rssiLabel(rssi, online) {
+  if (!online) return "N/A (device offline)";
   if (rssi === undefined || rssi === null || rssi === 0) return "N/A";
   if (rssi >= -55) return `Excellent (${rssi} dBm)`;
   if (rssi >= -65) return `Good (${rssi} dBm)`;
   if (rssi >= -75) return `Fair (${rssi} dBm)`;
   return `Weak (${rssi} dBm)`;
+}
+
+// Format litres as KL when ≥ 1000. Matches dashboard TankViz formatter
+// so the volume display is consistent across the app.
+function fmtLitres(L) {
+  if (!L && L !== 0) return "—";
+  if (L >= 1000) {
+    const kl = L / 1000;
+    return `${kl.toFixed(L % 1000 === 0 ? 0 : 1)} KL`;
+  }
+  return `${L} L`;
 }
 
 export default function DeviceDetail() {
@@ -266,10 +282,27 @@ export default function DeviceDetail() {
           <span className="text-gray-900">{DEVICE_CLASS[catalog.deviceClass] || "Unknown"}</span>
           <span className="text-gray-500">Sensor Type</span>
           <span className="text-gray-900">{SENSOR_TYPE[catalog.sensorType] || "Unknown"}</span>
+          {tankCapacityLitres > 0 && (
+            <>
+              <span className="text-gray-500">Tank Capacity</span>
+              <span className="text-gray-900">{fmtLitres(tankCapacityLitres)}</span>
+              {/* Current volume — only meaningful when device is online and
+                  reporting a fresh pct. Hide when offline so we don't show
+                  a stale derived number. */}
+              {isOnline && typeof live?.confirmedPct === "number" && (
+                <>
+                  <span className="text-gray-500">Current Volume</span>
+                  <span className="text-gray-900">
+                    {fmtLitres(Math.round((live.confirmedPct / 100) * tankCapacityLitres))}
+                  </span>
+                </>
+              )}
+            </>
+          )}
           <span className="text-gray-500">Firmware</span>
           <span className="text-gray-900">{info?.firmwareVersion || catalog.firmwareVersion || "Unknown"}</span>
           <span className="text-gray-500">WiFi Signal</span>
-          <span className="text-gray-900">{rssiLabel(live?.rssi)}</span>
+          <span className={isOnline ? "text-gray-900" : "text-gray-400"}>{rssiLabel(live?.rssi, isOnline)}</span>
           <span className="text-gray-500">Status</span>
           <span className={isOnline ? "text-green-600" : "text-gray-400"}>{isOnline ? "Online" : "Offline"}</span>
           <span className="text-gray-500">Subscribers</span>
