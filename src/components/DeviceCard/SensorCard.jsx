@@ -4,14 +4,24 @@ import TankViz, { formatTimestamp } from "./TankViz";
 import CleaningBadge from "./CleaningBadge";
 import { sendRefreshCommand, listenToValveConfig } from "../../firebase/rtdb";
 
-// Determine card flash class — cleaning never causes flash, only badge
+// Determine card flash class — cleaning never causes flash, only badge.
+// Thresholds come from React state on DeviceDetail and are initialised to
+// the empty string when the user hasn't set them. `"" != null` is true,
+// and `pct >= ""` coerces to `pct >= 0` (always true) which would
+// permanently flash the card green. Treat "", null, and undefined the
+// same — no threshold configured. Also Number()-coerce the threshold so
+// a string like "80" compares numerically against confirmedPct.
+function hasThreshold(v) {
+  return v !== null && v !== undefined && v !== "" && !Number.isNaN(Number(v));
+}
+
 function getAlertFlash({ sensorError, sensorOffline, confirmedPct, alertLowPct, alertHighPct }) {
   // Priority 1: Sensor error — purple
   if (sensorError || sensorOffline) return "animate-pulse-purple";
   // Priority 2: Level <= low threshold — red
-  if (alertLowPct != null && confirmedPct <= alertLowPct) return "animate-pulse-red";
+  if (hasThreshold(alertLowPct)  && confirmedPct <= Number(alertLowPct))  return "animate-pulse-red";
   // Priority 3: Level >= high threshold — green
-  if (alertHighPct != null && confirmedPct >= alertHighPct) return "animate-pulse-green";
+  if (hasThreshold(alertHighPct) && confirmedPct >= Number(alertHighPct)) return "animate-pulse-green";
   return "";
 }
 
