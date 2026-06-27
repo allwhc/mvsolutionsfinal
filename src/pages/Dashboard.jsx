@@ -1,15 +1,61 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { Link } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { useDevices } from "../hooks/useDevices";
 import { useDashboardAlertSound } from "../hooks/useDashboardAlertSound";
-import { getOrgGroups } from "../firebase/db";
+import { getOrgGroups, updateUserDoc } from "../firebase/db";
 import DeviceCard from "../components/DeviceCard/DeviceCard";
 import DeviceAnalyticsModal from "../components/Analytics/DeviceAnalyticsModal";
 import NotificationPermissionBanner from "../components/NotificationPermissionBanner";
+import {
+  DndContext, closestCenter, PointerSensor, useSensor, useSensors,
+} from "@dnd-kit/core";
+import {
+  arrayMove, SortableContext, rectSortingStrategy, useSortable,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
+
+// One sortable cell — wraps each dashboard tile. Picks up dnd-kit's listeners
+// only when the parent decides drag is allowed (locked=false, desktop, no
+// search). When `enabled` is false this is a plain pass-through wrapper so
+// the existing <Link> click behavior on locked-mode tiles isn't intercepted
+// by drag listeners.
+function SortableTile({ id, enabled, children }) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+    id,
+    disabled: !enabled,
+  });
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.5 : 1,
+    cursor: enabled ? "grab" : undefined,
+  };
+  return (
+    <div ref={setNodeRef} style={style} {...(enabled ? attributes : {})} {...(enabled ? listeners : {})}>
+      {children}
+    </div>
+  );
+}
+
+// Sort the device list by the user's saved order. Codes not in the saved
+// order get appended in their original (subscription) order so new devices
+// always show up — at the end — rather than disappearing.
+function applySavedOrder(devices, savedOrder) {
+  if (!savedOrder || savedOrder.length === 0) return devices;
+  const byCode = new Map(devices.map((d) => [d.deviceCode, d]));
+  const out = [];
+  for (const code of savedOrder) {
+    const d = byCode.get(code);
+    if (d) { out.push(d); byCode.delete(code); }
+  }
+  // Append anything new (subscription added since the order was saved).
+  for (const d of byCode.values()) out.push(d);
+  return out;
+}
 
 export default function Dashboard() {
-  const { userData, isOrgAdmin, isOrgMember } = useAuth();
+  const { user, userData, isOrgAdmin, isOrgMember } = useAuth();
   const { devices, loading } = useDevices();
   // Edge-triggered audible alert when any device crosses a user-configured
   // alertLowPct / alertHighPct threshold. Silent for devices where the
@@ -20,6 +66,40 @@ export default function Dashboard() {
   // chart icon was clicked, or null when no modal is open. Firebase reads
   // happen lazily inside the modal — opening it is the trigger.
   const [analyticsDevice, setAnalyticsDevice] = useState(null);
+
+  // Search box state — collapsed by default, expands on click. Matches
+  // device name + code + location, case-insensitive. While search has
+  // text it OVERRIDES the org/group filter and disables drag (per the
+  // confirmed UX — search is a global "find my device" tool, not a
+  // narrowing tool that interacts with reorder).
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchText, setSearchText] = useState("");
+  const searchInputRef = useRef(null);
+  useEffect(() => {
+    if (searchOpen && searchInputRef.current) searchInputRef.current.focus();
+  }, [searchOpen]);
+
+  // Drag-to-reorder state. Saved per user at users/<uid>.dashboardOrder.
+  // Hydrated from userData when AuthContext finishes loading.
+  const [dashboardOrder, setDashboardOrder] = useState([]);
+  useEffect(() => {
+    setDashboardOrder(userData?.dashboardOrder || []);
+  }, [userData?.dashboardOrder]);
+
+  // Mobile detection (drag disabled on phones, per design). 768 = Tailwind md.
+  // Listen for resize so a user rotating their tablet picks up the change.
+  const [isNarrow, setIsNarrow] = useState(() =>
+    typeof window !== "undefined" ? window.innerWidth < 768 : false
+  );
+  useEffect(() => {
+    function onResize() { setIsNarrow(window.innerWidth < 768); }
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  // dnd-kit pointer sensor — small activation distance prevents accidental
+  // drags when the user is just trying to tap (especially on the chart icon).
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
   const [filter, setFilter] = useState("all"); // "all" | "personal" | "org" | groupId
   const [groups, setGroups] = useState([]);
   const [locked, setLocked] = useState(() => {
@@ -82,16 +162,28 @@ export default function Dashboard() {
     );
   }
 
-  // Filter devices
+  // Active search overrides the org filter entirely — "find any of my devices"
+  // is global to the user's subscription set, not narrowed by the current tab.
+  const searchActive = searchOpen && searchText.trim().length > 0;
+
+  // Filter devices: search first (global), else apply the org/group filter.
   const filteredDevices = devices.filter((d) => {
+    if (searchActive) {
+      const t = searchText.trim().toLowerCase();
+      const blob = `${d.deviceCode} ${d.deviceName || ""} ${d.location || ""}`.toLowerCase();
+      return blob.includes(t);
+    }
     if (filter === "all") return true;
     if (filter === "personal") return !d.groupId;
     if (filter === "org") return !!d.groupId;
-    // Filter by specific groupId
     const group = groups.find((g) => g.groupId === filter);
     if (group) return group.deviceCodes?.includes(d.deviceCode);
     return true;
   });
+
+  // Apply the user's saved drag order. Anything not in the saved order
+  // (newly subscribed) appears at the end automatically.
+  const orderedDevices = applySavedOrder(filteredDevices, dashboardOrder);
 
   // Count online/offline
   const isDeviceOnline = (d) => {
@@ -99,7 +191,50 @@ export default function Dashboard() {
     const isStale = lastSeen ? (Date.now() - lastSeen) > 900000 : true;
     return d.info?.online && !isStale;
   };
-  const onlineCount = filteredDevices.filter(isDeviceOnline).length;
+  const onlineCount = orderedDevices.filter(isDeviceOnline).length;
+
+  // Drag is allowed only when:
+  //   1. Dashboard is UNLOCKED (lock icon signals "edit mode")
+  //   2. Screen is wide enough (mobile has no drag)
+  //   3. Search has no text (search disables drag — confusing otherwise)
+  const dragEnabled = !locked && !isNarrow && !searchActive;
+
+  async function handleDragEnd(event) {
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+    const oldIndex = orderedDevices.findIndex((d) => d.deviceCode === active.id);
+    const newIndex = orderedDevices.findIndex((d) => d.deviceCode === over.id);
+    if (oldIndex < 0 || newIndex < 0) return;
+
+    // Reorder the visible list, then build the new global order. We rebuild
+    // from the ALL-devices set so devices outside the current filter (if any)
+    // keep their relative position.
+    const newVisibleOrder = arrayMove(orderedDevices, oldIndex, newIndex).map((d) => d.deviceCode);
+    const visibleSet = new Set(newVisibleOrder);
+    const fullOrder = [];
+    let visibleIdx = 0;
+    // Walk current saved order + any uncovered devices, replacing visible
+    // slots with the freshly reordered sequence.
+    const fallback = [...newVisibleOrder, ...devices.filter((d) => !visibleSet.has(d.deviceCode)).map((d) => d.deviceCode)];
+    const current = dashboardOrder.length ? dashboardOrder : devices.map((d) => d.deviceCode);
+    for (const code of current) {
+      if (visibleSet.has(code)) {
+        fullOrder.push(newVisibleOrder[visibleIdx++]);
+      } else {
+        fullOrder.push(code);
+      }
+    }
+    // Append any device the saved order didn't know about.
+    for (const code of fallback) {
+      if (!fullOrder.includes(code)) fullOrder.push(code);
+    }
+
+    setDashboardOrder(fullOrder);   // optimistic
+    if (user?.uid) {
+      try { await updateUserDoc(user.uid, { dashboardOrder: fullOrder }); }
+      catch (e) { console.error("Failed to save dashboard order:", e); }
+    }
+  }
 
   return (
     <div>
@@ -122,6 +257,40 @@ export default function Dashboard() {
             </p>
           </div>
           <div className="flex items-center gap-2">
+            {/* Search — expands inline when icon clicked. Matches device
+                name, code, location. Active search overrides org filter
+                and disables drag-to-reorder. */}
+            {searchOpen ? (
+              <div className="flex items-center bg-white border border-blue-300 rounded-lg overflow-hidden">
+                <input
+                  ref={searchInputRef}
+                  type="text"
+                  value={searchText}
+                  onChange={(e) => setSearchText(e.target.value)}
+                  placeholder="Search any device…"
+                  className="px-3 py-1.5 text-sm focus:outline-none w-44 sm:w-56"
+                />
+                <button
+                  onClick={() => { setSearchText(""); setSearchOpen(false); }}
+                  className="px-2 text-gray-400 hover:text-gray-600"
+                  aria-label="Close search"
+                  title="Close search"
+                >
+                  ✕
+                </button>
+              </div>
+            ) : (
+              <button
+                onClick={() => setSearchOpen(true)}
+                className="p-2 rounded-lg bg-gray-100 text-gray-500 hover:bg-gray-200"
+                title="Search devices"
+                aria-label="Search devices"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                </svg>
+              </button>
+            )}
             {/* Alert sound toggle. Only beeps for user-configured thresholds. */}
             <button
               onClick={toggleSoundMuted}
@@ -217,37 +386,67 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* Device grid */}
-      {filteredDevices.length === 0 ? (
-        <p className="text-gray-400 text-sm text-center py-10">No devices in this filter</p>
+      {/* Device grid. When drag is enabled the grid is wrapped with
+          dnd-kit. When disabled we render the same grid with no drag
+          listeners attached so taps, locks, and Link clicks behave
+          exactly as before. */}
+      {orderedDevices.length === 0 ? (
+        <p className="text-gray-400 text-sm text-center py-10">
+          {searchActive ? "No devices match that search" : "No devices in this filter"}
+        </p>
       ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-          {filteredDevices.map((d) => {
-            const card = (
-              <DeviceCard
-                deviceCode={d.deviceCode}
-                deviceName={d.deviceName}
-                live={d.live}
-                info={d.info}
-                catalog={d.catalog}
-                isOnline={isDeviceOnline(d)}
-                lastCleanedAt={d.lastCleanedAt}
-                cleanIntervalDays={d.cleanIntervalDays}
-                tankCapacityLitres={d.tankCapacityLitres}
-                alertLowPct={d.alertLowPct}
-                alertHighPct={d.alertHighPct}
-                valveAlertOpenHours={d.valveAlertOpenHours}
-                valveAlertClosedHours={d.valveAlertClosedHours}
-                onOpenAnalytics={() => setAnalyticsDevice(d)}
-              />
-            );
-            return locked ? (
-              <div key={d.deviceCode} className="cursor-default">{card}</div>
-            ) : (
-              <Link key={d.deviceCode} to={`/device/${d.deviceCode}`}>{card}</Link>
-            );
-          })}
-        </div>
+        <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+          <SortableContext items={orderedDevices.map((d) => d.deviceCode)} strategy={rectSortingStrategy}>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+              {orderedDevices.map((d) => {
+                const card = (
+                  <DeviceCard
+                    deviceCode={d.deviceCode}
+                    deviceName={d.deviceName}
+                    live={d.live}
+                    info={d.info}
+                    catalog={d.catalog}
+                    isOnline={isDeviceOnline(d)}
+                    lastCleanedAt={d.lastCleanedAt}
+                    cleanIntervalDays={d.cleanIntervalDays}
+                    tankCapacityLitres={d.tankCapacityLitres}
+                    alertLowPct={d.alertLowPct}
+                    alertHighPct={d.alertHighPct}
+                    valveAlertOpenHours={d.valveAlertOpenHours}
+                    valveAlertClosedHours={d.valveAlertClosedHours}
+                    onOpenAnalytics={() => setAnalyticsDevice(d)}
+                  />
+                );
+                const inner = locked ? (
+                  <div className="cursor-default">{card}</div>
+                ) : (
+                  // When unlocked AND drag is on, the Link can't be the
+                  // drag target — clicks would race with drag listeners.
+                  // We keep the navigation as a separate explicit click
+                  // (drag activates only after 6 px movement, so a plain
+                  // tap still navigates).
+                  dragEnabled ? (
+                    <Link to={`/device/${d.deviceCode}`} draggable={false}>{card}</Link>
+                  ) : (
+                    <Link to={`/device/${d.deviceCode}`}>{card}</Link>
+                  )
+                );
+                return (
+                  <SortableTile key={d.deviceCode} id={d.deviceCode} enabled={dragEnabled}>
+                    {inner}
+                  </SortableTile>
+                );
+              })}
+            </div>
+          </SortableContext>
+        </DndContext>
+      )}
+
+      {/* Drag-mode hint — only when drag is genuinely active. */}
+      {dragEnabled && orderedDevices.length > 1 && (
+        <p className="text-center text-xs text-gray-400 mt-3">
+          Drag tiles to reorder. Your layout is saved automatically.
+        </p>
       )}
 
       {/* Quick-analytics modal — lazily renders, only Firebase-loads when open. */}
