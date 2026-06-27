@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { useSearchParams } from "react-router-dom";
 import { getAllDevices, approvePendingDevice, registerDevice, updateDevice, deleteDeviceFromCatalog, getAllUsers, getAllOrgs } from "../../firebase/db";
-import { sendTestCommand, sendRestartCommand, getPendingDevicesRTDB, listenToDeviceLive, listenToDeviceInfo, listenToValveConfig, setAnalyticsEnabled, setDiagnosticsEnabled, setNotifyEnabled, bulkSetConfigFlag, getDevicesInfoMap, getDevicesConfigMap } from "../../firebase/rtdb";
+import { sendTestCommand, sendRestartCommand, getPendingDevicesRTDB, listenToDeviceLive, listenToDeviceInfo, listenToValveConfig, setAnalyticsEnabled, setDiagnosticsEnabled, setNotifyEnabled, bulkSetConfigFlag, getDevicesInfoMap, getDevicesConfigMap, deleteHistoryOlderThan } from "../../firebase/rtdb";
 import { QRCodeSVG } from "qrcode.react";
 
 const DEVICE_CLASS = { 1: "Valve", 2: "Sensor", 3: "Motor", "senseflowstandard": "SenseFlow Standard" };
@@ -68,6 +68,70 @@ export default function AdminDevices() {
   // verb by accident. Clicking any button confirms the device count before
   // firing — single batched RTDB write under the hood.
   const [bulkBusy, setBulkBusy] = useState(null);   // string key of in-flight op
+
+  // Bulk history cleanup. History is a paid feature — admin (only) can
+  // trim long-running devices' /history nodes to keep RTDB lean. Dropdown
+  // chooses an age threshold; "custom" reveals a free-text day count.
+  // Runs sequentially across the selection so a 32-device sweep is
+  // observable rather than freezing the page.
+  const HISTORY_CUTOFF_OPTIONS = [
+    { value: "7",      label: "Older than 7 days" },
+    { value: "15",     label: "Older than 15 days" },
+    { value: "30",     label: "Older than 30 days" },
+    { value: "60",     label: "Older than 60 days" },
+    { value: "90",     label: "Older than 90 days" },
+    { value: "custom", label: "Custom (specify days)" },
+  ];
+  const [historyCutoffPick, setHistoryCutoffPick] = useState("30");
+  const [historyCustomDays, setHistoryCustomDays] = useState("");
+  const [historyProgress, setHistoryProgress]   = useState(null);   // { done, total } or null
+
+  async function handleBulkDeleteHistory() {
+    const codes = Array.from(selectedForPrint);
+    if (codes.length === 0) return;
+
+    let days;
+    if (historyCutoffPick === "custom") {
+      const n = parseInt(historyCustomDays, 10);
+      if (!Number.isFinite(n) || n < 1) {
+        alert("Enter a valid number of days (must be 1 or more).");
+        return;
+      }
+      days = n;
+    } else {
+      days = parseInt(historyCutoffPick, 10);
+    }
+    const cutoffTs = Date.now() - days * 24 * 60 * 60 * 1000;
+    if (!confirm(
+      `Delete history older than ${days} day${days !== 1 ? "s" : ""} on ${codes.length} device${codes.length !== 1 ? "s" : ""}?\n\n` +
+      `This permanently removes /history entries with ts < ${new Date(cutoffTs).toLocaleString()}.\n` +
+      `Recent history, live state, and config are NOT touched.\n\n` +
+      `This cannot be undone.`
+    )) return;
+
+    setHistoryProgress({ done: 0, total: codes.length });
+    let totalDeleted = 0;
+    let failed = 0;
+    // Sequential — keep RTDB calls polite, give admin live progress.
+    for (let i = 0; i < codes.length; i++) {
+      const code = codes[i];
+      try {
+        const n = await deleteHistoryOlderThan(code, cutoffTs);
+        totalDeleted += n;
+      } catch (e) {
+        failed++;
+        console.error(`History cleanup failed for ${code}:`, e);
+      }
+      setHistoryProgress({ done: i + 1, total: codes.length });
+    }
+    setHistoryProgress(null);
+    alert(
+      `History cleanup complete.\n\n` +
+      `Devices processed: ${codes.length}\n` +
+      `Total entries deleted: ${totalDeleted}\n` +
+      (failed > 0 ? `Failed devices: ${failed} (see browser console)` : "")
+    );
+  }
   async function applyBulkFlag(flag, enable) {
     const codes = Array.from(selectedForPrint);
     if (codes.length === 0) return;
@@ -842,6 +906,53 @@ export default function AdminDevices() {
                         </div>
                       </div>
                     ))}
+
+                    {/* History cleanup — destructive, kept visually distinct
+                        from the on/off rows. Sequential delete with live
+                        progress so admin sees activity rather than a frozen
+                        screen during a large sweep. */}
+                    <div className="bg-white rounded-lg px-3 py-2 border-t border-red-100">
+                      <div className="flex items-start justify-between gap-3 flex-wrap">
+                        <div className="min-w-0 flex-1">
+                          <div className="text-sm font-medium text-gray-900">History cleanup</div>
+                          <div className="text-[10px] text-gray-500">
+                            Permanently delete old /history entries. Keeps recent data, live state, and config.
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <select
+                            value={historyCutoffPick}
+                            onChange={(e) => setHistoryCutoffPick(e.target.value)}
+                            disabled={historyProgress !== null}
+                            className="text-xs border rounded px-2 py-1 bg-white"
+                          >
+                            {HISTORY_CUTOFF_OPTIONS.map((o) => (
+                              <option key={o.value} value={o.value}>{o.label}</option>
+                            ))}
+                          </select>
+                          {historyCutoffPick === "custom" && (
+                            <input
+                              type="number"
+                              min="1"
+                              value={historyCustomDays}
+                              onChange={(e) => setHistoryCustomDays(e.target.value)}
+                              placeholder="days"
+                              disabled={historyProgress !== null}
+                              className="text-xs border rounded px-2 py-1 w-20"
+                            />
+                          )}
+                          <button
+                            onClick={handleBulkDeleteHistory}
+                            disabled={historyProgress !== null}
+                            className="px-3 py-1 text-xs font-semibold rounded-lg bg-red-600 text-white hover:bg-red-700 disabled:opacity-40"
+                          >
+                            {historyProgress
+                              ? `Cleaning ${historyProgress.done}/${historyProgress.total}…`
+                              : "Delete"}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
                   </div>
                 </div>
               )}

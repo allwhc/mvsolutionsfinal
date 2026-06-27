@@ -134,6 +134,39 @@ export async function clearDeviceHistory(deviceCode) {
   await remove(ref(rtdb, `devices/${deviceCode}/history`));
 }
 
+// Delete only history entries OLDER than cutoffTs (epoch ms). Used by the
+// admin bulk-cleanup tool on /admin/devices to trim long-running devices'
+// /history nodes without nuking the recent data the charts still rely on.
+//
+// Strategy: query /history ordered by ts, endAt(cutoffTs - 1) to get every
+// expired entry, then issue a single multi-path update() with `null` at
+// each push-key path. One round-trip per device, no matter how many
+// entries get deleted.
+//
+// Returns the number of entries actually removed so the caller can roll
+// up a "deleted X entries across N devices" summary for the admin.
+export async function deleteHistoryOlderThan(deviceCode, cutoffTs) {
+  if (!cutoffTs || cutoffTs <= 0) return 0;
+  const expiredRef = query(
+    ref(rtdb, `devices/${deviceCode}/history`),
+    orderByChild("ts"),
+    endAt(cutoffTs - 1)
+  );
+  const snap = await get(expiredRef);
+  if (!snap.exists()) return 0;
+
+  const updates = {};
+  let count = 0;
+  snap.forEach((child) => {
+    updates[`devices/${deviceCode}/history/${child.key}`] = null;
+    count++;
+  });
+  if (count === 0) return 0;
+
+  await update(ref(rtdb), updates);
+  return count;
+}
+
 // ── Pending Devices (from RTDB, where ESP32 writes) ──
 export async function getPendingDevicesRTDB() {
   const snap = await get(ref(rtdb, "pendingDevices"));
