@@ -44,6 +44,124 @@ export default function AdminDevices() {
   const [selectedForPrint, setSelectedForPrint] = useState(new Set());
   const [showBulkPrint, setShowBulkPrint] = useState(false);
 
+  // QR sticker print settings. Persisted in localStorage per browser so
+  // the admin's chosen sticker size + layout stick across sessions and
+  // never round-trip through Firebase. Default 50×30 mm thermal (per
+  // Vishal's spec). Settings UI lives inside both single + bulk modals.
+  const QR_PRINT_PRESETS = [
+    { id: "50x30",  label: "50 × 30 mm (thermal)", widthMm: 50, heightMm: 30 },
+    { id: "40x25",  label: "40 × 25 mm",           widthMm: 40, heightMm: 25 },
+    { id: "70x40",  label: "70 × 40 mm",           widthMm: 70, heightMm: 40 },
+    { id: "100x50", label: "100 × 50 mm",          widthMm: 100, heightMm: 50 },
+    { id: "custom", label: "Custom…",              widthMm: 0,  heightMm: 0  },
+  ];
+  const [qrPrintSettings, setQrPrintSettings] = useState(() => {
+    try {
+      const saved = localStorage.getItem("qrPrintSettings");
+      if (saved) return JSON.parse(saved);
+    } catch { /* corrupt — fall through */ }
+    return {
+      preset:    "50x30",
+      widthMm:   50,
+      heightMm:  30,
+      layout:    "thermal",   // "thermal" = one per page, "grid" = many per A4
+      gridCols:  3,
+    };
+  });
+  useEffect(() => {
+    try { localStorage.setItem("qrPrintSettings", JSON.stringify(qrPrintSettings)); }
+    catch { /* quota / private mode — non-fatal */ }
+  }, [qrPrintSettings]);
+
+  // Resolve the effective width/height in mm. Preset wins unless "custom".
+  function resolveStickerDims(s = qrPrintSettings) {
+    if (s.preset === "custom") {
+      return { widthMm: Math.max(15, Number(s.widthMm) || 50), heightMm: Math.max(10, Number(s.heightMm) || 30) };
+    }
+    const p = QR_PRINT_PRESETS.find((x) => x.id === s.preset);
+    return p ? { widthMm: p.widthMm, heightMm: p.heightMm } : { widthMm: 50, heightMm: 30 };
+  }
+
+  // Decide which text fits at this sticker size. Q3 = Option C:
+  //   small  → code only
+  //   large  → code + device name
+  // Threshold tuned to 50×30 = small (matches the customer's roll), and
+  // 70×40+ = large enough for the name.
+  function showNameOnSticker(widthMm, heightMm) {
+    return widthMm * heightMm >= 70 * 40;
+  }
+
+  // Build the printable HTML document. Returns full <html>…</html> string
+  // that we drop into a new window. Stickers data is [{ url, code, name }].
+  // Layout "thermal" = @page sized to sticker, one per page. Layout "grid"
+  // = A4 portrait, N columns from settings, page-break-inside avoided.
+  function buildPrintHtml(stickers, settings) {
+    const { widthMm, heightMm } = resolveStickerDims(settings);
+    const includeName = showNameOnSticker(widthMm, heightMm);
+    // QR fills the height minus a small text strip + padding.
+    // Reserve ~6 mm for the code line (and another ~4 mm for name if shown).
+    const textStripMm = includeName ? 10 : 6;
+    const qrSizeMm = Math.max(10, Math.min(widthMm - 4, heightMm - textStripMm - 2));
+
+    const pageRule = settings.layout === "thermal"
+      ? `@page { size: ${widthMm}mm ${heightMm}mm; margin: 0; }`
+      : `@page { size: A4; margin: 8mm; }`;
+
+    const stickerCss = settings.layout === "thermal"
+      ? `.sticker { width: ${widthMm}mm; height: ${heightMm}mm; padding: 1mm; page-break-after: always; }
+         .grid { display: block; }`
+      : `.sticker { width: ${widthMm}mm; height: ${heightMm}mm; padding: 1mm; page-break-inside: avoid; }
+         .grid { display: grid; grid-template-columns: repeat(${Math.max(1, Number(settings.gridCols) || 3)}, ${widthMm}mm); gap: 3mm; }`;
+
+    const stickersHtml = stickers.map((s) => `
+      <div class="sticker">
+        <div class="qr-wrap">${s.svg}</div>
+        <div class="code">${escapeHtml(s.code)}</div>
+        ${includeName && s.name ? `<div class="name">${escapeHtml(s.name)}</div>` : ""}
+      </div>
+    `).join("");
+
+    return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>QR Stickers</title>
+      <style>
+        ${pageRule}
+        * { box-sizing: border-box; }
+        html, body { margin: 0; padding: 0; font-family: 'Segoe UI', Arial, sans-serif; }
+        ${stickerCss}
+        .sticker { display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; overflow: hidden; }
+        .qr-wrap { display: flex; align-items: center; justify-content: center; }
+        .qr-wrap svg { display: block; width: ${qrSizeMm}mm; height: ${qrSizeMm}mm; }
+        .code { font-family: 'Courier New', monospace; font-weight: 700; font-size: ${includeName ? "2.2mm" : "2.6mm"}; margin-top: 0.8mm; letter-spacing: 0.1mm; }
+        .name { font-size: 2mm; color: #555; margin-top: 0.4mm; max-width: ${widthMm - 4}mm; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      </style></head>
+      <body><div class="grid">${stickersHtml}</div>
+      <script>window.addEventListener('load', () => setTimeout(() => window.print(), 150));<\/script>
+      </body></html>`;
+  }
+
+  function escapeHtml(s) {
+    return String(s || "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  }
+
+  // Pull the QR SVG markup for a given device from the live React DOM
+  // (qrcode.react renders SVG, we just grab its outerHTML). Returns ""
+  // if not yet rendered.
+  function grabQrSvg(containerId, deviceCode) {
+    const root = document.getElementById(containerId);
+    if (!root) return "";
+    // Each sticker block has a data-code attribute we use to find its SVG.
+    const block = root.querySelector(`[data-code="${deviceCode}"]`);
+    const svg = block ? block.querySelector("svg") : root.querySelector("svg");
+    return svg ? svg.outerHTML : "";
+  }
+
+  function printStickers(stickers) {
+    const html = buildPrintHtml(stickers, qrPrintSettings);
+    const w = window.open("", "_blank");
+    if (!w) { alert("Pop-up blocked — please allow pop-ups for this site."); return; }
+    w.document.write(html);
+    w.document.close();
+  }
+
   // Registered-tab filter bar (same UX as /admin/firmware — admin already
   // knows the pattern there). Lets admin slice the list before bulk-
   // toggling flags, e.g. "all sensor devices on 17.0.9 with diagnostics
@@ -581,6 +699,72 @@ export default function AdminDevices() {
 
   const subscribeUrl = (code) => `${window.location.origin}/subscribe?code=${code}`;
 
+  // Sticker preset + layout chooser shared between the single QR modal
+  // and the bulk print modal. Reads/writes the parent qrPrintSettings
+  // state — defined inline (not extracted) so the localStorage-persisted
+  // settings stay in one place and the panel re-renders with current
+  // values whenever either modal opens.
+  function StickerSettingsPanel() {
+    const dims = resolveStickerDims(qrPrintSettings);
+    return (
+      <div className="bg-gray-50 border border-gray-200 rounded-lg p-3 mb-4 text-left">
+        <div className="text-xs font-semibold text-gray-700 mb-2">Sticker settings (saved on this browser)</div>
+        <div className="grid grid-cols-2 gap-2 text-xs">
+          <label className="flex flex-col">
+            <span className="text-gray-500 mb-0.5">Size</span>
+            <select
+              value={qrPrintSettings.preset}
+              onChange={(e) => setQrPrintSettings({ ...qrPrintSettings, preset: e.target.value })}
+              className="border rounded px-2 py-1 bg-white"
+            >
+              {QR_PRINT_PRESETS.map((p) => (<option key={p.id} value={p.id}>{p.label}</option>))}
+            </select>
+          </label>
+          <label className="flex flex-col">
+            <span className="text-gray-500 mb-0.5">Layout</span>
+            <select
+              value={qrPrintSettings.layout}
+              onChange={(e) => setQrPrintSettings({ ...qrPrintSettings, layout: e.target.value })}
+              className="border rounded px-2 py-1 bg-white"
+            >
+              <option value="thermal">Thermal roll (one per page)</option>
+              <option value="grid">A4 grid (many per sheet)</option>
+            </select>
+          </label>
+          {qrPrintSettings.preset === "custom" && (
+            <>
+              <label className="flex flex-col">
+                <span className="text-gray-500 mb-0.5">Width (mm)</span>
+                <input type="number" min="15" max="200" value={qrPrintSettings.widthMm}
+                  onChange={(e) => setQrPrintSettings({ ...qrPrintSettings, widthMm: Number(e.target.value) })}
+                  className="border rounded px-2 py-1" />
+              </label>
+              <label className="flex flex-col">
+                <span className="text-gray-500 mb-0.5">Height (mm)</span>
+                <input type="number" min="10" max="200" value={qrPrintSettings.heightMm}
+                  onChange={(e) => setQrPrintSettings({ ...qrPrintSettings, heightMm: Number(e.target.value) })}
+                  className="border rounded px-2 py-1" />
+              </label>
+            </>
+          )}
+          {qrPrintSettings.layout === "grid" && (
+            <label className="flex flex-col">
+              <span className="text-gray-500 mb-0.5">Columns on A4</span>
+              <input type="number" min="1" max="8" value={qrPrintSettings.gridCols}
+                onChange={(e) => setQrPrintSettings({ ...qrPrintSettings, gridCols: Number(e.target.value) })}
+                className="border rounded px-2 py-1" />
+            </label>
+          )}
+        </div>
+        <div className="text-[10px] text-gray-500 mt-2">
+          Effective sticker: <strong>{dims.widthMm} × {dims.heightMm} mm</strong> ·
+          {" "}{showNameOnSticker(dims.widthMm, dims.heightMm) ? "code + name" : "code only (size too small for name)"} ·
+          {" "}{qrPrintSettings.layout === "thermal" ? "one sticker per page" : "A4 grid"}
+        </div>
+      </div>
+    );
+  }
+
   if (loading) {
     return <div className="flex justify-center py-10"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div></div>;
   }
@@ -1028,29 +1212,34 @@ export default function AdminDevices() {
       )}
 
       {/* QR Modal */}
-      {qrDevice && (
+      {qrDevice && (() => {
+        const d = registered.find((x) => x.deviceCode === qrDevice);
+        return (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={() => setQrDevice(null)}>
           <div className="bg-white rounded-xl p-6 text-center w-full max-w-sm" onClick={(e) => e.stopPropagation()}>
             <h3 className="font-bold text-lg mb-1">Device QR Code</h3>
-            {(() => { const d = registered.find((x) => x.deviceCode === qrDevice); return d?.deviceName ? <p className="text-sm text-gray-600 mb-1">{d.deviceName}</p> : null; })()}
+            {d?.deviceName ? <p className="text-sm text-gray-600 mb-1">{d.deviceName}</p> : null}
             <p className="font-mono text-sm text-gray-500 mb-4">{qrDevice}</p>
             <div id="qr-print-single" className="inline-block bg-white p-4 border border-gray-200 rounded-lg mb-4">
-              <QRCodeSVG value={subscribeUrl(qrDevice)} size={180} />
+              <div data-code={qrDevice}>
+                <QRCodeSVG value={subscribeUrl(qrDevice)} size={180} />
+              </div>
               <p className="font-mono text-xs mt-2 text-gray-700">{qrDevice}</p>
-              {(() => { const d = registered.find((x) => x.deviceCode === qrDevice); return d?.deviceName ? <p className="text-xs text-gray-500">{d.deviceName}</p> : null; })()}
+              {d?.deviceName ? <p className="text-xs text-gray-500">{d.deviceName}</p> : null}
             </div>
+            <StickerSettingsPanel />
             <div className="flex gap-2">
               <button onClick={() => {
-                const c = document.getElementById("qr-print-single");
-                const w = window.open("", "_blank");
-                w.document.write("<html><head><title>QR</title><style>body{display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;font-family:monospace}div{text-align:center}</style></head><body>" + c.innerHTML + "</body></html>");
-                w.document.close(); w.print();
+                const svg = grabQrSvg("qr-print-single", qrDevice);
+                if (!svg) { alert("QR not rendered yet — try again."); return; }
+                printStickers([{ svg, code: qrDevice, name: d?.deviceName }]);
               }} className="flex-1 bg-blue-600 text-white py-2 rounded-lg text-sm font-medium">Print Sticker</button>
               <button onClick={() => setQrDevice(null)} className="px-4 py-2 bg-gray-100 text-gray-600 rounded-lg text-sm">Close</button>
             </div>
           </div>
         </div>
-      )}
+        );
+      })()}
 
       {/* Device Live Viewer Modal */}
       {viewDevice && (() => {
@@ -1231,17 +1420,22 @@ export default function AdminDevices() {
               <h3 className="font-bold text-lg">Print QR Stickers ({selectedForPrint.size})</h3>
               <div className="flex gap-2">
                 <button onClick={() => {
-                  const c = document.getElementById("qr-print-bulk");
-                  const w = window.open("", "_blank");
-                  w.document.write("<html><head><title>QR Stickers</title><style>body{margin:0;padding:10mm;font-family:monospace}.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:5mm}.sticker{border:1px solid #ccc;padding:4mm;text-align:center;page-break-inside:avoid;border-radius:2mm}.sticker svg{display:block;margin:0 auto 2mm}.code{font-size:9px;font-weight:bold;margin-top:2mm}.name{font-size:8px;color:#666}</style></head><body>" + c.innerHTML + "</body></html>");
-                  w.document.close(); setTimeout(() => w.print(), 300);
+                  const list = registered.filter((d) => selectedForPrint.has(d.deviceCode));
+                  const stickers = list.map((d) => ({
+                    svg: grabQrSvg("qr-print-bulk", d.deviceCode),
+                    code: d.deviceCode,
+                    name: d.deviceName,
+                  })).filter((s) => s.svg);
+                  if (stickers.length === 0) { alert("QRs not rendered yet — try again."); return; }
+                  printStickers(stickers);
                 }} className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium">Print All</button>
                 <button onClick={() => setShowBulkPrint(false)} className="px-4 py-2 bg-gray-100 text-gray-600 rounded-lg text-sm">Close</button>
               </div>
             </div>
+            <StickerSettingsPanel />
             <div id="qr-print-bulk" className="grid grid-cols-3 gap-4">
               {registered.filter((d) => selectedForPrint.has(d.deviceCode)).map((d) => (
-                <div key={d.deviceCode} className="border border-gray-200 rounded-lg p-3 text-center">
+                <div key={d.deviceCode} data-code={d.deviceCode} className="border border-gray-200 rounded-lg p-3 text-center">
                   <QRCodeSVG value={subscribeUrl(d.deviceCode)} size={120} />
                   <p className="font-mono text-xs font-bold mt-2">{d.deviceCode}</p>
                   {d.deviceName && <p className="text-xs text-gray-500">{d.deviceName}</p>}
