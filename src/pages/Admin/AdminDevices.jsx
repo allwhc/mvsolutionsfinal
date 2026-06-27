@@ -393,6 +393,19 @@ export default function AdminDevices() {
     };
   }
 
+  // Same online definition Dashboard uses: device's /info/online flag is
+  // true AND its lastSeen heartbeat is fresh (< 15 min old). Without the
+  // staleness gate the filter would mark devices online forever based on
+  // the last successful boot, even after they fell off the network — so
+  // "Online" matched a different set than the dashboard's green dot.
+  const STALE_MS = 15 * 60 * 1000;
+  function isDeviceOnline(info) {
+    if (!info?.online) return false;
+    const lastSeen = info.lastSeen;
+    if (!lastSeen) return false;
+    return Date.now() - lastSeen <= STALE_MS;
+  }
+
   // Apply the filter bar to the registered list. Each filter is independent
   // and skipped when set to "all" / empty.
   const filteredRegistered = useMemo(() => {
@@ -400,11 +413,12 @@ export default function AdminDevices() {
       const info  = infoMap[d.deviceCode] || {};
       const cfg   = configMap[d.deviceCode] || {};
       const owner = ownerInfoFor(d);
+      const online = isDeviceOnline(info);
 
       if (filterClass !== "all" && String(d.deviceClass) !== filterClass) return false;
       if (filterFirmware && !String(info.firmwareVersion || "").toLowerCase().includes(filterFirmware.toLowerCase())) return false;
-      if (filterStatus === "online"  && !info.online) return false;
-      if (filterStatus === "offline" &&  info.online) return false;
+      if (filterStatus === "online"  && !online) return false;
+      if (filterStatus === "offline" &&  online) return false;
       if (filterDiag   === "on"  && !cfg.diagnosticsOn) return false;
       if (filterDiag   === "off" &&  cfg.diagnosticsOn) return false;
       if (filterNotify === "on"  && !cfg.notifyOn) return false;
