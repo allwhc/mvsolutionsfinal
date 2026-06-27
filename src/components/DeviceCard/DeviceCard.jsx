@@ -3,10 +3,10 @@ import ValveCard from "./ValveCard";
 import MotorCard from "./MotorCard";
 
 // deviceClass: 1=valve, 2=sensor, 3=motor, "senseflowstandard"=tank controller
-export default function DeviceCard({ deviceCode, deviceName, live, info, catalog, isOnline, lastCleanedAt, cleanIntervalDays, tankCapacityLitres, alertLowPct, alertHighPct, valveAlertOpenHours, valveAlertClosedHours }) {
+export default function DeviceCard({ deviceCode, deviceName, live, info, catalog, isOnline, lastCleanedAt, cleanIntervalDays, tankCapacityLitres, alertLowPct, alertHighPct, valveAlertOpenHours, valveAlertClosedHours, onOpenAnalytics }) {
   const deviceClass = info?.deviceClass ?? catalog?.deviceClass ?? 2;
 
-  const props = { deviceCode, deviceName, live, info, catalog, isOnline, lastCleanedAt, cleanIntervalDays, tankCapacityLitres, alertLowPct, alertHighPct, valveAlertOpenHours, valveAlertClosedHours };
+  const props = { deviceCode, deviceName, live, info, catalog, isOnline, lastCleanedAt, cleanIntervalDays, tankCapacityLitres, alertLowPct, alertHighPct, valveAlertOpenHours, valveAlertClosedHours, onOpenAnalytics };
 
   // SenseFlow Standard — use MotorCard if present, otherwise SensorCard with level info
   if (deviceClass === "senseflowstandard") {

@@ -26,7 +26,11 @@ function getAlertFlash({ sensorError, sensorOffline, confirmedPct, alertLowPct, 
 }
 
 // sensorType: 0=none, 1=DIP, 2=ultrasonic
-export default function SensorCard({ deviceCode, deviceName, live, info, catalog, isOnline, lastCleanedAt, cleanIntervalDays, tankCapacityLitres, alertLowPct, alertHighPct }) {
+// onOpenAnalytics: optional callback. When provided, the chart icon opens
+// the analytics popup via that callback instead of navigating to Device
+// Detail. Dashboard supplies it; Device Detail leaves it out so its inline
+// chart icon (if any) keeps original behavior.
+export default function SensorCard({ deviceCode, deviceName, live, info, catalog, isOnline, lastCleanedAt, cleanIntervalDays, tankCapacityLitres, alertLowPct, alertHighPct, onOpenAnalytics }) {
   const sensorType = info?.sensorType ?? catalog?.sensorType ?? 1;
   const sensorCount = info?.sensorCount ?? catalog?.sensorCount ?? 4;
   const sensorBits = live?.sensorBits ?? 0;
@@ -58,16 +62,28 @@ export default function SensorCard({ deviceCode, deviceName, live, info, catalog
         </div>
         <div className="flex items-center gap-1.5">
           {analyticsOn && (
-            <Link
-              to={`/device/${deviceCode}#analytics`}
-              onClick={(e) => e.stopPropagation()}
-              title="View analytics"
-              className="text-blue-600 hover:text-blue-800"
-            >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 12l3-3 3 3 5-5M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-              </svg>
-            </Link>
+            onOpenAnalytics ? (
+              <button
+                onClick={(e) => { e.preventDefault(); e.stopPropagation(); onOpenAnalytics(); }}
+                title="Quick analytics snapshot"
+                className="text-blue-600 hover:text-blue-800"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 12l3-3 3 3 5-5M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+              </button>
+            ) : (
+              <Link
+                to={`/device/${deviceCode}#analytics`}
+                onClick={(e) => e.stopPropagation()}
+                title="View analytics"
+                className="text-blue-600 hover:text-blue-800"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 12l3-3 3 3 5-5M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+              </Link>
+            )
           )}
           <CleaningBadge lastCleanedAt={lastCleanedAt} cleanIntervalDays={cleanIntervalDays} />
           <span className={`w-2 h-2 rounded-full ${isOnline ? "bg-green-500" : "bg-gray-300"}`} />

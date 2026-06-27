@@ -5,6 +5,7 @@ import { useDevices } from "../hooks/useDevices";
 import { useDashboardAlertSound } from "../hooks/useDashboardAlertSound";
 import { getOrgGroups } from "../firebase/db";
 import DeviceCard from "../components/DeviceCard/DeviceCard";
+import DeviceAnalyticsModal from "../components/Analytics/DeviceAnalyticsModal";
 import NotificationPermissionBanner from "../components/NotificationPermissionBanner";
 
 export default function Dashboard() {
@@ -14,6 +15,11 @@ export default function Dashboard() {
   // alertLowPct / alertHighPct threshold. Silent for devices where the
   // user never set thresholds — only fires for alerts they activated.
   const { muted: soundMuted, toggleMuted: toggleSoundMuted } = useDashboardAlertSound(devices);
+
+  // Per-device analytics popup. Holds the deviceCode of whichever tile's
+  // chart icon was clicked, or null when no modal is open. Firebase reads
+  // happen lazily inside the modal — opening it is the trigger.
+  const [analyticsDevice, setAnalyticsDevice] = useState(null);
   const [filter, setFilter] = useState("all"); // "all" | "personal" | "org" | groupId
   const [groups, setGroups] = useState([]);
   const [locked, setLocked] = useState(() => {
@@ -232,6 +238,7 @@ export default function Dashboard() {
                 alertHighPct={d.alertHighPct}
                 valveAlertOpenHours={d.valveAlertOpenHours}
                 valveAlertClosedHours={d.valveAlertClosedHours}
+                onOpenAnalytics={() => setAnalyticsDevice(d)}
               />
             );
             return locked ? (
@@ -241,6 +248,16 @@ export default function Dashboard() {
             );
           })}
         </div>
+      )}
+
+      {/* Quick-analytics modal — lazily renders, only Firebase-loads when open. */}
+      {analyticsDevice && (
+        <DeviceAnalyticsModal
+          deviceCode={analyticsDevice.deviceCode}
+          deviceName={analyticsDevice.deviceName}
+          tankCapacityLitres={analyticsDevice.tankCapacityLitres}
+          onClose={() => setAnalyticsDevice(null)}
+        />
       )}
     </div>
   );
