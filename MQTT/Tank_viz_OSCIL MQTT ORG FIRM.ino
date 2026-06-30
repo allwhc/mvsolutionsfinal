@@ -70,7 +70,7 @@
 
 // Device info
 #define DEVICE_NAME       "SenseFlow-Node-DIP"
-#define FIRMWARE_VERSION  "17.0.9"
+#define FIRMWARE_VERSION  "17.0.10"
 #define FIRMWARE_CODE     "SF-OSC-2026"
 #define AP_PASSWORD       "mvstech9867"
 
@@ -640,6 +640,25 @@ void initDipSensors() {
 // sees the correct strapping value. The external EX_G pulldown is the
 // fallback for unexpected power-loss resets.
 void safeRestart() {
+  // Graceful WiFi cleanup BEFORE restart. Send the deassociation frame so
+  // the router clears its DHCP lease state, then let the radio settle.
+  //
+  // CRITICAL: pass FALSE here, NOT true. WiFi.disconnect(true) erases the
+  // ESP-IDF WiFi config from internal flash — which on the very next boot
+  // causes mvs.connectToSavedWiFi() to fail forever (until someone enters
+  // creds manually through the AP page, which rewrites the config via a
+  // direct WiFi.begin call). This was the root cause of "cloud restart →
+  // device offline forever, only manual AP-page entry recovers" reported
+  // by Vishal: every code-triggered reboot was silently wiping the IDF
+  // WiFi config. NVS-stored credentials in 'mvswifi' namespace stay intact
+  // either way — but the IDF needs its own copy too for some library code
+  // paths. disconnect(false) sends the deassoc frame WITHOUT erasing.
+  if (WiFi.status() == WL_CONNECTED) {
+    WiFi.disconnect(false);
+    delay(200);
+  }
+
+  // GPIO12 strapping pin protection (see comment block above).
   pinMode(DIP_COMMON_PIN, OUTPUT);
   digitalWrite(DIP_COMMON_PIN, LOW);
   delay(50);   // let the pin actually settle to LOW
@@ -1165,7 +1184,14 @@ void checkCommands() {
     if (fbdo.boolData()) {
       Serial.println("Restart requested — rebooting...");
       Firebase.RTDB.setBool(&fbdo, (basePath + "restartRequested").c_str(), false);
-      updateDeviceInfo(false);
+      // Intentionally NOT calling updateDeviceInfo(false) here. Old code
+      // pre-emptively marked the device offline in cloud BEFORE rebooting.
+      // If WiFi reconnect then failed (e.g. router stuck on old DHCP lease),
+      // nobody was around to flip online back to true, so the cloud showed
+      // the device permanently offline. Now we let the cloud detect offline
+      // through heartbeat staleness (15 min). When the device boots back
+      // up and reaches Firebase, IT writes online=true via updateDeviceInfo
+      // in checkFirebaseReady() and the cloud picks up immediately.
       delay(500);
       safeRestart();
     }
@@ -2616,29 +2642,96 @@ void setup() {
     srv->sendHeader("Location", "/"); srv->send(302);
   });
 
-  // Try connecting to saved WiFi
-  if (mvs.hasSavedWiFi()) {
-    Serial.println("Connecting to saved WiFi...");
-    setLED(0, 0, 255);  // Blue while connecting
-    if (mvs.connectToSavedWiFi(30)) {
-      Serial.println("WiFi connected! IP: " + WiFi.localIP().toString());
-      setGoogleDNS();
-      // (boot "green on connect" removed — green is reserved for tank-full)
-      if (apMode == 1) {
-        // 10-min mode: start countdown now that STA is up
-        apTimerStart = millis();
-        apTimerDeadline = apTimerStart + AP_AUTO_OFF_MS;
-        apTimerEnded = false;
-        Serial.println("AP 10-min countdown started");
-      }
-      initFirebase();
-    } else {
-      Serial.println("WiFi connection failed, AP mode active");
-      setLED(255, 255, 255);  // White = no WiFi
+  // Debug dump — read the credentials directly out of the same NVS
+  // namespace MvsConnect uses so we can see EXACTLY what's stored.
+  // BENCH DEBUG: password is printed in cleartext on purpose so we can
+  // spot character-encoding / trailing-whitespace / locale issues. REPLACE
+  // this with `<hidden, len=N>` before flashing production devices.
+  {
+    Preferences dbg;
+    dbg.begin("mvswifi", true);   // read-only
+    String dbgSsid = dbg.getString("ssid", "");
+    String dbgPass = dbg.getString("password", "");
+    bool dbgValid  = dbg.getBool("valid", false);
+    dbg.end();
+    Serial.printf("[WIFI-DBG] NVS namespace 'mvswifi' contents:\n");
+    Serial.printf("[WIFI-DBG]   ssid     = '%s' (len=%u)\n", dbgSsid.c_str(), dbgSsid.length());
+    Serial.printf("[WIFI-DBG]   password = '%s' (len=%u)\n", dbgPass.c_str(), dbgPass.length());
+    Serial.printf("[WIFI-DBG]   valid    = %s\n", dbgValid ? "true" : "false");
+    // Byte-level hex dump of both fields. If something is being stored
+    // with stray UTF-8 BOM, NUL terminator, or unicode look-alike chars,
+    // this will show it. Each byte in 2-digit hex with " " separator.
+    Serial.printf("[WIFI-DBG]   ssid hex   ="); for (size_t i = 0; i < dbgSsid.length(); i++) Serial.printf(" %02X", (uint8_t)dbgSsid[i]); Serial.println();
+    Serial.printf("[WIFI-DBG]   pass hex   ="); for (size_t i = 0; i < dbgPass.length(); i++) Serial.printf(" %02X", (uint8_t)dbgPass[i]); Serial.println();
+    Serial.printf("[WIFI-DBG] WiFi.macAddress() = %s\n", WiFi.macAddress().c_str());
+  }
+
+  // Scan visible networks once at boot so we can see whether the saved
+  // SSID is even in range, and what auth/RSSI it advertises. Short scan
+  // (~2-3 sec) — only happens once per boot, safe to add.
+  {
+    Serial.println("[WIFI-DBG] Scanning visible networks...");
+    int n = WiFi.scanNetworks(false, false, false, 200);
+    Serial.printf("[WIFI-DBG] Found %d networks:\n", n);
+    for (int i = 0; i < n; i++) {
+      Serial.printf("[WIFI-DBG]   %2d: %-32s  RSSI=%d  ch=%d  enc=%d  bssid=%s\n",
+                    i + 1, WiFi.SSID(i).c_str(), WiFi.RSSI(i),
+                    WiFi.channel(i), (int)WiFi.encryptionType(i),
+                    WiFi.BSSIDstr(i).c_str());
     }
-  } else {
-    Serial.println("No saved WiFi, AP mode active for setup");
-    setLED(255, 255, 255);
+    WiFi.scanDelete();
+  }
+
+  // Try connecting to saved WiFi — using the SAME recipe that the manual
+  // AP-page handler uses, because mvs.connectToSavedWiFi() has been
+  // failing in the field even at strong signal (-59 dBm, credentials
+  // verified clean via WIFI_DBG). We don't know whether it's a library
+  // bug or an AP+STA timing issue, but the manual path with
+  // disconnect(true) + delay(1000) + WiFi.begin() + 90s status-poll
+  // works reliably on the same hardware / same router / same credentials.
+  // Bypass the library and use that recipe directly.
+  {
+    Preferences wp;
+    wp.begin("mvswifi", true);
+    String savedSsid = wp.getString("ssid", "");
+    String savedPass = wp.getString("password", "");
+    bool   savedVal  = wp.getBool("valid", false);
+    wp.end();
+
+    if (savedSsid.length() > 0 && savedVal) {
+      Serial.printf("Connecting to saved WiFi '%s' (direct begin path)...\n", savedSsid.c_str());
+      setLED(0, 0, 255);
+      WiFi.disconnect(true);
+      delay(1000);
+      WiFi.begin(savedSsid.c_str(), savedPass.c_str());
+
+      unsigned long deadline = millis() + 90000UL;
+      while (millis() < deadline && WiFi.status() != WL_CONNECTED) {
+        delay(500);
+        Serial.print(".");
+        esp_task_wdt_reset();
+      }
+      Serial.println();
+
+      if (WiFi.status() == WL_CONNECTED) {
+        Serial.println("WiFi connected! IP: " + WiFi.localIP().toString());
+        Serial.printf("RSSI: %d dBm, SSID: %s\n", WiFi.RSSI(), WiFi.SSID().c_str());
+        setGoogleDNS();
+        if (apMode == 1) {
+          apTimerStart = millis();
+          apTimerDeadline = apTimerStart + AP_AUTO_OFF_MS;
+          apTimerEnded = false;
+          Serial.println("AP 10-min countdown started");
+        }
+        initFirebase();
+      } else {
+        Serial.printf("WiFi connection FAILED (status=%d, 90s timeout), AP mode active\n", WiFi.status());
+        setLED(255, 255, 255);
+      }
+    } else {
+      Serial.println("No saved WiFi, AP mode active for setup");
+      setLED(255, 255, 255);
+    }
   }
 
   // MvsOTA
@@ -2830,14 +2923,34 @@ void loop() {
     if (manualWiFiInProgress && (now - manualWiFiStart > 30000)) {
       manualWiFiInProgress = false;
     }
-    // Auto-reconnect only if manual WiFi is not in progress
+    // Auto-reconnect only if manual WiFi is not in progress.
+    // Use the same direct-WiFi.begin recipe as the boot path and the
+    // manual AP-page handler — the library wrapper has been failing.
+    // 30-sec cadence here is the same as before, just different mechanics.
     static unsigned long lastReconnect = 0;
     if (!manualWiFiInProgress && (now - lastReconnect > 30000)) {
       lastReconnect = now;
-      if (mvs.hasSavedWiFi()) {
-        Serial.println("Attempting WiFi reconnect...");
-        if (mvs.connectToSavedWiFi(10)) {
-          Serial.println("Reconnected!");
+      Preferences wp;
+      wp.begin("mvswifi", true);
+      String savedSsid = wp.getString("ssid", "");
+      String savedPass = wp.getString("password", "");
+      bool   savedVal  = wp.getBool("valid", false);
+      wp.end();
+      if (savedSsid.length() > 0 && savedVal) {
+        Serial.printf("Attempting WiFi reconnect to '%s'...\n", savedSsid.c_str());
+        WiFi.disconnect(true);
+        delay(500);
+        WiFi.begin(savedSsid.c_str(), savedPass.c_str());
+
+        // Short blocking poll — 15 s budget so we don't starve loop().
+        // If 15 s isn't enough, the NEXT 30-sec cycle will keep trying.
+        unsigned long deadline = millis() + 15000UL;
+        while (millis() < deadline && WiFi.status() != WL_CONNECTED) {
+          delay(500);
+          esp_task_wdt_reset();
+        }
+        if (WiFi.status() == WL_CONNECTED) {
+          Serial.printf("Reconnected! RSSI: %d dBm, IP: %s\n", WiFi.RSSI(), WiFi.localIP().toString().c_str());
           setGoogleDNS();
           if (!firebaseReady) initFirebase();
         }
@@ -2966,7 +3079,38 @@ void handleSerialCommand(String cmd) {
     clearBootLog();
     Serial.println("Boot log cleared (local NVS only — RTDB not touched).");
   }
+  else if (cmd == "WIFI_DBG" || cmd == "WIFIDBG") {
+    Preferences dbg;
+    dbg.begin("mvswifi", true);
+    String dbgSsid = dbg.getString("ssid", "");
+    String dbgPass = dbg.getString("password", "");
+    bool dbgValid  = dbg.getBool("valid", false);
+    dbg.end();
+    Serial.println("\n--- WIFI NVS DUMP ---");
+    Serial.printf("ssid     = '%s' (len=%u)\n", dbgSsid.c_str(), dbgSsid.length());
+    Serial.printf("password = '%s' (len=%u)\n", dbgPass.c_str(), dbgPass.length());
+    Serial.printf("valid    = %s\n", dbgValid ? "true" : "false");
+    Serial.printf("MAC      = %s\n", WiFi.macAddress().c_str());
+    Serial.printf("ssid hex ="); for (size_t i = 0; i < dbgSsid.length(); i++) Serial.printf(" %02X", (uint8_t)dbgSsid[i]); Serial.println();
+    Serial.printf("pass hex ="); for (size_t i = 0; i < dbgPass.length(); i++) Serial.printf(" %02X", (uint8_t)dbgPass[i]); Serial.println();
+    Serial.printf("Status   = %d (3=connected)\n", WiFi.status());
+    if (WiFi.status() == WL_CONNECTED) {
+      Serial.printf("SSID     = '%s'\n", WiFi.SSID().c_str());
+      Serial.printf("IP       = %s\n", WiFi.localIP().toString().c_str());
+      Serial.printf("RSSI     = %d dBm\n", WiFi.RSSI());
+    }
+    Serial.println("Scanning visible networks...");
+    int n = WiFi.scanNetworks(false, false, false, 200);
+    Serial.printf("Found %d networks:\n", n);
+    for (int i = 0; i < n; i++) {
+      Serial.printf("  %2d: %-32s  RSSI=%d  ch=%d  enc=%d\n",
+                    i + 1, WiFi.SSID(i).c_str(), WiFi.RSSI(i),
+                    WiFi.channel(i), (int)WiFi.encryptionType(i));
+    }
+    WiFi.scanDelete();
+    Serial.println("---------------------\n");
+  }
   else if (cmd == "HELP") {
-    Serial.println("\nCommands: STATUS, ADMIN, FIREBASE, RESTART, RESET_WIFI, WIFI <ssid> <pass>, BOOTLOG, DIAG, DIAG CLEAR, HELP\n");
+    Serial.println("\nCommands: STATUS, ADMIN, FIREBASE, RESTART, RESET_WIFI, WIFI <ssid> <pass>, BOOTLOG, DIAG, DIAG CLEAR, WIFI_DBG, HELP\n");
   }
 }
