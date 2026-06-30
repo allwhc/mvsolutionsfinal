@@ -2942,11 +2942,14 @@ void loop() {
         delay(500);
         WiFi.begin(savedSsid.c_str(), savedPass.c_str());
 
-        // Short blocking poll — 15 s budget so we don't starve loop().
-        // If 15 s isn't enough, the NEXT 30-sec cycle will keep trying.
-        unsigned long deadline = millis() + 15000UL;
+        // Short blocking poll — 2 s budget so we don't starve loop().
+        // Was 15 s in earlier revs of 17.0.10 but caused Task WDT crashes
+        // when combined with Firebase TLS calls that were already mid-
+        // timeout. At strong signal a fresh begin() associates in well
+        // under 2 s; at weak signal the next 30-sec cycle will retry.
+        unsigned long deadline = millis() + 2000UL;
         while (millis() < deadline && WiFi.status() != WL_CONNECTED) {
-          delay(500);
+          delay(250);
           esp_task_wdt_reset();
         }
         if (WiFi.status() == WL_CONNECTED) {
