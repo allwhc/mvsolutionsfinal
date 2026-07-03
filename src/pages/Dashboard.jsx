@@ -455,7 +455,7 @@ export default function Dashboard() {
           deviceCode={analyticsDevice.deviceCode}
           deviceName={analyticsDevice.deviceName}
           tankCapacityLitres={analyticsDevice.tankCapacityLitres}
-          currentPct={analyticsDevice.confirmedPct}
+          currentPct={analyticsDevice.live?.confirmedPct}
           onClose={() => setAnalyticsDevice(null)}
         />
       )}
