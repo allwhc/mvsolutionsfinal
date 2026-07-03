@@ -116,12 +116,45 @@ function mode(arr) {
 // Natural-language bullets summarising the history in the chosen range.
 // Used both by the AnalyticsChart insights panel (Device Detail) and by
 // the dashboard chart-icon popup.
-export function generateInsights(history, tankCapacity) {
+export function generateInsights(history, tankCapacity, currentPct = null) {
+  // Sparse-data path — a range with 0-4 entries means the tank stayed
+  // mostly steady. Frame it as tank status — never expose "N readings"
+  // or "sparse history" to the customer.
   if (history.length < MIN_POINTS_FOR_INSIGHTS) {
-    return {
-      enough: false,
-      bullets: [`Not enough data to talk about yet — only ${history.length} reading${history.length === 1 ? "" : "s"} in this period. Insights need at least ${MIN_POINTS_FOR_INSIGHTS}.`],
-    };
+    const bullets = [];
+    if (history.length === 0) {
+      const level = currentPct != null ? currentPct : null;
+      if (level != null) {
+        bullets.push(`✓ Tank stayed steady at ${level}% throughout this period`);
+        if (tankCapacity > 0) {
+          bullets.push(`💧 Volume held: ${formatLitres((level / 100) * tankCapacity)}`);
+        }
+      } else {
+        bullets.push("✓ Tank stayed steady throughout this period");
+      }
+      bullets.push("ℹ No refills or heavy usage detected in this window");
+    } else if (history.length === 1) {
+      const only = history[0];
+      const pct  = only.pct ?? 0;
+      bullets.push(`✓ Tank stayed steady at ${pct}% throughout this period`);
+      if (tankCapacity > 0) {
+        bullets.push(`💧 Volume held: ${formatLitres((pct / 100) * tankCapacity)}`);
+      }
+      bullets.push("ℹ No refills or heavy usage detected in this window");
+    } else {
+      // 2-4 changes — partial story. Show what we DO know.
+      const pcts = history.map((h) => h.pct ?? 0);
+      const lowest = Math.min(...pcts);
+      const highest = Math.max(...pcts);
+      const totals = calcLitres(history, tankCapacity);
+      if (tankCapacity > 0) {
+        if (totals.filled > 0)   bullets.push(`💧 Refilled ${formatLitres(totals.filled)} in this period`);
+        if (totals.consumed > 0) bullets.push(`🚰 Consumed ${formatLitres(totals.consumed)} in this period`);
+      }
+      bullets.push(`📉 Lowest level: ${lowest}%   |   📈 Highest: ${highest}%`);
+      bullets.push("ℹ Tank was mostly steady during this period");
+    }
+    return { enough: true, bullets };
   }
 
   const bullets = [];
@@ -179,8 +212,6 @@ export function generateInsights(history, tankCapacity) {
     const dryHrs = (longestDry / (60 * 60 * 1000)).toFixed(1);
     bullets.push(`⚠ Longest dry stretch: ${dryHrs} hours at 0%`);
   }
-
-  bullets.push(`ℹ Based on ${history.length} data point${history.length > 1 ? "s" : ""} from cloud history.`);
 
   return { enough: true, bullets };
 }

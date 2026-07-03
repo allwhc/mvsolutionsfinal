@@ -13,7 +13,38 @@ import { RANGES, generateInsights } from "../../utils/analyticsInsights";
 // utils/analyticsInsights helpers. Click outside / Esc / Close button
 // dismisses. "View full chart" deep-links to /device/<code>#analytics
 // when the user wants the full Device Detail experience.
-export default function DeviceAnalyticsModal({ deviceCode, deviceName, tankCapacityLitres, onClose }) {
+// Same forward-fill logic as AnalyticsChart — every interpolated grid
+// point inherits the most recent actual value (from before the range if
+// necessary). A "no new entry" period means the level was steady.
+function interpolate(history, startTs, endTs, stepMs, seedFromCurrent = null) {
+  const gridTimes = [];
+  for (let t = startTs; t <= endTs; t += stepMs) gridTimes.push(t);
+  const actuals = history.filter((h) => h.ts >= startTs && h.ts <= endTs);
+  const actualSet = new Set(actuals.map((a) => a.ts));
+  const merged = [];
+  for (const a of actuals) merged.push({ ts: a.ts, pct: a.pct, source: "actual" });
+  for (const t of gridTimes) {
+    if (!actualSet.has(t)) merged.push({ ts: t, pct: null, source: "interpolated" });
+  }
+  merged.sort((a, b) => a.ts - b.ts);
+
+  // Seed from most recent actual BEFORE range start. If none exists,
+  // fall back to the current live level so a steady tank still shows a
+  // flat line rather than an empty chart.
+  let lastKnown = null;
+  for (let i = history.length - 1; i >= 0; i--) {
+    if (history[i].ts < startTs) { lastKnown = history[i].pct ?? null; break; }
+  }
+  if (lastKnown == null && seedFromCurrent != null) lastKnown = seedFromCurrent;
+
+  for (const row of merged) {
+    if (row.source === "actual") lastKnown = row.pct;
+    else row.pct = lastKnown;
+  }
+  return merged;
+}
+
+export default function DeviceAnalyticsModal({ deviceCode, deviceName, tankCapacityLitres, currentPct, onClose }) {
   const [range, setRange] = useState("24h");
   // Per-range cache so switching tabs back to a previously-loaded range
   // doesn't re-hit Firebase. Cleared when the modal unmounts.
@@ -56,24 +87,34 @@ export default function DeviceAnalyticsModal({ deviceCode, deviceName, tankCapac
   }, [onClose]);
 
   const insights = useMemo(
-    () => (history && history.length > 0 ? generateInsights(history, tankCapacityLitres) : null),
-    [history, tankCapacityLitres]
+    // Pass currentPct so sparse-history windows still get a "tank at X%"
+    // message instead of a generic steady bullet.
+    () => (history != null ? generateInsights(history, tankCapacityLitres, currentPct) : null),
+    [history, tankCapacityLitres, currentPct]
   );
 
-  // Compact chart data — just the actuals, no interpolation. The popup
-  // is meant for a quick visual; interpolation is overkill at this size.
+  // Interpolated chart data — matches Device Detail chart behaviour.
+  // Forward-fills the last known level across the window so a steady
+  // tank shows as a continuous line rather than an empty chart.
   const chartData = useMemo(() => {
     if (!history) return [];
-    return history.map((h) => ({
-      time: new Date(h.ts).toLocaleString([], {
+    const endTs = Date.now();
+    const r = RANGES[range];
+    const startTs = endTs - r.ms;
+    const interp = interpolate(history, startTs, endTs, r.stepMs, currentPct);
+    return interp.map((p) => ({
+      time: new Date(p.ts).toLocaleString([], {
         month: range === "24h" ? undefined : "short",
         day:   range === "24h" ? undefined : "numeric",
         hour: "2-digit",
         minute: range === "24h" ? "2-digit" : undefined,
       }),
-      pct: h.pct,
+      pct: p.pct,
+      isActual: p.source === "actual",
     }));
-  }, [history, range]);
+  }, [history, range, currentPct]);
+
+  const hasChartData = chartData.some((p) => p.pct != null);
 
   return (
     <div
@@ -124,9 +165,9 @@ export default function DeviceAnalyticsModal({ deviceCode, deviceName, tankCapac
             <div className="h-full flex items-center justify-center text-xs text-red-600">
               {error}
             </div>
-          ) : chartData.length === 0 ? (
+          ) : !hasChartData ? (
             <div className="h-full flex items-center justify-center text-xs text-gray-500 bg-gray-50 rounded-lg">
-              No data in this window.
+              Tank has been steady — no changes to plot.
             </div>
           ) : (
             <ResponsiveContainer width="100%" height="100%">
@@ -140,8 +181,22 @@ export default function DeviceAnalyticsModal({ deviceCode, deviceName, tankCapac
                   dataKey="pct"
                   stroke="#2563eb"
                   strokeWidth={2}
-                  dot={{ r: 2, fill: "#2563eb", stroke: "#fff", strokeWidth: 1 }}
+                  dot={(props) => {
+                    if (!props.payload?.isActual) return null;
+                    return (
+                      <circle
+                        key={`dot-${props.index}`}
+                        cx={props.cx}
+                        cy={props.cy}
+                        r={3}
+                        fill="#2563eb"
+                        stroke="#fff"
+                        strokeWidth={1}
+                      />
+                    );
+                  }}
                   isAnimationActive={false}
+                  connectNulls={false}
                 />
               </LineChart>
             </ResponsiveContainer>
@@ -151,12 +206,12 @@ export default function DeviceAnalyticsModal({ deviceCode, deviceName, tankCapac
         {/* Insights */}
         <div className="px-5 pt-4 pb-3">
           <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">
-            Tell me about my analytics
+            Tell me about my tank{deviceName ? ` — ${deviceName}` : ""}
           </h4>
           {loading ? (
             <p className="text-xs text-gray-400">Loading…</p>
           ) : !insights ? (
-            <p className="text-xs text-gray-500">No data yet to summarise.</p>
+            <p className="text-xs text-gray-500">Tank has been steady.</p>
           ) : !insights.enough ? (
             <p className="text-xs text-gray-500">{insights.bullets[0]}</p>
           ) : (

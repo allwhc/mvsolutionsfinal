@@ -117,10 +117,6 @@ export default function AnalyticsChart({ deviceCode, tankCapacityLitres, onHisto
 
   const litres = useMemo(() => calcLitres(history, tankCapacityLitres), [history, tankCapacityLitres]);
 
-  const actualsInRange = useMemo(
-    () => history.filter((h) => h.ts >= startTs && h.ts <= endTs),
-    [history, startTs, endTs]
-  );
   const hasChartData = chartData.some((p) => p.pct != null);
 
   if (loading) {
@@ -263,17 +259,13 @@ export default function AnalyticsChart({ deviceCode, tankCapacityLitres, onHisto
         )}
       </div>
 
-      <p className="text-xs text-gray-400 mt-2 text-center">
-        {actualsInRange.length} actual data point{actualsInRange.length !== 1 ? "s" : ""} in this range
-      </p>
-
       {/* Insights panel — collapsed by default, expand on click */}
       <div className="mt-3 border-t border-gray-100 pt-3">
         <button
           onClick={() => setShowInsights((s) => !s)}
           className="w-full flex items-center justify-between text-sm font-semibold text-gray-700 hover:text-blue-700"
         >
-          <span>💬 Tell me about my analytics ({RANGES[range].label})</span>
+          <span>💬 Tell me about my tank ({RANGES[range].label})</span>
           <span className="text-xs text-gray-400">{showInsights ? "▲ Hide" : "▼ Show"}</span>
         </button>
         {showInsights && insights && (
