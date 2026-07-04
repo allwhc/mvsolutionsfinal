@@ -123,20 +123,21 @@ export function generateInsights(history, tankCapacity, currentPct = null) {
   if (history.length < MIN_POINTS_FOR_INSIGHTS) {
     const bullets = [];
     if (history.length === 0) {
-      const level = currentPct != null ? currentPct : null;
-      if (level != null) {
-        bullets.push(`✓ Tank stayed steady at ${level}% throughout this period`);
+      // Zero entries in this window — could be a brand new device, or
+      // a device that was steady from before. Don't claim "steady
+      // throughout the period" (misleading if device is new). Just
+      // report the current level as a live snapshot.
+      if (currentPct != null) {
+        bullets.push(`✓ Current tank level: ${currentPct}%`);
         if (tankCapacity > 0) {
-          bullets.push(`💧 Volume held: ${formatLitres((level / 100) * tankCapacity)}`);
+          bullets.push(`💧 Volume held right now: ${formatLitres((currentPct / 100) * tankCapacity)}`);
         }
-      } else {
-        bullets.push("✓ Tank stayed steady throughout this period");
       }
-      bullets.push("ℹ No refills or heavy usage detected in this window");
+      bullets.push("ℹ No refills or heavy usage detected in this window yet");
     } else if (history.length === 1) {
       const only = history[0];
       const pct  = only.pct ?? 0;
-      bullets.push(`✓ Tank stayed steady at ${pct}% throughout this period`);
+      bullets.push(`✓ Tank has stayed steady at ${pct}%`);
       if (tankCapacity > 0) {
         bullets.push(`💧 Volume held: ${formatLitres((pct / 100) * tankCapacity)}`);
       }

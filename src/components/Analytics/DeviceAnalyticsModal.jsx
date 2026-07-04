@@ -15,8 +15,10 @@ import { RANGES, generateInsights } from "../../utils/analyticsInsights";
 // when the user wants the full Device Detail experience.
 // Same forward-fill logic as AnalyticsChart — every interpolated grid
 // point inherits the most recent actual value (from before the range if
-// necessary). A "no new entry" period means the level was steady.
-function interpolate(history, startTs, endTs, stepMs, seedFromCurrent = null) {
+// available). Grid points BEFORE the first-ever actual stay null so brand
+// new devices don't get a fake steady line painted across time they
+// didn't exist. Same behavior as Device Detail chart.
+function interpolate(history, startTs, endTs, stepMs) {
   const gridTimes = [];
   for (let t = startTs; t <= endTs; t += stepMs) gridTimes.push(t);
   const actuals = history.filter((h) => h.ts >= startTs && h.ts <= endTs);
@@ -28,14 +30,10 @@ function interpolate(history, startTs, endTs, stepMs, seedFromCurrent = null) {
   }
   merged.sort((a, b) => a.ts - b.ts);
 
-  // Seed from most recent actual BEFORE range start. If none exists,
-  // fall back to the current live level so a steady tank still shows a
-  // flat line rather than an empty chart.
   let lastKnown = null;
   for (let i = history.length - 1; i >= 0; i--) {
     if (history[i].ts < startTs) { lastKnown = history[i].pct ?? null; break; }
   }
-  if (lastKnown == null && seedFromCurrent != null) lastKnown = seedFromCurrent;
 
   for (const row of merged) {
     if (row.source === "actual") lastKnown = row.pct;
@@ -101,7 +99,7 @@ export default function DeviceAnalyticsModal({ deviceCode, deviceName, tankCapac
     const endTs = Date.now();
     const r = RANGES[range];
     const startTs = endTs - r.ms;
-    const interp = interpolate(history, startTs, endTs, r.stepMs, currentPct);
+    const interp = interpolate(history, startTs, endTs, r.stepMs);
     return interp.map((p) => ({
       time: new Date(p.ts).toLocaleString([], {
         month: range === "24h" ? undefined : "short",
@@ -112,7 +110,7 @@ export default function DeviceAnalyticsModal({ deviceCode, deviceName, tankCapac
       pct: p.pct,
       isActual: p.source === "actual",
     }));
-  }, [history, range, currentPct]);
+  }, [history, range]);
 
   const hasChartData = chartData.some((p) => p.pct != null);
 
@@ -166,8 +164,8 @@ export default function DeviceAnalyticsModal({ deviceCode, deviceName, tankCapac
               {error}
             </div>
           ) : !hasChartData ? (
-            <div className="h-full flex items-center justify-center text-xs text-gray-500 bg-gray-50 rounded-lg">
-              Tank has been steady — no changes to plot.
+            <div className="h-full flex items-center justify-center text-xs text-gray-500 bg-gray-50 rounded-lg text-center px-4">
+              No level changes in this window yet — chart will fill as your tank refills or drains.
             </div>
           ) : (
             <ResponsiveContainer width="100%" height="100%">
