@@ -216,36 +216,60 @@ export default function AdminDevices() {
     }
   }
 
-  // Build one TSPL job per sticker. Sticker size and inclusion of the
-  // device-name text follow the same rules the HTML path uses so the
-  // preview + Bluetooth output stay consistent.
-  function buildTsplForSticker(code, name) {
+  // Build one ESC/POS print job per sticker. Most 58 mm Bluetooth pocket
+  // printers (POS-58, MTP-3, Zjiang, Goojprt, HOIN…) speak ESC/POS, NOT
+  // TSPL — TSPL is for XPrinter / GAINSCHA label printers. Sending TSPL
+  // strings to an ESC/POS printer just prints the raw text.
+  //
+  // ESC/POS QR code commands come from the "GS ( k" family (function 165
+  // = model, 167 = size, 169 = error correction, 180 = store data,
+  // 181 = print). Widely supported since Epson TM-T88III.
+  function buildEscPosForSticker(code, name) {
     const { widthMm, heightMm } = resolveStickerDims();
     const includeName = showNameOnSticker(widthMm, heightMm) && name;
-    // Printer is 203 DPI → 8 dots/mm. QR "cellWidth" 5 gives ~150 dots for
-    // a 25-cell QR — safely fits inside a 50×30 sticker with room for text.
-    const W = Math.round(widthMm * 8);
-    const H = Math.round(heightMm * 8);
-    const qrSize = Math.min(150, H - (includeName ? 60 : 40));
-    const qrX = Math.round((W - qrSize) / 2);
-    const qrY = 8;
-    // Font "3" ≈ 12 dots wide per char
-    const codeY   = qrY + qrSize + 8;
-    const codeX   = Math.max(4, Math.round((W - code.length * 12) / 2));
-    const nameY   = codeY + 26;
-    const nameStr = String(name || "");
-    const nameX   = Math.max(4, Math.round((W - nameStr.length * 10) / 2));
 
-    let tspl = "";
-    tspl += `SIZE ${widthMm} mm, ${heightMm} mm\r\n`;
-    tspl += `GAP 2 mm, 0 mm\r\n`;
-    tspl += `DIRECTION 1\r\n`;
-    tspl += `CLS\r\n`;
-    tspl += `QRCODE ${qrX},${qrY},M,5,A,0,"${code}"\r\n`;
-    tspl += `TEXT ${codeX},${codeY},"3",0,1,1,"${code}"\r\n`;
-    if (includeName) tspl += `TEXT ${nameX},${nameY},"2",0,1,1,"${nameStr}"\r\n`;
-    tspl += `PRINT 1\r\n`;
-    return new TextEncoder().encode(tspl);
+    const bytes = [];
+    const push = (arr) => { for (const b of arr) bytes.push(b); };
+    const pushStr = (s) => { for (const c of new TextEncoder().encode(s)) bytes.push(c); };
+
+    // ESC @ — initialise printer (reset margins, style, alignment)
+    push([0x1B, 0x40]);
+    // ESC a 1 — centre alignment
+    push([0x1B, 0x61, 0x01]);
+
+    // ── QR CODE ──
+    // GS ( k pL pH cn 65 32 0 — Select QR model 2
+    push([0x1D, 0x28, 0x6B, 0x04, 0x00, 0x31, 0x41, 0x32, 0x00]);
+    // GS ( k pL pH cn 67 n — Module size (dot).  n=8 → ~15 mm QR at 203 DPI
+    // Scale down for smaller sticker heights so the QR + text still fit.
+    const qrModuleSize = heightMm <= 30 ? 6 : (heightMm <= 40 ? 7 : 8);
+    push([0x1D, 0x28, 0x6B, 0x03, 0x00, 0x31, 0x43, qrModuleSize]);
+    // GS ( k pL pH cn 69 n — Error correction level (48=L, 49=M, 50=Q, 51=H)
+    push([0x1D, 0x28, 0x6B, 0x03, 0x00, 0x31, 0x45, 0x31]);
+    // GS ( k pL pH cn 80 48 — Store data
+    const dataBytes = new TextEncoder().encode(code);
+    const storeLen  = dataBytes.length + 3;
+    push([0x1D, 0x28, 0x6B, storeLen & 0xFF, (storeLen >> 8) & 0xFF, 0x31, 0x50, 0x30]);
+    push([...dataBytes]);
+    // GS ( k pL pH cn 81 48 — Print the stored QR
+    push([0x1D, 0x28, 0x6B, 0x03, 0x00, 0x31, 0x51, 0x30]);
+
+    // ── Device code (bold) ──
+    push([0x0A]);              // line feed
+    push([0x1B, 0x45, 0x01]);  // ESC E 1 — bold on
+    pushStr(code);
+    push([0x1B, 0x45, 0x00]);  // ESC E 0 — bold off
+    push([0x0A]);
+
+    // ── Optional device name ──
+    if (includeName) {
+      pushStr(String(name));
+      push([0x0A]);
+    }
+
+    // Feed a few lines so the sticker clears the print head / tear bar
+    push([0x0A, 0x0A, 0x0A]);
+    return new Uint8Array(bytes);
   }
 
   async function printStickersBluetooth(stickers) {
@@ -256,7 +280,7 @@ export default function AdminDevices() {
     setBtPrintBusy(true);
     try {
       for (const s of stickers) {
-        const bytes = buildTsplForSticker(s.code, s.name);
+        const bytes = buildEscPosForSticker(s.code, s.name);
         await sendToBluetoothPrinter(bytes);
       }
     } catch (err) {
