@@ -265,10 +265,12 @@ export default function AdminDevices() {
       push([0x0A]);
     }
 
-    // Single small feed so the printed area clears the tear bar. NO
-    // multiple LFs — those advance past the gap sensor onto the next
-    // label (which caused the previous overflow bug).
-    push([0x0A]);
+    // FF (0x0C) — form feed. On label-mode ESC/POS printers (Seznik,
+    // Zjiang and most 58mm gap-sensor pocket printers), this tells the
+    // printer to advance the paper to the NEXT gap mark instead of the
+    // dumb fixed-distance feed that LF triggers. Result: exactly one
+    // label per print job, gap sensor aligns automatically.
+    push([0x0C]);
     return new Uint8Array(bytes);
   }
 
