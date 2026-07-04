@@ -216,59 +216,151 @@ export default function AdminDevices() {
     }
   }
 
-  // Build one ESC/POS print job per sticker. Most 58 mm Bluetooth pocket
-  // printers (POS-58, MTP-3, Zjiang, Goojprt, HOIN…) speak ESC/POS, NOT
-  // TSPL — TSPL is for XPrinter / GAINSCHA label printers. Sending TSPL
-  // strings to an ESC/POS printer just prints the raw text.
+  // Render one sticker to a mono bitmap on canvas, then send it to the
+  // printer as an ESC/POS raster block (GS v 0). This gives us full 2D
+  // control — QR on the left, device code and name stacked on the right,
+  // everything fitting in ONE label height instead of overflowing to a
+  // second label (which is what happens with the linear ESC/POS
+  // GS ( k QR command + line-feed text approach).
   //
-  // ESC/POS QR code commands come from the "GS ( k" family (function 165
-  // = model, 167 = size, 169 = error correction, 180 = store data,
-  // 181 = print). Widely supported since Epson TM-T88III.
-  function buildEscPosForSticker(code, name) {
+  // 203 DPI printer → 8 dots/mm. A 50×30 mm sticker = 400×240 dots.
+  // Width MUST be a multiple of 8 (byte-aligned) for GS v 0.
+  //
+  // Uses the SVG QR already rendered on-page by qrcode.react — drawing it
+  // to a canvas gives a crisp 1-bit bitmap after threshold.
+  async function renderStickerCanvas(code, name) {
     const { widthMm, heightMm } = resolveStickerDims();
     const includeName = showNameOnSticker(widthMm, heightMm) && name;
+    const DPI = 203;
+    const DOTS_PER_MM = DPI / 25.4;                     // ≈ 8
+    let widthDots  = Math.round(widthMm  * DOTS_PER_MM);
+    widthDots      = Math.ceil(widthDots / 8) * 8;      // byte-align
+    const heightDots = Math.round(heightMm * DOTS_PER_MM);
+
+    // Layout inside the sticker:
+    //   Left  ~50% → QR block (square, fits sticker height with padding)
+    //   Right ~50% → device code (line 1, bold) + optional name (line 2)
+    const pad = Math.max(4, Math.round(2 * DOTS_PER_MM));   // ~2 mm padding
+    const qrSize = Math.min(heightDots - 2 * pad, Math.floor(widthDots * 0.45));
+    const qrX = pad;
+    const qrY = Math.round((heightDots - qrSize) / 2);
+    const textX = qrX + qrSize + pad;
+    const textMaxW = widthDots - textX - pad;
+
+    const canvas = document.createElement("canvas");
+    canvas.width  = widthDots;
+    canvas.height = heightDots;
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(0, 0, widthDots, heightDots);
+
+    // Draw QR onto canvas. Find the QR SVG already in the DOM (either
+    // the single-print modal or the bulk grid), serialise it, then paint.
+    const svgEl =
+         document.querySelector(`#qr-print-single [data-code="${code}"] svg`)
+      || document.querySelector(`#qr-print-bulk [data-code="${code}"] svg`);
+    if (svgEl) {
+      // Force a solid white background on the SVG copy so the underlying
+      // page background doesn't bleed through when we rasterise.
+      const clone = svgEl.cloneNode(true);
+      clone.setAttribute("width",  qrSize);
+      clone.setAttribute("height", qrSize);
+      const xml = new XMLSerializer().serializeToString(clone);
+      const svgUrl = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(xml);
+      await new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => {
+          ctx.drawImage(img, qrX, qrY, qrSize, qrSize);
+          resolve();
+        };
+        img.onerror = reject;
+        img.src = svgUrl;
+      });
+    }
+
+    // Draw device code (line 1, bold, larger) and optional name (line 2)
+    // Auto-shrink font size so the code always fits within textMaxW.
+    ctx.fillStyle = "#000";
+    ctx.textBaseline = "middle";
+    let fontSize = Math.round(heightDots * 0.20);   // start at 20% of height
+    while (fontSize > 8) {
+      ctx.font = `bold ${fontSize}px monospace`;
+      if (ctx.measureText(code).width <= textMaxW) break;
+      fontSize -= 1;
+    }
+    if (includeName) {
+      const codeY = Math.round(heightDots * 0.38);
+      const nameFont = Math.max(10, Math.round(fontSize * 0.7));
+      ctx.font = `bold ${fontSize}px monospace`;
+      ctx.fillText(code, textX, codeY);
+      ctx.font = `${nameFont}px sans-serif`;
+      const nameY = Math.round(heightDots * 0.68);
+      // Auto-truncate name if too long instead of overflowing
+      let nameStr = String(name);
+      while (nameStr.length > 1 && ctx.measureText(nameStr).width > textMaxW) {
+        nameStr = nameStr.slice(0, -1);
+      }
+      ctx.fillText(nameStr, textX, nameY);
+    } else {
+      ctx.font = `bold ${fontSize}px monospace`;
+      ctx.fillText(code, textX, Math.round(heightDots / 2));
+    }
+
+    return canvas;
+  }
+
+  // Convert a canvas to the packed 1-bpp bitmap format expected by the
+  // ESC/POS raster command GS v 0. Threshold at mid-grey (128). Returns
+  // { widthBytes, heightDots, bitmap } where bitmap is a Uint8Array of
+  // widthBytes * heightDots bytes, MSB-first, 1 = black pixel.
+  function canvasToEscposRaster(canvas) {
+    const w = canvas.width;
+    const h = canvas.height;
+    const ctx = canvas.getContext("2d");
+    const { data } = ctx.getImageData(0, 0, w, h);
+    const widthBytes = w / 8;
+    const bitmap = new Uint8Array(widthBytes * h);
+    for (let y = 0; y < h; y++) {
+      for (let xByte = 0; xByte < widthBytes; xByte++) {
+        let byte = 0;
+        for (let bit = 0; bit < 8; bit++) {
+          const x = xByte * 8 + bit;
+          const idx = (y * w + x) * 4;
+          // Simple luminance + alpha check; 0 = white, non-zero = black
+          const r = data[idx], g = data[idx + 1], b = data[idx + 2], a = data[idx + 3];
+          const lum = a === 0 ? 255 : (r * 0.299 + g * 0.587 + b * 0.114);
+          if (lum < 128) byte |= (1 << (7 - bit));
+        }
+        bitmap[y * widthBytes + xByte] = byte;
+      }
+    }
+    return { widthBytes, heightDots: h, bitmap };
+  }
+
+  // Build the full ESC/POS byte stream for one sticker: init + centred
+  // raster block + a couple of trailing line feeds so the sticker clears
+  // the print head / tear bar. Nothing extra — the whole sticker layout
+  // lives inside the raster.
+  async function buildEscPosForSticker(code, name) {
+    const canvas = await renderStickerCanvas(code, name);
+    const { widthBytes, heightDots, bitmap } = canvasToEscposRaster(canvas);
 
     const bytes = [];
     const push = (arr) => { for (const b of arr) bytes.push(b); };
-    const pushStr = (s) => { for (const c of new TextEncoder().encode(s)) bytes.push(c); };
 
-    // ESC @ — initialise printer (reset margins, style, alignment)
+    // ESC @ — initialise printer
     push([0x1B, 0x40]);
-    // ESC a 1 — centre alignment
-    push([0x1B, 0x61, 0x01]);
+    // ESC a 0 — left align (raster block already positions itself inside)
+    push([0x1B, 0x61, 0x00]);
+    // GS v 0 m xL xH yL yH — raster bit image
+    //   m = 0 → normal (no scaling)
+    push([0x1D, 0x76, 0x30, 0x00,
+          widthBytes & 0xFF, (widthBytes >> 8) & 0xFF,
+          heightDots & 0xFF, (heightDots >> 8) & 0xFF]);
+    for (const b of bitmap) bytes.push(b);
 
-    // ── QR CODE ──
-    // GS ( k pL pH cn 65 32 0 — Select QR model 2
-    push([0x1D, 0x28, 0x6B, 0x04, 0x00, 0x31, 0x41, 0x32, 0x00]);
-    // GS ( k pL pH cn 67 n — Module size (dot).  n=8 → ~15 mm QR at 203 DPI
-    // Scale down for smaller sticker heights so the QR + text still fit.
-    const qrModuleSize = heightMm <= 30 ? 6 : (heightMm <= 40 ? 7 : 8);
-    push([0x1D, 0x28, 0x6B, 0x03, 0x00, 0x31, 0x43, qrModuleSize]);
-    // GS ( k pL pH cn 69 n — Error correction level (48=L, 49=M, 50=Q, 51=H)
-    push([0x1D, 0x28, 0x6B, 0x03, 0x00, 0x31, 0x45, 0x31]);
-    // GS ( k pL pH cn 80 48 — Store data
-    const dataBytes = new TextEncoder().encode(code);
-    const storeLen  = dataBytes.length + 3;
-    push([0x1D, 0x28, 0x6B, storeLen & 0xFF, (storeLen >> 8) & 0xFF, 0x31, 0x50, 0x30]);
-    push([...dataBytes]);
-    // GS ( k pL pH cn 81 48 — Print the stored QR
-    push([0x1D, 0x28, 0x6B, 0x03, 0x00, 0x31, 0x51, 0x30]);
-
-    // ── Device code (bold) ──
-    push([0x0A]);              // line feed
-    push([0x1B, 0x45, 0x01]);  // ESC E 1 — bold on
-    pushStr(code);
-    push([0x1B, 0x45, 0x00]);  // ESC E 0 — bold off
-    push([0x0A]);
-
-    // ── Optional device name ──
-    if (includeName) {
-      pushStr(String(name));
-      push([0x0A]);
-    }
-
-    // Feed a few lines so the sticker clears the print head / tear bar
-    push([0x0A, 0x0A, 0x0A]);
+    // A couple of line feeds so the label advances past the print head
+    push([0x0A, 0x0A]);
     return new Uint8Array(bytes);
   }
 
@@ -280,7 +372,7 @@ export default function AdminDevices() {
     setBtPrintBusy(true);
     try {
       for (const s of stickers) {
-        const bytes = buildEscPosForSticker(s.code, s.name);
+        const bytes = await buildEscPosForSticker(s.code, s.name);
         await sendToBluetoothPrinter(bytes);
       }
     } catch (err) {
