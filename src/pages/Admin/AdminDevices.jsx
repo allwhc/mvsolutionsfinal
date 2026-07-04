@@ -155,12 +155,120 @@ export default function AdminDevices() {
   }
 
   function printStickers(stickers) {
+    if (qrPrintSettings.layout === "bluetooth") {
+      printStickersBluetooth(stickers);
+      return;
+    }
     const html = buildPrintHtml(stickers, qrPrintSettings);
     const w = window.open("", "_blank");
     if (!w) { alert("Pop-up blocked — please allow pop-ups for this site."); return; }
     w.document.write(html);
     w.document.close();
   }
+
+  // ── Bluetooth thermal printer (TSPL over BLE) ──
+  // Reused from the working hardware-flash tool (MQTT/index (3).html).
+  // TSPL command language works with XPrinter, GAINSCHA and most 58 mm
+  // Bluetooth thermal printers. Three GATT service UUIDs cover the common
+  // chipsets. Once paired the printer object is cached in a ref so the
+  // second sticker in a bulk run reuses the connection without prompting.
+  const btPrinterRef = useRef({ device: null, char: null });
+
+  async function sendToBluetoothPrinter(bytes) {
+    const SVC_UUIDS = [
+      "000018f0-0000-1000-8000-00805f9b34fb",
+      "e7810a71-73ae-499d-8c15-faa9aef0c3f2",
+      "49535343-fe7d-4ae5-8fa9-9fafd205e455",
+    ];
+    let ch = btPrinterRef.current.char;
+    const dev = btPrinterRef.current.device;
+    // Re-use existing connection if still healthy
+    if (dev && dev.gatt.connected && ch) {
+      try { await ch.writeValue(new Uint8Array([0])); }
+      catch { ch = null; btPrinterRef.current = { device: null, char: null }; }
+    } else {
+      ch = null;
+    }
+    if (!ch) {
+      const device = await navigator.bluetooth.requestDevice({
+        filters: SVC_UUIDS.map((u) => ({ services: [u] })),
+        optionalServices: SVC_UUIDS,
+      });
+      const server = await device.gatt.connect();
+      let service = null;
+      for (const u of SVC_UUIDS) {
+        try { service = await server.getPrimaryService(u); break; } catch { /* try next */ }
+      }
+      if (!service) throw new Error("No compatible printer service found");
+      const chars = await service.getCharacteristics();
+      ch = chars.find((c) => c.properties.write || c.properties.writeWithoutResponse);
+      if (!ch) throw new Error("No writable characteristic on this printer");
+      btPrinterRef.current = { device, char: ch };
+      try { localStorage.setItem("btPrinterName", device.name || ""); } catch { /* non-fatal */ }
+    }
+    // BLE MTU is small — chunk to 200 bytes with a small delay so the
+    // printer buffer doesn't overrun.
+    for (let i = 0; i < bytes.length; i += 200) {
+      const chunk = bytes.slice(i, i + 200);
+      if (ch.properties.writeWithoutResponse) await ch.writeValueWithoutResponse(chunk);
+      else                                    await ch.writeValueWithResponse(chunk);
+      await new Promise((r) => setTimeout(r, 50));
+    }
+  }
+
+  // Build one TSPL job per sticker. Sticker size and inclusion of the
+  // device-name text follow the same rules the HTML path uses so the
+  // preview + Bluetooth output stay consistent.
+  function buildTsplForSticker(code, name) {
+    const { widthMm, heightMm } = resolveStickerDims();
+    const includeName = showNameOnSticker(widthMm, heightMm) && name;
+    // Printer is 203 DPI → 8 dots/mm. QR "cellWidth" 5 gives ~150 dots for
+    // a 25-cell QR — safely fits inside a 50×30 sticker with room for text.
+    const W = Math.round(widthMm * 8);
+    const H = Math.round(heightMm * 8);
+    const qrSize = Math.min(150, H - (includeName ? 60 : 40));
+    const qrX = Math.round((W - qrSize) / 2);
+    const qrY = 8;
+    // Font "3" ≈ 12 dots wide per char
+    const codeY   = qrY + qrSize + 8;
+    const codeX   = Math.max(4, Math.round((W - code.length * 12) / 2));
+    const nameY   = codeY + 26;
+    const nameStr = String(name || "");
+    const nameX   = Math.max(4, Math.round((W - nameStr.length * 10) / 2));
+
+    let tspl = "";
+    tspl += `SIZE ${widthMm} mm, ${heightMm} mm\r\n`;
+    tspl += `GAP 2 mm, 0 mm\r\n`;
+    tspl += `DIRECTION 1\r\n`;
+    tspl += `CLS\r\n`;
+    tspl += `QRCODE ${qrX},${qrY},M,5,A,0,"${code}"\r\n`;
+    tspl += `TEXT ${codeX},${codeY},"3",0,1,1,"${code}"\r\n`;
+    if (includeName) tspl += `TEXT ${nameX},${nameY},"2",0,1,1,"${nameStr}"\r\n`;
+    tspl += `PRINT 1\r\n`;
+    return new TextEncoder().encode(tspl);
+  }
+
+  async function printStickersBluetooth(stickers) {
+    if (!navigator.bluetooth) {
+      alert("This browser doesn't support Web Bluetooth. Use Chrome / Edge on desktop or Android.");
+      return;
+    }
+    setBtPrintBusy(true);
+    try {
+      for (const s of stickers) {
+        const bytes = buildTsplForSticker(s.code, s.name);
+        await sendToBluetoothPrinter(bytes);
+      }
+    } catch (err) {
+      // Reset on any error so the next click re-prompts pairing
+      btPrinterRef.current = { device: null, char: null };
+      alert(`Bluetooth print failed: ${err.message || err}`);
+    } finally {
+      setBtPrintBusy(false);
+    }
+  }
+
+  const [btPrintBusy, setBtPrintBusy] = useState(false);
 
   // Registered-tab filter bar (same UX as /admin/firmware — admin already
   // knows the pattern there). Lets admin slice the list before bulk-
@@ -729,6 +837,7 @@ export default function AdminDevices() {
             >
               <option value="thermal">Thermal roll (one per page)</option>
               <option value="grid">A4 grid (many per sheet)</option>
+              <option value="bluetooth">Bluetooth thermal printer</option>
             </select>
           </label>
           {qrPrintSettings.preset === "custom" && (
@@ -759,8 +868,17 @@ export default function AdminDevices() {
         <div className="text-[10px] text-gray-500 mt-2">
           Effective sticker: <strong>{dims.widthMm} × {dims.heightMm} mm</strong> ·
           {" "}{showNameOnSticker(dims.widthMm, dims.heightMm) ? "code + name" : "code only (size too small for name)"} ·
-          {" "}{qrPrintSettings.layout === "thermal" ? "one sticker per page" : "A4 grid"}
+          {" "}{qrPrintSettings.layout === "thermal"
+                ? "one sticker per page"
+                : qrPrintSettings.layout === "grid"
+                  ? "A4 grid"
+                  : "sends directly to a paired Bluetooth thermal printer (TSPL)"}
         </div>
+        {qrPrintSettings.layout === "bluetooth" && !navigator.bluetooth && (
+          <div className="text-[10px] text-red-600 mt-1">
+            This browser doesn't support Web Bluetooth. Use Chrome / Edge on desktop or Android.
+          </div>
+        )}
       </div>
     );
   }
@@ -1231,9 +1349,12 @@ export default function AdminDevices() {
             <div className="flex gap-2">
               <button onClick={() => {
                 const svg = grabQrSvg("qr-print-single", qrDevice);
-                if (!svg) { alert("QR not rendered yet — try again."); return; }
+                if (!svg && qrPrintSettings.layout !== "bluetooth") { alert("QR not rendered yet — try again."); return; }
                 printStickers([{ svg, code: qrDevice, name: d?.deviceName }]);
-              }} className="flex-1 bg-blue-600 text-white py-2 rounded-lg text-sm font-medium">Print Sticker</button>
+              }} disabled={btPrintBusy}
+                className="flex-1 bg-blue-600 text-white py-2 rounded-lg text-sm font-medium disabled:opacity-60">
+                {btPrintBusy ? "Printing…" : (qrPrintSettings.layout === "bluetooth" ? "Connect & Print" : "Print Sticker")}
+              </button>
               <button onClick={() => setQrDevice(null)} className="px-4 py-2 bg-gray-100 text-gray-600 rounded-lg text-sm">Close</button>
             </div>
           </div>
@@ -1425,10 +1546,15 @@ export default function AdminDevices() {
                     svg: grabQrSvg("qr-print-bulk", d.deviceCode),
                     code: d.deviceCode,
                     name: d.deviceName,
-                  })).filter((s) => s.svg);
-                  if (stickers.length === 0) { alert("QRs not rendered yet — try again."); return; }
-                  printStickers(stickers);
-                }} className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium">Print All</button>
+                  }));
+                  // Bluetooth path doesn't need pre-rendered SVGs; other paths do.
+                  const usable = qrPrintSettings.layout === "bluetooth" ? stickers : stickers.filter((s) => s.svg);
+                  if (usable.length === 0) { alert("QRs not rendered yet — try again."); return; }
+                  printStickers(usable);
+                }} disabled={btPrintBusy}
+                  className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium disabled:opacity-60">
+                  {btPrintBusy ? "Printing…" : (qrPrintSettings.layout === "bluetooth" ? "Connect & Print All" : "Print All")}
+                </button>
                 <button onClick={() => setShowBulkPrint(false)} className="px-4 py-2 bg-gray-100 text-gray-600 rounded-lg text-sm">Close</button>
               </div>
             </div>
