@@ -70,7 +70,7 @@
 
 // Device info
 #define DEVICE_NAME       "SenseFlow-Node-DIP"
-#define FIRMWARE_VERSION  "17.0.11"
+#define FIRMWARE_VERSION  "17.0.12"
 #define FIRMWARE_CODE     "SF-OSC-2026"
 #define AP_PASSWORD       "mvstech9867"
 
@@ -2723,7 +2723,18 @@ void setup() {
           apTimerEnded = false;
           Serial.println("AP 10-min countdown started");
         }
-        initFirebase();
+        // Only kick off Firebase if the router actually has WAN. Without
+        // this check, Firebase.signUp() blocks on TLS handshake for 60s+
+        // when the router has an SSID but no internet — causing a Task
+        // WDT reboot loop. The main loop's periodic recovery path will
+        // pick up Firebase init once internet comes back.
+        internetAvailable = checkInternet();
+        lastInternetCheck = millis();
+        if (internetAvailable) {
+          initFirebase();
+        } else {
+          Serial.println("[BOOT] WiFi up but no internet — deferring Firebase init");
+        }
       } else {
         Serial.printf("WiFi connection FAILED (status=%d, 90s timeout), AP mode active\n", WiFi.status());
         setLED(255, 255, 255);
@@ -2955,7 +2966,16 @@ void loop() {
         if (WiFi.status() == WL_CONNECTED) {
           Serial.printf("Reconnected! RSSI: %d dBm, IP: %s\n", WiFi.RSSI(), WiFi.localIP().toString().c_str());
           setGoogleDNS();
-          if (!firebaseReady) initFirebase();
+          // Same gate as boot path — never call initFirebase() unless
+          // the router actually has internet. The main-loop internet
+          // check (every 30s) will notice when WAN is back and either
+          // recover firebaseHealthy or call initFirebase() then.
+          if (!firebaseReady) {
+            internetAvailable = checkInternet();
+            lastInternetCheck = millis();
+            if (internetAvailable) initFirebase();
+            else Serial.println("[RECONNECT] No internet — deferring Firebase init");
+          }
         }
       }
     }

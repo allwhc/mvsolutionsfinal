@@ -56,7 +56,7 @@
 
 // Device info
 #define DEVICE_NAME       "SenseFlow-Valve"
-#define FIRMWARE_VERSION  "1.0.0"
+#define FIRMWARE_VERSION  "1.0.1"
 #define FIRMWARE_CODE     "SF-FBV-2026-01"
 #define AP_PASSWORD       "mvstech9867"
 
@@ -1206,7 +1206,18 @@ void setup() {
       Serial.println("WiFi connected! IP: " + WiFi.localIP().toString());
       setGoogleDNS();
       setLED(0, 255, 0);
-      initFirebase();
+      // Only kick off Firebase if the router actually has WAN. Without
+      // this check, Firebase.signUp() blocks on TLS handshake for 60s+
+      // when the router has an SSID but no internet — causing a Task
+      // WDT reboot loop. The main loop's periodic recovery path will
+      // pick up Firebase init once internet comes back.
+      internetAvailable = checkInternet();
+      lastInternetCheck = millis();
+      if (internetAvailable) {
+        initFirebase();
+      } else {
+        Serial.println("[BOOT] WiFi up but no internet — deferring Firebase init");
+      }
     } else {
       setLED(255, 255, 255);
     }
@@ -1467,7 +1478,15 @@ void loop() {
       if (mvs.hasSavedWiFi()) {
         if (mvs.connectToSavedWiFi(10)) {
           setGoogleDNS();
-          if (!firebaseReady) initFirebase();
+          // Same gate as boot path — never call initFirebase() unless
+          // the router actually has internet. Main-loop internet check
+          // (every 30s) picks up WAN restoration and calls init then.
+          if (!firebaseReady) {
+            internetAvailable = checkInternet();
+            lastInternetCheck = millis();
+            if (internetAvailable) initFirebase();
+            else Serial.println("[RECONNECT] No internet — deferring Firebase init");
+          }
         }
       }
     }
