@@ -302,7 +302,20 @@ export default function Dashboard() {
                 unobtrusive: no icon change, no colour indication when off.
                 Intended for admins / installers who know it exists. */}
             <button
-              onClick={() => setDebugMode(!debugMode)}
+              onClick={() => {
+                if (debugMode) {
+                  // Turning OFF is instant — no confirm needed.
+                  setDebugMode(false);
+                  return;
+                }
+                // Turning ON exposes raw sensor faults that customers
+                // are not meant to see. Gate with a confirm so a stray
+                // click doesn't accidentally flip a customer's dashboard
+                // into diagnostic view.
+                if (window.confirm("Turn ON probe diagnostic view? This will show raw sensor error states across all your tanks.")) {
+                  setDebugMode(true);
+                }
+              }}
               className={`p-2 rounded-lg transition-colors ${
                 debugMode ? "bg-purple-100 text-purple-700" : "bg-gray-100 text-gray-500 hover:bg-gray-200"
               }`}
