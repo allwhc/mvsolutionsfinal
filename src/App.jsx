@@ -1,5 +1,6 @@
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { AuthProvider, useAuth } from "./context/AuthContext";
+import { DebugModeProvider } from "./context/DebugModeContext";
 import ProtectedRoute from "./components/Layout/ProtectedRoute";
 import AppLayout from "./components/Layout/AppLayout";
 import LoginForm from "./components/Auth/LoginForm";
@@ -34,6 +35,7 @@ export default function App() {
   return (
     <BrowserRouter>
       <AuthProvider>
+        <DebugModeProvider>
         <NotificationListener />
         <Routes>
           {/* Public routes */}
@@ -69,6 +71,7 @@ export default function App() {
           <Route path="/" element={<ProtectedRoute><HomeRedirect /></ProtectedRoute>} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
+        </DebugModeProvider>
       </AuthProvider>
     </BrowserRouter>
   );

@@ -216,31 +216,35 @@ export const onDeviceLiveWrite = onValueWritten(
     const now = Date.now();
     const patch = {};
 
-    // ── level_empty
-    if (pct <= LOW) {
-      if (!state.emptySince) {
-        patch.emptySince = now;
-      }
-    } else {
-      if (state.emptySince) patch.emptySince = null;
-    }
-
-    // ── level_full
-    if (pct >= HIGH) {
-      if (!state.fullSince) {
-        patch.fullSince = now;
-      }
-    } else {
-      if (state.fullSince) patch.fullSince = null;
-    }
-
-    // ── sensor_error (flag bit 0)
+    // If sensor_error flag is set, the reported pct is derived from a
+    // non-consecutive probe pattern (probe fault) and cannot be trusted
+    // — do NOT fire empty/full alerts based on it. Clear any pending
+    // empty/full since-timestamps so the dispatcher won't send anything
+    // stale once the error clears.
     const hasError = (flags & 0x01) === 0x01;
     if (hasError) {
-      if (!state.errorSince) patch.errorSince = now;
+      if (state.emptySince) patch.emptySince = null;
+      if (state.fullSince)  patch.fullSince  = null;
     } else {
-      if (state.errorSince) patch.errorSince = null;
+      // ── level_empty
+      if (pct <= LOW) {
+        if (!state.emptySince) patch.emptySince = now;
+      } else {
+        if (state.emptySince)  patch.emptySince = null;
+      }
+      // ── level_full
+      if (pct >= HIGH) {
+        if (!state.fullSince) patch.fullSince = now;
+      } else {
+        if (state.fullSince)  patch.fullSince = null;
+      }
     }
+
+    // sensor_error notification intentionally NOT dispatched. Customer
+    // never sees this event — the dashboard now shows the resolved level
+    // (highest wet probe) instead of ERR, so a probe fault is invisible
+    // to the customer. Admin / installer diagnose via the hidden debug
+    // toggle on the dashboard, not push notifications.
 
     if (Object.keys(patch).length > 0) await writeEventState(code, patch);
 
@@ -273,7 +277,6 @@ export const onDeviceLiveWrite = onValueWritten(
 
     await maybeDispatch("level_empty", s.emptySince);
     await maybeDispatch("level_full", s.fullSince);
-    await maybeDispatch("sensor_error", s.errorSince);
   }
 );
 

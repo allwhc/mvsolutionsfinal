@@ -12,6 +12,8 @@ import { db } from "../firebase/config";
 import { sendRefreshCommand, sendRestartCommand, sendTestCommand, sendValveCommand, listenToValveConfig, setValveConfig, sfsSetAutoMode, sfsForcePumpRun, listenToSfsLogs, getDeviceBootLog, getDeviceDiagnosticsNow, requestDiagnosticsRefresh, requestDiagnosticsClear } from "../firebase/rtdb";
 import DeviceCard from "../components/DeviceCard/DeviceCard";
 import AnalyticsChart, { generateCSV, downloadCSV } from "../components/Analytics/AnalyticsChart";
+import { useDebugMode } from "../context/DebugModeContext";
+import { resolveLevel } from "../utils/resolveLevel";
 
 // Notification rule catalogue — kept here so the UI knows what to show and
 // the Cloud Function dispatcher uses the same keys / default delays.
@@ -92,6 +94,7 @@ function fmtLitres(L) {
 export default function DeviceDetail() {
   const { code } = useParams();
   const { user, isSuperAdmin } = useAuth();
+  const { debugMode } = useDebugMode();
   const { live, info, isOnline } = useDevice(code);
   const [catalog, setCatalog] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -292,14 +295,21 @@ export default function DeviceDetail() {
               {/* Current volume — only meaningful when device is online and
                   reporting a fresh pct. Hide when offline so we don't show
                   a stale derived number. */}
-              {isOnline && typeof live?.confirmedPct === "number" && (
-                <>
-                  <span className="text-gray-500">Current Volume</span>
-                  <span className="text-gray-900">
-                    {fmtLitres(Math.round((live.confirmedPct / 100) * tankCapacityLitres))}
-                  </span>
-                </>
-              )}
+              {isOnline && typeof live?.confirmedPct === "number" && (() => {
+                const sType = info?.sensorType ?? catalog.sensorType ?? 1;
+                const sCount = info?.sensorCount ?? catalog.sensorCount ?? 4;
+                const displayPct = (sType === 1 && !debugMode)
+                  ? resolveLevel(live.sensorBits ?? 0, sCount).pct
+                  : live.confirmedPct;
+                return (
+                  <>
+                    <span className="text-gray-500">Current Volume</span>
+                    <span className="text-gray-900">
+                      {fmtLitres(Math.round((displayPct / 100) * tankCapacityLitres))}
+                    </span>
+                  </>
+                );
+              })()}
             </>
           )}
           <span className="text-gray-500">Firmware</span>
@@ -941,7 +951,13 @@ export default function DeviceDetail() {
               )}
             </div>
           </div>
-          <AnalyticsChart key={chartKey} deviceCode={code} tankCapacityLitres={tankCapacityLitres} />
+          <AnalyticsChart
+            key={chartKey}
+            deviceCode={code}
+            tankCapacityLitres={tankCapacityLitres}
+            sensorType={info?.sensorType ?? catalog.sensorType ?? 1}
+            sensorCount={info?.sensorCount ?? catalog.sensorCount ?? 4}
+          />
         </div>
       )}
 

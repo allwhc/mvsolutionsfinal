@@ -3,6 +3,8 @@ import { Link } from "react-router-dom";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 import { getHistoryByRange } from "../../firebase/rtdb";
 import { RANGES, generateInsights } from "../../utils/analyticsInsights";
+import { useDebugMode } from "../../context/DebugModeContext";
+import { resolveLevel } from "../../utils/resolveLevel";
 
 // Lightweight analytics popup. Fires a Firebase read only AFTER the user
 // clicks the chart icon on a dashboard tile (passed as `deviceCode`), so
@@ -42,7 +44,8 @@ function interpolate(history, startTs, endTs, stepMs) {
   return merged;
 }
 
-export default function DeviceAnalyticsModal({ deviceCode, deviceName, tankCapacityLitres, currentPct, onClose }) {
+export default function DeviceAnalyticsModal({ deviceCode, deviceName, tankCapacityLitres, currentPct, currentBits, sensorType = 1, sensorCount = 4, onClose }) {
+  const { debugMode } = useDebugMode();
   const [range, setRange] = useState("24h");
   // Per-range cache so switching tabs back to a previously-loaded range
   // doesn't re-hit Firebase. Cleared when the modal unmounts.
@@ -50,7 +53,27 @@ export default function DeviceAnalyticsModal({ deviceCode, deviceName, tankCapac
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
-  const history = cache[range];
+  const rawHistory = cache[range];
+  // Same "resolved level" transform as AnalyticsChart on Device Detail —
+  // hides probe faults from the customer, opt-in to see raw via the
+  // dashboard header debug toggle. DIP only; ultrasonic passes through.
+  const history = useMemo(() => {
+    if (rawHistory == null) return rawHistory;
+    if (sensorType !== 1 || debugMode) return rawHistory;
+    return rawHistory.map((h) => {
+      if (h.bits == null) return h;
+      const { pct } = resolveLevel(h.bits, sensorCount);
+      return { ...h, pct };
+    });
+  }, [rawHistory, sensorType, sensorCount, debugMode]);
+
+  // Apply the same transform to the live "seed" so a device with a
+  // faulty probe doesn't paint 0% across the chart when history is empty.
+  const seedPct = useMemo(() => {
+    if (currentPct == null) return null;
+    if (sensorType !== 1 || debugMode || currentBits == null) return currentPct;
+    return resolveLevel(currentBits, sensorCount).pct;
+  }, [currentPct, currentBits, sensorType, sensorCount, debugMode]);
 
   // Lazy load — only fires Firebase read for the currently-visible range.
   useEffect(() => {
@@ -85,10 +108,11 @@ export default function DeviceAnalyticsModal({ deviceCode, deviceName, tankCapac
   }, [onClose]);
 
   const insights = useMemo(
-    // Pass currentPct so sparse-history windows still get a "tank at X%"
-    // message instead of a generic steady bullet.
-    () => (history != null ? generateInsights(history, tankCapacityLitres, currentPct) : null),
-    [history, tankCapacityLitres, currentPct]
+    // Pass the resolved seedPct so sparse-history windows still get a
+    // "tank at X%" message with the same resolved level the dashboard
+    // shows — never the raw firmware pct that would confuse the customer.
+    () => (history != null ? generateInsights(history, tankCapacityLitres, seedPct) : null),
+    [history, tankCapacityLitres, seedPct]
   );
 
   // Interpolated chart data — matches Device Detail chart behaviour.

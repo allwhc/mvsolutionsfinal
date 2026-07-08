@@ -7,6 +7,8 @@ import {
   generateInsights,
   MIN_POINTS_FOR_INSIGHTS,
 } from "../../utils/analyticsInsights";
+import { useDebugMode } from "../../context/DebugModeContext";
+import { resolveLevel } from "../../utils/resolveLevel";
 
 // Merge actual history entries with grid timestamps (every stepMs)
 // Returns array of { ts, pct, source } — source is "actual" or "interpolated"
@@ -65,9 +67,22 @@ function interpolate(history, startTs, endTs, stepMs) {
 
 
 
-export default function AnalyticsChart({ deviceCode, tankCapacityLitres, onHistoryLoaded }) {
+export default function AnalyticsChart({ deviceCode, tankCapacityLitres, sensorType = 1, sensorCount = 4, onHistoryLoaded }) {
+  const { debugMode } = useDebugMode();
   const [range, setRange] = useState("24h");
-  const [history, setHistory] = useState([]);
+  const [rawHistory, setRawHistory] = useState([]);
+  // Apply resolved-level transform for DIP sensors when not in debug mode.
+  // Ultrasonic sensors + debug mode fall through with raw pct so the
+  // installer / admin can see the true firmware output.
+  const history = useMemo(() => {
+    if (sensorType !== 1 || debugMode) return rawHistory;
+    return rawHistory.map((h) => {
+      if (h.bits == null) return h;   // pre-migration entries stay as-is
+      const { pct } = resolveLevel(h.bits, sensorCount);
+      return { ...h, pct };
+    });
+  }, [rawHistory, sensorType, sensorCount, debugMode]);
+  const setHistory = setRawHistory;
   const [loading, setLoading] = useState(true);
   const [actualsOnly, setActualsOnly] = useState(false);
   const [showInsights, setShowInsights] = useState(false);

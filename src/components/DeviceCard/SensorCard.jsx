@@ -3,6 +3,8 @@ import { Link } from "react-router-dom";
 import TankViz, { formatTimestamp } from "./TankViz";
 import CleaningBadge from "./CleaningBadge";
 import { sendRefreshCommand, listenToValveConfig } from "../../firebase/rtdb";
+import { useDebugMode } from "../../context/DebugModeContext";
+import { resolveLevel } from "../../utils/resolveLevel";
 
 // Determine card flash class — cleaning never causes flash, only badge.
 // Thresholds come from React state on DeviceDetail and are initialised to
@@ -31,13 +33,31 @@ function getAlertFlash({ sensorError, sensorOffline, confirmedPct, alertLowPct, 
 // Detail. Dashboard supplies it; Device Detail leaves it out so its inline
 // chart icon (if any) keeps original behavior.
 export default function SensorCard({ deviceCode, deviceName, live, info, catalog, isOnline, lastCleanedAt, cleanIntervalDays, tankCapacityLitres, alertLowPct, alertHighPct, onOpenAnalytics }) {
+  const { debugMode } = useDebugMode();
   const sensorType = info?.sensorType ?? catalog?.sensorType ?? 1;
   const sensorCount = info?.sensorCount ?? catalog?.sensorCount ?? 4;
-  const sensorBits = live?.sensorBits ?? 0;
-  const confirmedPct = live?.confirmedPct ?? 0;
+  const rawBits = live?.sensorBits ?? 0;
+  const rawPct = live?.confirmedPct ?? 0;
   const flags = live?.flags ?? 0;
-  const sensorError = !!(flags & 0x01);
+  const rawSensorError = !!(flags & 0x01);
   const sensorOffline = !!(flags & 0x20);
+
+  // For DIP sensors: normally use the "highest wet probe" resolved level
+  // so a faulty lower probe doesn't wreck the customer's view. In debug
+  // mode, expose the raw firmware bits so an installer can spot the
+  // faulty probe. Ultrasonic sensors have no probe concept — pass raw
+  // through untouched.
+  let sensorBits, confirmedPct, sensorError;
+  if (sensorType === 1 && !debugMode) {
+    const { pct, filledBits } = resolveLevel(rawBits, sensorCount);
+    sensorBits = filledBits;
+    confirmedPct = pct;
+    sensorError = false;
+  } else {
+    sensorBits = rawBits;
+    confirmedPct = rawPct;
+    sensorError = rawSensorError;
+  }
 
   const flashClass = isOnline ? getAlertFlash({
     sensorError, sensorOffline, confirmedPct,
