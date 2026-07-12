@@ -2934,6 +2934,39 @@ void loop() {
     safeRestart();
   }
 
+  // ── Cloud-stale self-heal watchdog ──────────────────────────────────
+  // Field devices have gone "half-alive" — SSID still broadcasting, LED
+  // still cycling, main loop still feeding Task WDT — but AP page won't
+  // load and cloud shows offline. Only a manual power cycle recovered.
+  //
+  // Root cause is almost certainly an internal Firebase library stall
+  // (TLS retry loop or heap fragmentation preventing allocation) that
+  // keeps calling delay() often enough to feed Task WDT but never makes
+  // progress. Task WDT can't catch this because we ARE resetting it.
+  //
+  // Detection: if network is confirmed up but we haven't successfully
+  // pushed to /live in > 20 min (4x the 5-min heartbeat), the Firebase
+  // layer is stuck. Force a clean safeRestart() to recover — that's the
+  // exact recipe that fixed the 2 stuck devices Vishal reported.
+  //
+  // Guard: only fires AFTER Firebase has been healthy at least once
+  // (lastSuccessfulPush != 0). Never fires during OTA or the first
+  // few minutes on a fresh boot.
+  const unsigned long CLOUD_STALE_MS = 20UL * 60UL * 1000UL;   // 20 min
+  static unsigned long lastCloudCheck = 0;
+  if (!mvsota.isUpdating() && now - lastCloudCheck >= 60000UL) {
+    lastCloudCheck = now;
+    if (lastSuccessfulPush != 0 &&                  // Firebase was healthy before
+        WiFi.status() == WL_CONNECTED &&            // network is up now
+        internetAvailable &&                        // DNS-reachable now
+        now - lastSuccessfulPush > CLOUD_STALE_MS) {
+      unsigned long staleMin = (now - lastSuccessfulPush) / 60000UL;
+      Serial.printf("[WATCHDOG] Cloud stale %lu min despite network up — self-restart\n", staleMin);
+      delay(500);
+      safeRestart();
+    }
+  }
+
   // MvsConnect always runs (AP mode web server)
   mvs.handle();
   if (!mvsota.isUpdating()) mvsota.handle();
