@@ -47,6 +47,7 @@ export default function AdminFirmware() {
   const [filterProbes, setFilterProbes] = useState("all");
   const [filterFirmware, setFilterFirmware] = useState("");
   const [filterGroup, setFilterGroup] = useState("");
+  const [filterStatus, setFilterStatus] = useState("all");   // all/online/offline
   const [searchText, setSearchText] = useState("");
 
   // Selection
@@ -122,6 +123,11 @@ export default function AdminFirmware() {
       if (filterProbes !== "all" && String(d.sensorCount ?? info.sensorCount) !== filterProbes) return false;
       if (filterFirmware && !String(info.firmwareVersion || "").toLowerCase().includes(filterFirmware.toLowerCase())) return false;
       if (filterGroup && !String(d.groupId || "").toLowerCase().includes(filterGroup.toLowerCase())) return false;
+      if (filterStatus !== "all") {
+        const online = isDeviceOnline(info);
+        if (filterStatus === "online"  && !online) return false;
+        if (filterStatus === "offline" &&  online) return false;
+      }
       if (searchText) {
         const t = searchText.toLowerCase();
         const blob = `${d.deviceCode} ${d.deviceName || ""}`.toLowerCase();
@@ -130,12 +136,12 @@ export default function AdminFirmware() {
       return true;
     });
     return out;
-  }, [devices, infoMap, filterClass, filterSensorType, filterProbes, filterFirmware, filterGroup, searchText]);
+  }, [devices, infoMap, filterClass, filterSensorType, filterProbes, filterFirmware, filterGroup, filterStatus, searchText]);
 
   // Reset selection when filter changes
   useEffect(() => {
     setSelected(new Set());
-  }, [filterClass, filterSensorType, filterProbes, filterFirmware, filterGroup]);
+  }, [filterClass, filterSensorType, filterProbes, filterFirmware, filterGroup, filterStatus]);
 
   function toggleSelect(code) {
     setSelected((s) => {
@@ -293,6 +299,14 @@ export default function AdminFirmware() {
           <label className="flex flex-col">
             <span className="text-xs text-gray-500 mb-1">Group ID</span>
             <input value={filterGroup} onChange={(e) => setFilterGroup(e.target.value)} placeholder="group prefix" className="border rounded px-2 py-1" />
+          </label>
+          <label className="flex flex-col">
+            <span className="text-xs text-gray-500 mb-1">Status</span>
+            <select value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)} className="border rounded px-2 py-1">
+              <option value="all">All</option>
+              <option value="online">Online only</option>
+              <option value="offline">Offline only</option>
+            </select>
           </label>
           <label className="flex flex-col md:col-span-2">
             <span className="text-xs text-gray-500 mb-1">Search (code or name)</span>
