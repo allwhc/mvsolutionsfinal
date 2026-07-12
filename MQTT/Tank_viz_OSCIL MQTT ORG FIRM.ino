@@ -70,7 +70,7 @@
 
 // Device info
 #define DEVICE_NAME       "SenseFlow-Node-DIP"
-#define FIRMWARE_VERSION  "17.0.12"
+#define FIRMWARE_VERSION  "17.0.13"
 #define FIRMWARE_CODE     "SF-OSC-2026"
 #define AP_PASSWORD       "mvstech9867"
 
@@ -84,7 +84,7 @@
   #define MQTT_DISCOVERY_MSG         "SENSEFLOW_DISCOVER"
   #define MQTT_DISCOVERY_REPLY       "SENSEFLOW_HERE"
   #define MQTT_DISCOVERY_INTERVAL_MS 60000
-  // Rotate MQTT_SECRET by reflashing all devices + updating pi_gateway.py.
+  // Rotate MQTT_SECRET by re??flashing all devices + updating pi_gateway.py.
   #define MQTT_SECRET             "mvs_kalp_2026_xY9k_rotate_me"
 #else
   // Cloud mode — direct connect to HiveMQ / EMQX / VPS Mosquitto via TLS.
@@ -1708,6 +1708,9 @@ h2{font-size:14px;font-weight:600;color:#666;margin-bottom:8px}
   html += "<span>AP active for 10 min after each boot</span></label>";
   html += "<p style='font-size:11px;color:#888;margin:6px 0 10px'>10-min mode auto-extends while you're on this page.</p>";
 
+  // Test LED button — installer identifies which physical device this AP
+  // belongs to. Uses fetch() so the page doesn't navigate away.
+  html += "<button class='btn btn-blue' id='testLedBtn' onclick=\"var b=this;b.disabled=true;var o=b.textContent;b.textContent='Blinking...';fetch('/testled').finally(()=>{setTimeout(()=>{b.disabled=false;b.textContent=o},2000)})\">Test LED (Identify Device)</button>";
   html += "<a href='/restart'><button class='btn btn-red'>Restart Device</button></a>";
   html += "</div>";
 
@@ -2553,6 +2556,17 @@ void setup() {
     srv->send(200, "text/html", "<html><body><h2>Restarting...</h2><script>setTimeout(()=>history.back(),3000)</script></body></html>");
     delay(1000);
     safeRestart();
+  });
+
+  // Test LED — triggers the same rainbow blink as the cloud test command.
+  // Lets an installer confirm which physical device they're connected to
+  // when multiple SenseFlow APs are visible in the same area.
+  mvs.addEndpoint("/testled", []() {
+    WebServer* srv = mvs.getServer();
+    testBlinkActive = true;
+    testBlinkStart  = millis();
+    srv->send(200, "application/json", "{\"ok\":true}");
+    Serial.println("[TEST] LED rainbow blink triggered from AP page");
   });
 
   mvs.addEndpoint("/sstatus", []() {

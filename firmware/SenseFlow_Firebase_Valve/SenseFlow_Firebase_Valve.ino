@@ -56,7 +56,7 @@
 
 // Device info
 #define DEVICE_NAME       "SenseFlow-Valve"
-#define FIRMWARE_VERSION  "1.0.1"
+#define FIRMWARE_VERSION  "1.0.2"
 #define FIRMWARE_CODE     "SF-FBV-2026-01"
 #define AP_PASSWORD       "mvstech9867"
 
@@ -1025,6 +1025,8 @@ h2{font-size:13px;font-weight:600;color:#94a3b8;margin-bottom:8px}
   // Actions
   html += "<div class='card'>";
   html += "<a href='/api/force-push'><button class='btn btn-blue'>Force Push</button></a>";
+  // Test LED — installer identifies which physical device this AP is on.
+  html += "<button class='btn btn-blue' onclick=\"var b=this;b.disabled=true;var o=b.textContent;b.textContent='Blinking...';fetch('/testled').finally(()=>{setTimeout(()=>{b.disabled=false;b.textContent=o},2000)})\">Test LED (Identify Device)</button>";
   html += "<a href='/restart'><button class='btn btn-red'>Restart</button></a>";
   html += "</div>";
 
@@ -1157,6 +1159,17 @@ void setup() {
     WebServer* srv = mvs.getServer();
     srv->send(200, "text/html", "<html><body style='background:#1a1a2e;color:#fff;text-align:center;padding:40px'><h2>Restarting...</h2></body></html>");
     delay(1000); ESP.restart();
+  });
+
+  // Test LED — same rainbow blink as cloud test command. Lets an
+  // installer confirm which physical device this AP belongs to when
+  // multiple SenseFlow APs are visible in the same area.
+  mvs.addEndpoint("/testled", []() {
+    WebServer* srv = mvs.getServer();
+    testBlinkActive = true;
+    testBlinkStart  = millis();
+    srv->send(200, "application/json", "{\"ok\":true}");
+    Serial.println("[TEST] LED rainbow blink triggered from AP page");
   });
 
   mvs.addEndpoint("/api/valve", []() {
