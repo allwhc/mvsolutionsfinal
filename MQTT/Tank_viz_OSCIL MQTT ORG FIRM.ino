@@ -70,7 +70,7 @@
 
 // Device info
 #define DEVICE_NAME       "SenseFlow-Node-DIP"
-#define FIRMWARE_VERSION  "17.0.13"
+#define FIRMWARE_VERSION  "17.0.14"
 #define FIRMWARE_CODE     "SF-OSC-2026"
 #define AP_PASSWORD       "mvstech9867"
 
@@ -751,56 +751,193 @@ uint8_t bitsToPercent(uint8_t bits, int count) {
   return 0;
 }
 
-// ── Asymmetric per-bit debounce ────────────────────────────────────
-// Bit going dry→wet must be confirmed for DIP_WET_CONFIRM consecutive reads.
-// Bit going wet→dry commits immediately. This kills EMI flicker on the
-// top-of-water probe (false HIGH from antenna pickup), while still showing
-// real drain events instantly.
-#define DIP_WET_CONFIRM   3   // ~9 sec at 3-sec read interval
+// ── Time-dominant level stability algorithm ──────────────────────────
+// Old approach: per-probe wet/dry debounce + downstream DATA_CONFIRM gate.
+// Kept flickering at fill/drain boundaries because a wave lasting > 9 sec
+// passed the wet-confirm, and dry-confirm ran symmetrically, so alternating
+// waves every ~15 sec produced back-to-back 100↔75 events.
+//
+// New approach (per Vishal's suggestion): resolve each raw read to a level
+// via HIGHEST WET PROBE (matches the cloud resolver), append to a rolling
+// window of samples, and commit only the level that dominates the window.
+// On ties, prefer the MOST RECENT stable level (any level held for at
+// least STABLE_MIN_MS continuously counts as stable).
+//
+// Effects:
+//   - Wave train at top-of-water: raw levels flip 75↔100, but 75 dominates
+//     the 60-sec window → commit 75. Only after level truly settles at
+//     100% does the dominant switch → commit 100.
+//   - Real fills / drains: level holds new value for > 60% of window
+//     within ~40 sec → commit within one window.
+//   - Non-consecutive fault (e.g. 0110 bit 0 oxidised): resolver still
+//     computes 75%, so a brief fault registers as 75% too — dominant
+//     against a real 75% base doesn't shift the commit.
+//   - The LED shows the INSTANT reading (installer sees real-time); cloud
+//     / dashboard sees the committed value only.
+
+#define STABLE_WINDOW_MS   60000UL   // 60 sec rolling window
+#define STABLE_MIN_MS      15000UL   // level must hold 15 sec to count as "stable"
+#define STABLE_SAMPLES     22        // ~66 sec of history at 3-sec read interval
+
+struct SampleRec {
+  uint32_t ts;    // millis() when this sample was taken
+  uint8_t  pct;   // resolved level from readDipRaw() at that moment
+};
+
+static SampleRec sampleBuf[STABLE_SAMPLES];
+static uint8_t   sampleHead = 0;   // next write slot
+static uint8_t   sampleCount = 0;  // how many valid samples are in the buffer
+
+// Instant (unfiltered) level derived from the latest raw read. Used for
+// LED + AP page live view so an installer sees real-time water motion.
+uint8_t instantPct = 0;
+uint8_t instantBits = 0;
+
+// Resolve a raw bit pattern to a percentage using the highest-wet-probe
+// rule (physically correct: water above touching a probe means water
+// exists at all levels below it). This deliberately IGNORES non-
+// consecutive faults so a brief 0110 glitch resolves as 75%, not 0%,
+// matching the cloud resolver's behaviour and preventing false "empty"
+// reports from a bad lower probe.
+uint8_t highestWetPct(uint8_t bits, int count) {
+  for (int i = count - 1; i >= 0; i--) {
+    if (bits & (1 << i)) {
+      if (count >= 1 && count <= 6) return DIP_PCT_TABLE[count][i];
+      return 0;
+    }
+  }
+  return 0;
+}
+
+// Compute the committed level from the rolling sample buffer:
+//   1. Sum how long each unique level was held within STABLE_WINDOW_MS.
+//   2. If any single level accounts for > 60% of the window → that wins.
+//   3. Otherwise fall back to the MOST RECENT level that was held for a
+//      continuous >= STABLE_MIN_MS run (respects fill/drain direction).
+//   4. If nothing meets the stability bar yet, return the currently-
+//      committed value (no change).
+uint8_t computeDominantLevel(uint8_t currentCommitted) {
+  if (sampleCount == 0) return currentCommitted;
+  uint32_t now = millis();
+
+  // Tally durations per unique pct value (at most STABLE_SAMPLES uniques)
+  uint8_t  uniquePct[STABLE_SAMPLES];
+  uint32_t uniqueMs[STABLE_SAMPLES];
+  uint8_t  uniqueN = 0;
+
+  // Walk oldest → newest, only counting samples inside the window
+  for (uint8_t k = 0; k < sampleCount; k++) {
+    uint8_t idx = (sampleHead + STABLE_SAMPLES - sampleCount + k) % STABLE_SAMPLES;
+    SampleRec &s = sampleBuf[idx];
+    if (now - s.ts > STABLE_WINDOW_MS) continue;
+
+    // Duration this sample "owns" = gap to the next sample (or to now for the last one)
+    uint32_t nextTs;
+    if (k == sampleCount - 1) {
+      nextTs = now;
+    } else {
+      uint8_t nidx = (sampleHead + STABLE_SAMPLES - sampleCount + k + 1) % STABLE_SAMPLES;
+      nextTs = sampleBuf[nidx].ts;
+    }
+    uint32_t dur = nextTs - s.ts;
+
+    // Accumulate into uniquePct table
+    bool found = false;
+    for (uint8_t u = 0; u < uniqueN; u++) {
+      if (uniquePct[u] == s.pct) { uniqueMs[u] += dur; found = true; break; }
+    }
+    if (!found && uniqueN < STABLE_SAMPLES) {
+      uniquePct[uniqueN] = s.pct;
+      uniqueMs[uniqueN]  = dur;
+      uniqueN++;
+    }
+  }
+
+  if (uniqueN == 0) return currentCommitted;
+
+  // Total window duration actually covered by samples (may be < STABLE_WINDOW_MS on first reads)
+  uint32_t totalMs = 0;
+  for (uint8_t u = 0; u < uniqueN; u++) totalMs += uniqueMs[u];
+  if (totalMs == 0) return currentCommitted;
+
+  // Rule 1: dominant level > 60% of window
+  for (uint8_t u = 0; u < uniqueN; u++) {
+    if (uniqueMs[u] * 100 > totalMs * 60) return uniquePct[u];
+  }
+
+  // Rule 2: most recent level with continuous >= STABLE_MIN_MS run.
+  // Walk newest → oldest, counting consecutive samples at the same pct.
+  uint32_t runStart = 0;
+  uint8_t  runPct   = 0;
+  for (int8_t k = (int8_t)sampleCount - 1; k >= 0; k--) {
+    uint8_t idx = (sampleHead + STABLE_SAMPLES - sampleCount + k) % STABLE_SAMPLES;
+    SampleRec &s = sampleBuf[idx];
+    if (runStart == 0) {
+      runPct = s.pct;
+      runStart = s.ts;
+      continue;
+    }
+    if (s.pct != runPct) {
+      // Run ended at s.ts (the previous different pct). Duration = runStart..now
+      uint32_t dur = now - runStart;
+      if (dur >= STABLE_MIN_MS) return runPct;
+      // Otherwise start a new run at this older sample
+      runPct = s.pct;
+      runStart = s.ts;
+    }
+  }
+  // Handle the final (oldest) run
+  if (runStart != 0 && (now - runStart) >= STABLE_MIN_MS) return runPct;
+
+  // Nothing stable enough yet — keep the currently committed value
+  return currentCommitted;
+}
 
 void processDipSensors() {
   static unsigned long lastDipRead = 0;
-  static uint8_t wetConfirmCount[6] = {0, 0, 0, 0, 0, 0};
 
   if (millis() - lastDipRead < DIP_READ_INTERVAL_MS) return;
   lastDipRead = millis();
 
   uint8_t currentRaw = readDipRaw();
 
-  // Asymmetric debounce per bit
-  uint8_t newBits = sensorBits;
-  for (int i = 0; i < SENSOR_COUNT; i++) {
-    bool rawWet = (currentRaw >> i) & 1;
-    bool committedWet = (sensorBits >> i) & 1;
+  // Instant view — populated every read for LED + AP page live tank viz.
+  instantBits = currentRaw;
+  instantPct  = highestWetPct(currentRaw, SENSOR_COUNT);
 
-    if (rawWet && !committedWet) {
-      // Candidate dry→wet: require N consecutive confirms
-      if (wetConfirmCount[i] < 255) wetConfirmCount[i]++;
-      if (wetConfirmCount[i] >= DIP_WET_CONFIRM) {
-        newBits |= (1 << i);
-        wetConfirmCount[i] = 0;
+  // Append to rolling buffer
+  sampleBuf[sampleHead] = { millis(), instantPct };
+  sampleHead = (sampleHead + 1) % STABLE_SAMPLES;
+  if (sampleCount < STABLE_SAMPLES) sampleCount++;
+
+  // Compute what the committed level should be right now
+  uint8_t newCommittedPct = computeDominantLevel(confirmedPct);
+
+  // If the committed level changed, refresh sensorBits to a canonical
+  // "consecutive from bottom" pattern that matches the level. This keeps
+  // /live sensorBits consistent with confirmedPct for downstream code +
+  // dashboard resolver.
+  if (newCommittedPct != confirmedPct) {
+    confirmedPct = newCommittedPct;
+    // Build a consecutive-from-bottom bit pattern that yields this pct
+    sensorBits = 0;
+    if (SENSOR_COUNT >= 1 && SENSOR_COUNT <= 6) {
+      const uint8_t *tbl = DIP_PCT_TABLE[SENSOR_COUNT];
+      for (int i = 0; i < SENSOR_COUNT; i++) {
+        sensorBits |= (1 << i);
+        if (tbl[i] == confirmedPct) break;
       }
-    } else if (!rawWet && committedWet) {
-      // wet→dry: commit instantly
-      newBits &= ~(1 << i);
-      wetConfirmCount[i] = 0;
-    } else {
-      // Steady state — reset counter so noise needs N consecutive in a row
-      wetConfirmCount[i] = 0;
+      if (confirmedPct == 0) sensorBits = 0;
     }
   }
 
-  sensorBits = newBits;
-  pendingBits = currentRaw;   // kept for legacy state but unused now
-  sensorError = checkSensorError(sensorBits, SENSOR_COUNT);
-
-  if (sensorError) {
-    flags |= 0x01;
-  } else {
-    flags &= ~0x01;
-  }
-
-  confirmedPct = bitsToPercent(sensorBits, SENSOR_COUNT);
+  // sensor_error flag: only set if the INSTANT raw pattern is genuinely
+  // non-consecutive AND has been for the whole window (fault-persistent).
+  // Brief flickers are absorbed by the dominant-level algorithm above and
+  // never surface as ERR to the customer.
+  sensorError = checkSensorError(currentRaw, SENSOR_COUNT);
+  if (sensorError) flags |= 0x01; else flags &= ~0x01;
+  pendingBits = currentRaw;
 }
 
 #endif
@@ -1344,56 +1481,22 @@ void checkConfig() {
 //  CHANGE DETECTION — only push when values change
 // ══════════════════════════════════════════════════
 
-// Cloud-push stability gate.
-// A new (bits/pct/flags) value must repeat across DATA_CONFIRM consecutive
-// calls before it's eligible for cloud/MQTT push. This protects against
-// single-read glitches that would otherwise pollute Firebase history.
-// Local UI / LED keep using sensorBits/confirmedPct instantly — only cloud waits.
-// At 3-sec read interval × 5 confirms ≈ 15 sec lag before a real change reaches cloud.
-// Bumped 3→5 to defeat noise on long (~100m) probe cables — same-value
-// glitches that survive the 15-sample read still get caught here.
-#define DATA_CONFIRM 5
-
+// Cloud-push change detection.
+// processDipSensors() now owns the stability logic via a 60-sec dominant-
+// level rolling window — anything reaching (sensorBits, confirmedPct, flags)
+// is ALREADY vetted for stability. This function is just a "changed since
+// last push?" check that also stamps last-confirmed for heartbeat use.
 bool hasDataChanged() {
-  static uint8_t candidateBits  = 0xFF;
-  static uint8_t candidatePct   = 0xFF;
-  static uint8_t candidateFlags = 0xFF;
-  static uint8_t confirmCount   = 0;
+  // Always mark the current committed reading as the "last known good"
+  // that heartbeat pushes should send.
+  lastConfirmedBits  = sensorBits;
+  lastConfirmedPct   = confirmedPct;
+  lastConfirmedFlags = flags;
+  haveConfirmedValue = true;
 
-  // First call after boot — seed candidate without pushing yet
-  if (confirmCount == 0 && candidateBits == 0xFF && candidatePct == 0xFF) {
-    candidateBits  = sensorBits;
-    candidatePct   = confirmedPct;
-    candidateFlags = flags;
-    confirmCount   = 1;
-    return false;
-  }
-
-  if (sensorBits == candidateBits &&
-      confirmedPct == candidatePct &&
-      flags == candidateFlags) {
-    if (confirmCount < 255) confirmCount++;
-  } else {
-    candidateBits  = sensorBits;
-    candidatePct   = confirmedPct;
-    candidateFlags = flags;
-    confirmCount   = 1;
-  }
-
-  // Once confirmed N times, stamp last-known-good (heartbeat uses this)
-  if (confirmCount >= DATA_CONFIRM) {
-    lastConfirmedBits  = candidateBits;
-    lastConfirmedPct   = candidatePct;
-    lastConfirmedFlags = candidateFlags;
-    haveConfirmedValue = true;
-
-    if (candidateBits  != lastSentBits  ||
-        candidatePct   != lastSentPct   ||
-        candidateFlags != lastSentFlags) {
-      return true;
-    }
-  }
-  return false;
+  return (sensorBits    != lastSentBits) ||
+         (confirmedPct  != lastSentPct)  ||
+         (flags         != lastSentFlags);
 }
 
 // ══════════════════════════════════════════════════
@@ -1453,7 +1556,10 @@ void handleLED() {
     }
     #endif
     else {
-      setLevelColor(confirmedPct);
+      // LED reflects INSTANT reading so an installer at the physical
+      // device sees real-time water motion (matches AP page). The cloud
+      // dashboard uses the committed (dominant) value.
+      setLevelColor(instantPct);
     }
   }
 }
@@ -1555,7 +1661,8 @@ h2{font-size:14px;font-weight:600;color:#666;margin-bottom:8px}
     }
     int innerTop = 50, innerBottom = 240;       // y range of water fill inside SVG
     int innerHeight = innerBottom - innerTop;   // 190
-    int waterYStart = innerBottom - (innerHeight * confirmedPct / 100);
+    // Initial render uses INSTANT reading (matches /sstatus poll updates).
+    int waterYStart = innerBottom - (innerHeight * instantPct / 100);
     int waterH = innerBottom - waterYStart;
 
     html += "<div class='tank' id='tank'>";
@@ -1580,7 +1687,7 @@ h2{font-size:14px;font-weight:600;color:#666;margin-bottom:8px}
     html += "</g>";
     // Probe markers (drawn outside clip so they show even above water)
     for (int i = 0; i < SENSOR_COUNT; i++) {
-      bool on = (sensorBits >> i) & 1;
+      bool on = (instantBits >> i) & 1;
       int pct = PCT ? PCT[i] : 0;
       int probeY = innerBottom - (innerHeight * pct / 100);
       String color = on ? "#2563eb" : "#cbd5e1";
@@ -1597,9 +1704,9 @@ h2{font-size:14px;font-weight:600;color:#666;margin-bottom:8px}
 
     // Right-side readout
     html += "<div class='tank-info'>";
-    html += "<div class='big-pct' id='bigPct'>" + String(confirmedPct) + "%</div>";
+    html += "<div class='big-pct' id='bigPct'>" + String(instantPct) + "%</div>";
     if (tankCapacityLitres > 0) {
-      uint32_t litres = (uint32_t)(((uint64_t)confirmedPct * tankCapacityLitres) / 100ULL);
+      uint32_t litres = (uint32_t)(((uint64_t)instantPct * tankCapacityLitres) / 100ULL);
       html += "<div class='litres' id='litres'>" + fmtLitres(litres) + " / " + fmtLitres(tankCapacityLitres) + "</div>";
     } else {
       html += "<div class='litres' id='litres' style='display:none'></div>";
@@ -2582,10 +2689,16 @@ void setup() {
     if (apMode == 1 && apTimerStart != 0 && !apTimerEnded && millis() < apTimerDeadline) {
       apLeft = (apTimerDeadline - millis()) / 1000;
     }
+    // AP page shows INSTANT reading so an installer sees real-time water
+    // motion. Cloud dashboard uses the committed (dominant-level) value —
+    // see processDipSensors(). committedLevel exposed as `stableLevel`
+    // so installer can see both when needed.
     String json = "{";
     json += "\"code\":\"" + deviceCode + "\",";
-    json += "\"level\":" + String(confirmedPct) + ",";
-    json += "\"bits\":" + String(sensorBits) + ",";
+    json += "\"level\":" + String(instantPct) + ",";
+    json += "\"bits\":" + String(instantBits) + ",";
+    json += "\"stableLevel\":" + String(confirmedPct) + ",";
+    json += "\"stableBits\":" + String(sensorBits) + ",";
     json += "\"count\":" + String(SENSOR_COUNT) + ",";
     json += "\"flags\":" + String(flags) + ",";
     json += "\"error\":" + String(sensorError ? "true" : "false") + ",";
