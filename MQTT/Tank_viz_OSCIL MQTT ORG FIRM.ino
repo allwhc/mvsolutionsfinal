@@ -70,7 +70,7 @@
 
 // Device info
 #define DEVICE_NAME       "SenseFlow-Node-DIP"
-#define FIRMWARE_VERSION  "17.0.14"
+#define FIRMWARE_VERSION  "17.0.15"
 #define FIRMWARE_CODE     "SF-OSC-2026"
 #define AP_PASSWORD       "mvstech9867"
 
@@ -751,33 +751,39 @@ uint8_t bitsToPercent(uint8_t bits, int count) {
   return 0;
 }
 
-// ── Time-dominant level stability algorithm ──────────────────────────
-// Old approach: per-probe wet/dry debounce + downstream DATA_CONFIRM gate.
-// Kept flickering at fill/drain boundaries because a wave lasting > 9 sec
-// passed the wet-confirm, and dry-confirm ran symmetrically, so alternating
-// waves every ~15 sec produced back-to-back 100↔75 events.
+// ── Majority-vote level stability algorithm ─────────────────────────
+// Field devices kept showing 25↔0 and 75↔100 flicker at probe boundaries
+// even after the earlier "time-dominant" attempt. Root cause: the
+// fallback "most recent stable run" rule let occasional transient runs
+// commit — so once a wave held one level for 15 sec, it committed, then
+// another wave held the other level for 15 sec, it committed again.
 //
-// New approach (per Vishal's suggestion): resolve each raw read to a level
-// via HIGHEST WET PROBE (matches the cloud resolver), append to a rolling
-// window of samples, and commit only the level that dominates the window.
-// On ties, prefer the MOST RECENT stable level (any level held for at
-// least STABLE_MIN_MS continuously counts as stable).
+// New rule (per Vishal's clarification): ONLY commit when a level wins
+// a clean majority of the full window. If no clean majority exists,
+// don't commit anything — cloud dashboard keeps interpolating the last
+// committed value, so the analytics chart stays clean.
+//
+// Discrete-level physics: the 4-probe DIP produces exactly 5 possible
+// resolved levels (0/25/50/75/100). Majority voting fits naturally.
 //
 // Effects:
-//   - Wave train at top-of-water: raw levels flip 75↔100, but 75 dominates
-//     the 60-sec window → commit 75. Only after level truly settles at
-//     100% does the dominant switch → commit 100.
-//   - Real fills / drains: level holds new value for > 60% of window
-//     within ~40 sec → commit within one window.
-//   - Non-consecutive fault (e.g. 0110 bit 0 oxidised): resolver still
-//     computes 75%, so a brief fault registers as 75% too — dominant
-//     against a real 75% base doesn't shift the commit.
-//   - The LED shows the INSTANT reading (installer sees real-time); cloud
-//     / dashboard sees the committed value only.
+//   - Wave train at boundary (samples ~50/50 split): no level wins
+//     majority → no push → cloud stays flat at previous value ✓
+//   - Genuine fill / drain: new level appears in ~90% of samples once
+//     water settles → majority triggers → single clean commit ✓
+//   - Fast pump-in that stays at 100%: takes ~1 min to reach majority
+//     but then commits cleanly, one event in history, not a burst ✓
+//   - Non-consecutive fault glitch: resolver still computes highest-wet
+//     level so brief faults count as their resolved value (75%) — same
+//     bucket as normal 75% reads, no dominance shift ✓
 
-#define STABLE_WINDOW_MS   60000UL   // 60 sec rolling window
-#define STABLE_MIN_MS      15000UL   // level must hold 15 sec to count as "stable"
-#define STABLE_SAMPLES     22        // ~66 sec of history at 3-sec read interval
+// Tune here if boundary flicker on a specific site needs stricter
+// settings. Larger STABLE_SAMPLES = longer window = more delay before
+// real changes reach cloud, but stronger noise rejection. Higher
+// MAJORITY_PCT = stricter — needs cleaner consensus to commit.
+#define STABLE_SAMPLES    30         // full window = ~90 sec at 3-sec read interval
+#define MAJORITY_PCT      60         // level must win >60% of the votes to commit
+#define STABLE_WINDOW_MS  (uint32_t)((uint32_t)STABLE_SAMPLES * (uint32_t)DIP_READ_INTERVAL_MS)
 
 struct SampleRec {
   uint32_t ts;    // millis() when this sample was taken
@@ -792,6 +798,11 @@ static uint8_t   sampleCount = 0;  // how many valid samples are in the buffer
 // LED + AP page live view so an installer sees real-time water motion.
 uint8_t instantPct = 0;
 uint8_t instantBits = 0;
+
+// One-shot flag: on very first Firebase-ready moment we push instantPct
+// so the cloud dashboard shows the device online immediately, then hand
+// off to the majority-vote gate for all subsequent pushes.
+bool committedOnce = false;
 
 // Resolve a raw bit pattern to a percentage using the highest-wet-probe
 // rule (physically correct: water above touching a probe means water
@@ -809,88 +820,37 @@ uint8_t highestWetPct(uint8_t bits, int count) {
   return 0;
 }
 
-// Compute the committed level from the rolling sample buffer:
-//   1. Sum how long each unique level was held within STABLE_WINDOW_MS.
-//   2. If any single level accounts for > 60% of the window → that wins.
-//   3. Otherwise fall back to the MOST RECENT level that was held for a
-//      continuous >= STABLE_MIN_MS run (respects fill/drain direction).
-//   4. If nothing meets the stability bar yet, return the currently-
-//      committed value (no change).
-uint8_t computeDominantLevel(uint8_t currentCommitted) {
-  if (sampleCount == 0) return currentCommitted;
-  uint32_t now = millis();
+// Compute the committed level using majority voting over a FULL sample
+// window. Returns 0xFF ("no majority") if no level clears MAJORITY_PCT
+// or the buffer isn't full yet — caller must interpret that as "don't
+// push, keep old committed value in cloud."
+uint8_t computeMajorityLevel() {
+  // Wait for a full window before any commit. Prevents 3-sample early
+  // consensus from producing a false first commit.
+  if (sampleCount < STABLE_SAMPLES) return 0xFF;
 
-  // Tally durations per unique pct value (at most STABLE_SAMPLES uniques)
-  uint8_t  uniquePct[STABLE_SAMPLES];
-  uint32_t uniqueMs[STABLE_SAMPLES];
-  uint8_t  uniqueN = 0;
-
-  // Walk oldest → newest, only counting samples inside the window
+  // Discrete levels: 0/25/50/75/100 = 5 buckets. Any non-standard
+  // resolved value (shouldn't happen with the resolver) falls into
+  // bucket 4 (100%) via clamping.
+  uint16_t votes[5] = {0, 0, 0, 0, 0};
+  uint16_t total = 0;
   for (uint8_t k = 0; k < sampleCount; k++) {
     uint8_t idx = (sampleHead + STABLE_SAMPLES - sampleCount + k) % STABLE_SAMPLES;
-    SampleRec &s = sampleBuf[idx];
-    if (now - s.ts > STABLE_WINDOW_MS) continue;
+    uint8_t p = sampleBuf[idx].pct;
+    uint8_t bucket = p / 25;
+    if (bucket > 4) bucket = 4;
+    votes[bucket]++;
+    total++;
+  }
+  if (total == 0) return 0xFF;
 
-    // Duration this sample "owns" = gap to the next sample (or to now for the last one)
-    uint32_t nextTs;
-    if (k == sampleCount - 1) {
-      nextTs = now;
-    } else {
-      uint8_t nidx = (sampleHead + STABLE_SAMPLES - sampleCount + k + 1) % STABLE_SAMPLES;
-      nextTs = sampleBuf[nidx].ts;
-    }
-    uint32_t dur = nextTs - s.ts;
-
-    // Accumulate into uniquePct table
-    bool found = false;
-    for (uint8_t u = 0; u < uniqueN; u++) {
-      if (uniquePct[u] == s.pct) { uniqueMs[u] += dur; found = true; break; }
-    }
-    if (!found && uniqueN < STABLE_SAMPLES) {
-      uniquePct[uniqueN] = s.pct;
-      uniqueMs[uniqueN]  = dur;
-      uniqueN++;
+  // Winner: strictly more than MAJORITY_PCT of the window
+  for (uint8_t i = 0; i < 5; i++) {
+    if ((uint32_t)votes[i] * 100 > (uint32_t)total * MAJORITY_PCT) {
+      return (uint8_t)(i * 25);
     }
   }
-
-  if (uniqueN == 0) return currentCommitted;
-
-  // Total window duration actually covered by samples (may be < STABLE_WINDOW_MS on first reads)
-  uint32_t totalMs = 0;
-  for (uint8_t u = 0; u < uniqueN; u++) totalMs += uniqueMs[u];
-  if (totalMs == 0) return currentCommitted;
-
-  // Rule 1: dominant level > 60% of window
-  for (uint8_t u = 0; u < uniqueN; u++) {
-    if (uniqueMs[u] * 100 > totalMs * 60) return uniquePct[u];
-  }
-
-  // Rule 2: most recent level with continuous >= STABLE_MIN_MS run.
-  // Walk newest → oldest, counting consecutive samples at the same pct.
-  uint32_t runStart = 0;
-  uint8_t  runPct   = 0;
-  for (int8_t k = (int8_t)sampleCount - 1; k >= 0; k--) {
-    uint8_t idx = (sampleHead + STABLE_SAMPLES - sampleCount + k) % STABLE_SAMPLES;
-    SampleRec &s = sampleBuf[idx];
-    if (runStart == 0) {
-      runPct = s.pct;
-      runStart = s.ts;
-      continue;
-    }
-    if (s.pct != runPct) {
-      // Run ended at s.ts (the previous different pct). Duration = runStart..now
-      uint32_t dur = now - runStart;
-      if (dur >= STABLE_MIN_MS) return runPct;
-      // Otherwise start a new run at this older sample
-      runPct = s.pct;
-      runStart = s.ts;
-    }
-  }
-  // Handle the final (oldest) run
-  if (runStart != 0 && (now - runStart) >= STABLE_MIN_MS) return runPct;
-
-  // Nothing stable enough yet — keep the currently committed value
-  return currentCommitted;
+  return 0xFF;   // no majority — do not commit, cloud keeps old value
 }
 
 void processDipSensors() {
@@ -910,16 +870,35 @@ void processDipSensors() {
   sampleHead = (sampleHead + 1) % STABLE_SAMPLES;
   if (sampleCount < STABLE_SAMPLES) sampleCount++;
 
-  // Compute what the committed level should be right now
-  uint8_t newCommittedPct = computeDominantLevel(confirmedPct);
+  // On the very first Firebase-ready reading, seed the committed value
+  // from the instant read so the cloud dashboard sees the device online
+  // with SOME value before the majority-vote gate kicks in ~90 sec later.
+  // Only fires once per boot; after that only majority-vote can change
+  // the committed value.
+  if (!committedOnce && firebaseReady) {
+    committedOnce = true;
+    if (confirmedPct != instantPct) {
+      confirmedPct = instantPct;
+      sensorBits   = 0;
+      if (SENSOR_COUNT >= 1 && SENSOR_COUNT <= 6) {
+        const uint8_t *tbl = DIP_PCT_TABLE[SENSOR_COUNT];
+        for (int i = 0; i < SENSOR_COUNT; i++) {
+          sensorBits |= (1 << i);
+          if (tbl[i] == confirmedPct) break;
+        }
+        if (confirmedPct == 0) sensorBits = 0;
+      }
+    }
+  }
 
-  // If the committed level changed, refresh sensorBits to a canonical
-  // "consecutive from bottom" pattern that matches the level. This keeps
-  // /live sensorBits consistent with confirmedPct for downstream code +
-  // dashboard resolver.
-  if (newCommittedPct != confirmedPct) {
-    confirmedPct = newCommittedPct;
-    // Build a consecutive-from-bottom bit pattern that yields this pct
+  // Majority-vote decision. 0xFF = "no clear winner" → keep last
+  // committed value; cloud dashboard shows a flat line instead of flicker.
+  uint8_t majority = computeMajorityLevel();
+  if (majority != 0xFF && majority != confirmedPct) {
+    confirmedPct = majority;
+    // Canonical consecutive-from-bottom bits for the new level. Keeps
+    // /live's sensorBits internally consistent with confirmedPct for
+    // downstream code + the dashboard resolver.
     sensorBits = 0;
     if (SENSOR_COUNT >= 1 && SENSOR_COUNT <= 6) {
       const uint8_t *tbl = DIP_PCT_TABLE[SENSOR_COUNT];
@@ -929,6 +908,7 @@ void processDipSensors() {
       }
       if (confirmedPct == 0) sensorBits = 0;
     }
+    Serial.printf("[LEVEL] Majority committed: %d%%\n", confirmedPct);
   }
 
   // sensor_error flag: only set if the INSTANT raw pattern is genuinely
