@@ -7,9 +7,33 @@ export function useDevice(deviceCode) {
 
   useEffect(() => {
     if (!deviceCode) return;
-    const unsubLive = listenToDeviceLive(deviceCode, setLive);
-    const unsubInfo = listenToDeviceInfo(deviceCode, setInfo);
-    return () => { unsubLive(); unsubInfo(); };
+
+    // Attach RTDB listeners only while the tab is visible. Background
+    // tabs would otherwise keep receiving /live pushes on every firmware
+    // update — wasted outgoing bandwidth on the RTDB free tier.
+    let unsubLive = null;
+    let unsubInfo = null;
+
+    function attach() {
+      if (unsubLive) return;
+      unsubLive = listenToDeviceLive(deviceCode, setLive);
+      unsubInfo = listenToDeviceInfo(deviceCode, setInfo);
+    }
+    function detach() {
+      if (unsubLive) { unsubLive(); unsubLive = null; }
+      if (unsubInfo) { unsubInfo(); unsubInfo = null; }
+    }
+    function onVis() {
+      if (document.visibilityState === "visible") attach();
+      else                                         detach();
+    }
+
+    if (document.visibilityState === "visible") attach();
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      document.removeEventListener("visibilitychange", onVis);
+      detach();
+    };
   }, [deviceCode]);
 
   const isOnline = info?.online === true;
