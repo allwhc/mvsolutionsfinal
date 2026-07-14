@@ -70,7 +70,7 @@
 
 // Device info
 #define DEVICE_NAME       "SenseFlow-Node-DIP"
-#define FIRMWARE_VERSION  "17.0.15"
+#define FIRMWARE_VERSION  "17.0.16"
 #define FIRMWARE_CODE     "SF-OSC-2026"
 #define AP_PASSWORD       "mvstech9867"
 
@@ -291,6 +291,13 @@ bool firebaseReady = false;   // stays false forever when ENABLE_CLOUD==0
 // Device identity
 String deviceCode = "";
 String apName = "";
+// User-assigned physical-identity label. Set by installer via the AP
+// page, persisted to NVS (senseflow namespace, key "userName"), and
+// mirrored to /devices/<code>/info/userAssignedName in Firebase so
+// dashboard + admin viewer can display it. NEVER pulled FROM Firebase —
+// NVS is the source of truth. If firmware is reflashed the label is
+// lost (by design — it's a physical property of THIS chip's install).
+String userAssignedName = "";
 
 // Sensor state
 uint8_t sensorBits = 0;
@@ -482,6 +489,11 @@ void loadOrCreateDeviceCode() {
 
   // Load tank capacity in litres (0 = not configured → litres hidden in UI)
   tankCapacityLitres = prefs.getUInt("capL", 0);
+
+  // Load user-assigned name (installer-typed label like "3F West Flush").
+  // Empty string if never set. Kept in the same senseflow namespace as
+  // deviceCode + capL so all device-identity state lives together.
+  userAssignedName = prefs.getString("userName", "");
 
   // Load AP-always-on flag (default true)
   // Load AP mode. New key apMode (0=always-on, 1=10-min).
@@ -1266,6 +1278,10 @@ void updateDeviceInfo(bool online) {
     json.set("sensorType", SNS_DIP);
   #endif
   json.set("sensorCount", SENSOR_COUNT);
+  // Mirror the physical-identity label so admin/subscribers see it
+  // alongside firmware version + WiFi status. NVS is the source of
+  // truth — this write just keeps the /info mirror in sync.
+  json.set("userAssignedName", userAssignedName);
 
   // updateNode merges into /info instead of overwriting — preserves
   // firstBootAt, lastUpdatedAt, lastOtaStatus, otaRetryCount that other
@@ -1622,7 +1638,17 @@ h2{font-size:14px;font-weight:600;color:#666;margin-bottom:8px}
   {
     html += "<div class='card'>";
     html += "<h1>SenseFlow Device</h1>";
+    if (userAssignedName.length() > 0) {
+      html += "<p style='font-size:15px;font-weight:600;color:#334155;margin-bottom:2px'>" + userAssignedName + "</p>";
+    }
     html += "<p class='code'>" + deviceCode + "</p>";
+    // User-assigned physical-identity label. Installer edits inline; save
+    // is a plain GET to /setusername that redirects back to /.
+    html += "<form action='/setusername' method='GET' style='margin-top:8px;display:flex;gap:6px;align-items:center'>";
+    html += "<span style='font-size:11px;color:#666;white-space:nowrap'>Name:</span>";
+    html += "<input type='text' name='n' maxlength='32' value='" + userAssignedName + "' placeholder='e.g. 3F West Flush' style='flex:1;padding:6px 8px;border:1px solid #ddd;border-radius:6px;font-size:12px'>";
+    html += "<button class='btn btn-blue' type='submit' style='margin:0;padding:6px 12px;font-size:12px'>Save</button>";
+    html += "</form>";
 
     html += "<div class='tank-wrap' style='margin-top:14px'>";
     // Tank graphic — SVG with tapered shoulders + lid, water clipped inside body
@@ -1711,7 +1737,15 @@ h2{font-size:14px;font-weight:600;color:#666;margin-bottom:8px}
   // Device Info Card (ultrasonic)
   html += "<div class='card'>";
   html += "<h1>SenseFlow Device</h1>";
+  if (userAssignedName.length() > 0) {
+    html += "<p style='font-size:15px;font-weight:600;color:#334155;margin-bottom:2px'>" + userAssignedName + "</p>";
+  }
   html += "<p class='code'>" + deviceCode + "</p>";
+  html += "<form action='/setusername' method='GET' style='margin-top:8px;display:flex;gap:6px;align-items:center'>";
+  html += "<span style='font-size:11px;color:#666;white-space:nowrap'>Name:</span>";
+  html += "<input type='text' name='n' maxlength='32' value='" + userAssignedName + "' placeholder='e.g. 3F West Flush' style='flex:1;padding:6px 8px;border:1px solid #ddd;border-radius:6px;font-size:12px'>";
+  html += "<button class='btn btn-blue' type='submit' style='margin:0;padding:6px 12px;font-size:12px'>Save</button>";
+  html += "</form>";
   html += "</div>";
   #endif
 
@@ -2704,6 +2738,28 @@ void setup() {
       capPrefs.end();
       Serial.println("Tank capacity set to: " + String(c) + " L");
     }
+    srv->sendHeader("Location", "/"); srv->send(302);
+  });
+
+  // User-assigned physical-identity label. Installer types this on the
+  // AP page during setup to match this specific hardware to its physical
+  // location ("3F West Flush" etc.). Saved to NVS + mirrored to Firebase
+  // /info if cloud is up. Max 32 chars, plain text only.
+  mvs.addEndpoint("/setusername", []() {
+    WebServer* srv = mvs.getServer();
+    String name = srv->arg("n");
+    name.trim();
+    if (name.length() > 32) name = name.substring(0, 32);
+    userAssignedName = name;
+    Preferences np;
+    np.begin("senseflow", false);
+    np.putString("userName", name);
+    np.end();
+    Serial.println("[NAME] User-assigned name set to: '" + name + "'");
+    // Push to Firebase /info immediately so admin sees it without waiting
+    // for the next heartbeat. Silently skipped when cloud unavailable —
+    // next heartbeat will sync via updateDeviceInfo().
+    if (firebaseHealthy) updateDeviceInfo(true);
     srv->sendHeader("Location", "/"); srv->send(302);
   });
 

@@ -56,7 +56,7 @@
 
 // Device info
 #define DEVICE_NAME       "SenseFlow-Valve"
-#define FIRMWARE_VERSION  "1.0.2"
+#define FIRMWARE_VERSION  "1.0.3"
 #define FIRMWARE_CODE     "SF-FBV-2026-01"
 #define AP_PASSWORD       "mvstech9867"
 
@@ -134,6 +134,11 @@ bool firebaseReady = false;
 // Device identity
 String deviceCode = "";
 String apName = "";
+// User-assigned physical-identity label. Installer sets via AP page,
+// persisted to NVS "senseflow" namespace key "userName", mirrored to
+// /devices/<code>/info/userAssignedName for cloud visibility. NVS is
+// the source of truth — never pulled back from Firebase.
+String userAssignedName = "";
 
 // ── Valve state ─────────────────────────────────
 enum ValveState {
@@ -281,6 +286,9 @@ void loadOrCreateDeviceCode() {
   autoMode   = prefs.getBool("automode", false);
   minPercent = prefs.getUChar("minpct", 25);
   maxPercent = prefs.getUChar("maxpct", 75);
+
+  // Load user-assigned physical-identity label (installer-typed).
+  userAssignedName = prefs.getString("userName", "");
 
   prefs.end();
 
@@ -789,6 +797,9 @@ void updateDeviceInfo(bool online) {
   json.set("sensorType", SNS_DIP);
   json.set("sensorCount", SENSOR_COUNT);
   json.set("valveType", VALVE_TYPE);
+  // Mirror the physical-identity label from NVS so admin + subscribers
+  // see it alongside firmware version + WiFi status in Device Info.
+  json.set("userAssignedName", userAssignedName);
   Firebase.RTDB.setJSON(&fbdo, path.c_str(), &json);
 }
 
@@ -966,11 +977,20 @@ h2{font-size:13px;font-weight:600;color:#94a3b8;margin-bottom:8px}
   // Header
   html += "<div class='card'>";
   html += "<h1>SenseFlow Valve</h1>";
+  if (userAssignedName.length() > 0) {
+    html += "<p style='font-size:15px;font-weight:600;color:#334155;margin-bottom:2px'>" + userAssignedName + "</p>";
+  }
   html += "<p class='code'>" + deviceCode + "</p>";
   html += "<span class='badge' style='background:" + String(VALVE_TYPE == 24 ? "#7c3aed" : "#0ea5e9") + ";color:#fff'>";
   html += String(VALVE_TYPE == 24 ? "24V DC" : "230V AC") + "</span> ";
   html += "<span class='badge' style='background:" + String(autoMode ? "#16a34a" : "#64748b") + ";color:#fff'>";
   html += String(autoMode ? "AUTO" : "MANUAL") + "</span>";
+  // User-assigned name editor — matches sensor firmware pattern.
+  html += "<form action='/setusername' method='GET' style='margin-top:8px;display:flex;gap:6px;align-items:center'>";
+  html += "<span style='font-size:11px;color:#666;white-space:nowrap'>Name:</span>";
+  html += "<input type='text' name='n' maxlength='32' value='" + userAssignedName + "' placeholder='e.g. 3F Tank Valve' style='flex:1;padding:6px 8px;border:1px solid #ddd;border-radius:6px;font-size:12px'>";
+  html += "<button class='btn btn-blue' type='submit' style='margin:0;padding:6px 12px;font-size:12px'>Save</button>";
+  html += "</form>";
   html += "</div>";
 
   // Valve state
@@ -1170,6 +1190,23 @@ void setup() {
     testBlinkStart  = millis();
     srv->send(200, "application/json", "{\"ok\":true}");
     Serial.println("[TEST] LED rainbow blink triggered from AP page");
+  });
+
+  // User-assigned physical-identity label. Same behavior as the sensor
+  // firmware — saved to NVS + mirrored to Firebase /info if cloud is up.
+  mvs.addEndpoint("/setusername", []() {
+    WebServer* srv = mvs.getServer();
+    String name = srv->arg("n");
+    name.trim();
+    if (name.length() > 32) name = name.substring(0, 32);
+    userAssignedName = name;
+    Preferences np;
+    np.begin("senseflow", false);
+    np.putString("userName", name);
+    np.end();
+    Serial.println("[NAME] User-assigned name set to: '" + name + "'");
+    if (firebaseReady) updateDeviceInfo(true);
+    srv->sendHeader("Location", "/"); srv->send(302);
   });
 
   mvs.addEndpoint("/api/valve", []() {

@@ -284,6 +284,12 @@ export default function DeviceDetail() {
         <div className="grid grid-cols-2 gap-2 text-sm">
           <span className="text-gray-500">Device Code</span>
           <span className="text-gray-900 font-mono">{code}</span>
+          {/* User-assigned physical-identity label from the ESP32 NVS.
+              Set by installer via AP page — helps match this dashboard
+              entry to the physical tank. Distinct from deviceName, which
+              is the customer-facing rename-anytime display name. */}
+          <span className="text-gray-500">User-Assigned Name</span>
+          <span className="text-gray-900">{info?.userAssignedName || "—"}</span>
           <span className="text-gray-500">Class</span>
           <span className="text-gray-900">{DEVICE_CLASS[catalog.deviceClass] || "Unknown"}</span>
           <span className="text-gray-500">Sensor Type</span>

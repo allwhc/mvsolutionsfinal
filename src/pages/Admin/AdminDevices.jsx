@@ -1497,6 +1497,8 @@ export default function AdminDevices() {
                   <div className="bg-gray-50 rounded-lg p-3">
                     <p className="text-xs text-gray-500 font-semibold mb-2">Device Info</p>
                     <div className="grid grid-cols-2 gap-1 text-xs">
+                      <span className="text-gray-500">User-Assigned Name</span>
+                      <span className="text-gray-900">{viewInfo?.userAssignedName || "—"}</span>
                       <span className="text-gray-500">Class</span>
                       <span className="text-gray-900">{DEVICE_CLASS[cat.deviceClass] || "?"}</span>
                       <span className="text-gray-500">Sensor</span>
