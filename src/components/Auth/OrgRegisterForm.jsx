@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { registerWithEmail } from "../../firebase/auth";
-import { createOrg, addOrgMember, updateUserDoc } from "../../firebase/db";
+import { registerWithEmailAsOrgAdmin } from "../../firebase/auth";
+import { createOrg, addOrgMember, getOrg } from "../../firebase/db";
 import { auth } from "../../firebase/config";
 
 function friendlyError(err) {
@@ -32,8 +32,32 @@ export default function OrgRegisterForm() {
     setError("");
     setLoading(true);
     try {
-      const user = await registerWithEmail(email, password, name);
+      // Compute the deterministic orgId from the org name first (same
+      // rule the rest of the codebase uses). Reject upfront if that id
+      // is already in use — otherwise we'd create an orphan auth account
+      // whose email is now permanently locked to a failed registration.
       const orgId = orgName.toLowerCase().replace(/[^a-z0-9]/g, "_");
+      if (!orgId) {
+        setError("Please enter a valid organisation name.");
+        setLoading(false);
+        return;
+      }
+      const existing = await getOrg(orgId);
+      if (existing) {
+        setError("An organisation with this name already exists. Please choose a different name.");
+        setLoading(false);
+        return;
+      }
+
+      // Seed the users/<uid> doc with role=orgAdmin + orgId BEFORE any
+      // org-scoped Firestore writes. The org rules gate write access on
+      // isOrgAdmin(orgId) which reads that field — using the default
+      // "individual" role from plain registerWithEmail() causes createOrg
+      // to fail with a permission-denied error, which is exactly the
+      // "Registration failed" bug Vishal reported (auth account + user
+      // doc got created but org creation was denied, leaving a broken
+      // orphan account that logs in as an individual user).
+      const user = await registerWithEmailAsOrgAdmin(email, password, name, orgId, orgName);
 
       await createOrg(orgId, {
         name: orgName,
@@ -46,12 +70,6 @@ export default function OrgRegisterForm() {
       await addOrgMember(orgId, user.uid, {
         role: "admin",
         addedBy: user.uid,
-      });
-
-      await updateUserDoc(user.uid, {
-        role: "orgAdmin",
-        orgId,
-        orgName,
       });
 
       navigate("/dashboard");
