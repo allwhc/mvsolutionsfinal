@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { httpsCallable } from "firebase/functions";
-import { getAllUsers, updateUserDoc, getUserSubscriptions, getAllPlans, getAllOrgs, removeSubscriber } from "../../firebase/db";
+import { getAllUsers, updateUserDoc, getUserSubscriptions, getAllPlans, getAllOrgs, removeSubscriber, addOrgMember, createOrg, removeOrgMember } from "../../firebase/db";
 import { functions } from "../../firebase/config";
 import { useAuth } from "../../context/AuthContext";
 
@@ -41,6 +41,17 @@ export default function AdminUsers() {
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState("");
 
+  // Org-picker state for promoting a user to orgAdmin / orgMember. When
+  // the admin selects one of those roles in the dropdown, we open this
+  // modal to force a choice of WHICH org — otherwise the user ends up
+  // with a role but no orgId (broken state that causes /org page to hang).
+  const [rolePickTarget, setRolePickTarget] = useState(null);   // user being edited
+  const [rolePickNewRole, setRolePickNewRole] = useState("");   // orgAdmin | orgMember
+  const [rolePickOrgId, setRolePickOrgId] = useState("");       // existing orgId picked
+  const [rolePickNewOrgName, setRolePickNewOrgName] = useState(""); // if creating fresh
+  const [rolePickSaving, setRolePickSaving] = useState(false);
+  const [rolePickError, setRolePickError] = useState("");
+
   async function load() {
     const [u, p, orgs] = await Promise.all([getAllUsers(), getAllPlans(), getAllOrgs()]);
     const oMap = {};
@@ -63,9 +74,87 @@ export default function AdminUsers() {
 
   useEffect(() => { load(); }, []);
 
-  async function handleRoleChange(uid, newRole) {
-    await updateUserDoc(uid, { role: newRole });
+  async function handleRoleChange(user, newRole) {
+    // Promoting to an org role requires picking WHICH org — otherwise
+    // the user ends up with role='orgAdmin' but orgId=null, which
+    // breaks the /org page. Route through the picker modal instead of
+    // saving a broken state.
+    if ((newRole === "orgAdmin" || newRole === "orgMember") && !user.orgId) {
+      setRolePickTarget(user);
+      setRolePickNewRole(newRole);
+      setRolePickOrgId("");
+      setRolePickNewOrgName("");
+      setRolePickError("");
+      return;
+    }
+    // Downgrading FROM an org role back to individual/superadmin — clear
+    // the org attachment so nav + rules behave consistently.
+    if ((newRole === "individual" || newRole === "superadmin") && user.orgId) {
+      const oldOrgId = user.orgId;
+      await updateUserDoc(user.uid, { role: newRole, orgId: null, orgName: null });
+      try { await removeOrgMember(oldOrgId, user.uid); } catch { /* no-op */ }
+      await load();
+      return;
+    }
+    // Same-family transitions (orgAdmin ↔ orgMember with existing orgId,
+    // or individual ↔ superadmin) are just a role field update.
+    await updateUserDoc(user.uid, { role: newRole });
     await load();
+  }
+
+  async function confirmRolePick() {
+    if (!rolePickTarget) return;
+    let orgId = rolePickOrgId;
+    let orgName = "";
+
+    // Two modes: attach to existing org OR create a new one.
+    if (orgId === "__new__") {
+      const name = rolePickNewOrgName.trim();
+      if (!name) { setRolePickError("Enter a name for the new organisation."); return; }
+      orgId = name.toLowerCase().replace(/[^a-z0-9]/g, "_");
+      if (!orgId) { setRolePickError("Organisation name must contain letters or numbers."); return; }
+      if (orgsMap[orgId]) { setRolePickError("An organisation with that name already exists — pick it from the list instead."); return; }
+      orgName = name;
+    } else if (orgId) {
+      orgName = orgsMap[orgId]?.name || orgId;
+    } else {
+      setRolePickError("Please pick an organisation.");
+      return;
+    }
+
+    setRolePickSaving(true);
+    setRolePickError("");
+    try {
+      // Create org first if new — must exist before addOrgMember reads its rules.
+      if (rolePickOrgId === "__new__") {
+        await createOrg(orgId, {
+          name: orgName,
+          address: "",
+          contactEmail: rolePickTarget.email || "",
+          contactPhone: "",
+          createdBy: rolePickTarget.uid,
+        });
+      }
+      // Update user first so isOrgAdmin(orgId) checks pass on subsequent writes.
+      await updateUserDoc(rolePickTarget.uid, {
+        role: rolePickNewRole,
+        orgId,
+        orgName,
+      });
+      // Add to org member list (harmless if already there).
+      try {
+        await addOrgMember(orgId, rolePickTarget.uid, {
+          role: rolePickNewRole === "orgAdmin" ? "admin" : "member",
+          addedBy: rolePickTarget.uid,
+        });
+      } catch { /* no-op if already a member */ }
+      setRolePickTarget(null);
+      await load();
+    } catch (err) {
+      setRolePickError(err.message || "Failed to save. Try again.");
+    } finally {
+      setRolePickSaving(false);
+    }
   }
 
   async function handleToggleActive(uid, currentActive) {
@@ -153,7 +242,7 @@ export default function AdminUsers() {
                   {/* Role */}
                   <select
                     value={u.role}
-                    onChange={(e) => handleRoleChange(u.uid, e.target.value)}
+                    onChange={(e) => handleRoleChange(u, e.target.value)}
                     className="text-xs border border-gray-200 rounded px-2 py-1 focus:outline-none"
                   >
                     {ROLES.map((r) => <option key={r} value={r}>{r}</option>)}
@@ -213,6 +302,68 @@ export default function AdminUsers() {
           );
         })}
       </div>
+
+      {/* Org-picker modal — required when promoting a user to an org role.
+          Prevents the broken 'orgAdmin with orgId=null' state that leaves
+          /org page spinning forever. */}
+      {rolePickTarget && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={() => !rolePickSaving && setRolePickTarget(null)}>
+          <div className="bg-white rounded-xl p-6 w-full max-w-md" onClick={(e) => e.stopPropagation()}>
+            <h3 className="font-bold text-lg mb-2">Assign to organisation</h3>
+            <p className="text-sm text-gray-700 mb-4">
+              Making <strong>{rolePickTarget.displayName || rolePickTarget.email}</strong>
+              {" "}an <strong>{rolePickNewRole}</strong>. Pick which organisation.
+            </p>
+
+            <label className="block text-xs text-gray-500 mb-1">Organisation</label>
+            <select
+              value={rolePickOrgId}
+              onChange={(e) => { setRolePickOrgId(e.target.value); setRolePickError(""); }}
+              disabled={rolePickSaving}
+              className="w-full px-3 py-2 border border-gray-300 rounded text-sm mb-3 bg-white"
+            >
+              <option value="">— Select an organisation —</option>
+              {Object.values(orgsMap).map((o) => (
+                <option key={o.orgId} value={o.orgId}>{o.name || o.orgId}</option>
+              ))}
+              <option value="__new__">+ Create new organisation…</option>
+            </select>
+
+            {rolePickOrgId === "__new__" && (
+              <>
+                <label className="block text-xs text-gray-500 mb-1">New organisation name</label>
+                <input
+                  type="text"
+                  value={rolePickNewOrgName}
+                  onChange={(e) => { setRolePickNewOrgName(e.target.value); setRolePickError(""); }}
+                  placeholder="e.g. Kalpataru Group"
+                  disabled={rolePickSaving}
+                  className="w-full px-3 py-2 border border-gray-300 rounded text-sm mb-2"
+                />
+              </>
+            )}
+
+            {rolePickError && <p className="text-red-500 text-xs mb-2">{rolePickError}</p>}
+
+            <div className="flex gap-2 mt-2">
+              <button
+                onClick={() => setRolePickTarget(null)}
+                disabled={rolePickSaving}
+                className="flex-1 py-2 bg-gray-100 text-gray-700 rounded text-sm hover:bg-gray-200 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmRolePick}
+                disabled={rolePickSaving}
+                className="flex-1 py-2 bg-blue-600 text-white rounded text-sm hover:bg-blue-700 disabled:opacity-50"
+              >
+                {rolePickSaving ? "Saving..." : "Assign"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Delete-confirm modal — type-name pattern to prevent accidental clicks. */}
       {deleteTarget && (

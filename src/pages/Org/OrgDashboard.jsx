@@ -12,7 +12,11 @@ export default function OrgDashboard() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (!orgId) return;
+    // Guard: user has orgAdmin role but no orgId attached (happens when
+    // superadmin flips the role dropdown without picking an org). Bail
+    // out of the loading state so the "not assigned" message can render
+    // instead of an infinite spinner.
+    if (!orgId) { setLoading(false); return; }
     Promise.all([
       getOrg(orgId),
       getOrgMembers(orgId),
@@ -27,6 +31,23 @@ export default function OrgDashboard() {
 
   if (loading) {
     return <div className="flex justify-center py-10"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div></div>;
+  }
+
+  if (!orgId) {
+    return (
+      <div className="max-w-lg mx-auto mt-10 bg-white rounded-xl border border-yellow-200 bg-yellow-50 p-6 text-center">
+        <div className="w-12 h-12 mx-auto mb-3 rounded-full bg-yellow-100 flex items-center justify-center">
+          <svg className="w-6 h-6 text-yellow-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M12 3l9 16H3l9-16z" />
+          </svg>
+        </div>
+        <h3 className="font-semibold text-gray-900 mb-1">No organisation assigned</h3>
+        <p className="text-sm text-gray-600">
+          Your account has an organisation role but isn't linked to any organisation yet.
+          Ask a SenseFlow superadmin to assign you to an organisation, or contact support.
+        </p>
+      </div>
+    );
   }
 
   return (
