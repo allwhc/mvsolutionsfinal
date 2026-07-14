@@ -1,10 +1,15 @@
 import { useState, useEffect } from "react";
-import { getAllOrgs, updateOrg, getAllPlans } from "../../firebase/db";
+import { getAllOrgs, updateOrg, getAllPlans, deleteOrg } from "../../firebase/db";
 
 export default function AdminOrgs() {
   const [orgs, setOrgs] = useState([]);
   const [plans, setPlans] = useState([]);
   const [loading, setLoading] = useState(true);
+  // Delete-confirm state — type-name pattern (matches AdminUsers delete flow).
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [deleteConfirmText, setDeleteConfirmText] = useState("");
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState("");
 
   async function load() {
     const [o, p] = await Promise.all([getAllOrgs(), getAllPlans()]);
@@ -35,6 +40,26 @@ export default function AdminOrgs() {
       autoDeactivate: !!date,
     });
     await load();
+  }
+
+  async function confirmDelete() {
+    if (!deleteTarget) return;
+    if (deleteConfirmText.trim().toLowerCase() !== (deleteTarget.name || "").toLowerCase()) {
+      setDeleteError("Organisation name doesn't match. Type exactly what's shown.");
+      return;
+    }
+    setDeleting(true);
+    setDeleteError("");
+    try {
+      await deleteOrg(deleteTarget.orgId);
+      setDeleteTarget(null);
+      setDeleteConfirmText("");
+      await load();
+    } catch (err) {
+      setDeleteError(err.message || "Delete failed. Try again.");
+    } finally {
+      setDeleting(false);
+    }
   }
 
   // Subscription status color
@@ -112,10 +137,63 @@ export default function AdminOrgs() {
                   >
                     {isActive ? "Deactivate" : "Reactivate"}
                   </button>
+
+                  {/* Permanent delete — wipes org container, downgrades
+                      members to individual, frees the name for reuse. */}
+                  <button
+                    onClick={() => { setDeleteTarget(o); setDeleteConfirmText(""); setDeleteError(""); }}
+                    className="px-3 py-1 rounded text-xs bg-red-600 text-white hover:bg-red-700"
+                    title="Permanently delete this organisation and unlink its members"
+                  >
+                    Delete
+                  </button>
                 </div>
               </div>
             );
           })}
+        </div>
+      )}
+
+      {/* Delete-confirm modal — type-name pattern to prevent misclicks. */}
+      {deleteTarget && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={() => !deleting && setDeleteTarget(null)}>
+          <div className="bg-white rounded-xl p-6 w-full max-w-md" onClick={(e) => e.stopPropagation()}>
+            <h3 className="font-bold text-lg text-red-600 mb-2">Delete organisation permanently</h3>
+            <p className="text-sm text-gray-700 mb-3">
+              This will remove the <strong>{deleteTarget.name}</strong> organisation, wipe its member list
+              and all groups. Member users will become individual users — their accounts and device
+              subscriptions stay. This action cannot be undone.
+            </p>
+            <p className="text-sm text-gray-700 mb-2">
+              Type the organisation name to confirm:
+              <span className="block font-mono text-xs bg-gray-100 rounded px-2 py-1 mt-1">{deleteTarget.name}</span>
+            </p>
+            <input
+              type="text"
+              value={deleteConfirmText}
+              onChange={(e) => { setDeleteConfirmText(e.target.value); setDeleteError(""); }}
+              placeholder="Type organisation name exactly"
+              disabled={deleting}
+              className="w-full px-3 py-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
+            />
+            {deleteError && <p className="text-red-500 text-xs mt-2">{deleteError}</p>}
+            <div className="flex gap-2 mt-4">
+              <button
+                onClick={() => setDeleteTarget(null)}
+                disabled={deleting}
+                className="flex-1 py-2 bg-gray-100 text-gray-700 rounded text-sm hover:bg-gray-200 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmDelete}
+                disabled={deleting}
+                className="flex-1 py-2 bg-red-600 text-white rounded text-sm hover:bg-red-700 disabled:opacity-50"
+              >
+                {deleting ? "Deleting..." : "Delete permanently"}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

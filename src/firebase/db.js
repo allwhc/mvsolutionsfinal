@@ -51,6 +51,48 @@ export async function updateOrg(orgId, data) {
   await updateDoc(doc(db, "orgs", orgId), data);
 }
 
+// Superadmin: delete an org container in full. Wipes:
+//   - orgs/<orgId> itself
+//   - orgMembers/<orgId>/members/*   (all member entries)
+//   - orgGroups/<orgId>/groups/*     (all groups)
+//   - Each member's users/<uid> doc: role→individual, orgId/orgName→null
+//     (users stay, they just become individual accounts again)
+//
+// Member auth accounts + device subscriptions are NOT touched. Admin can
+// separately delete individual users if needed. This is atomic-ish: if
+// something fails partway, admin can retry safely because each step is
+// idempotent.
+export async function deleteOrg(orgId) {
+  // 1. Snapshot member uids so we can update their user docs after wipe.
+  const membersSnap = await getDocs(collection(db, "orgMembers", orgId, "members"));
+  const memberUids = membersSnap.docs.map((d) => d.id);
+
+  // 2. Delete every member entry
+  for (const m of membersSnap.docs) {
+    await deleteDoc(m.ref);
+  }
+
+  // 3. Delete every group
+  const groupsSnap = await getDocs(collection(db, "orgGroups", orgId, "groups"));
+  for (const g of groupsSnap.docs) {
+    await deleteDoc(g.ref);
+  }
+
+  // 4. Downgrade each member's user doc to individual
+  for (const uid of memberUids) {
+    try {
+      await updateDoc(doc(db, "users", uid), {
+        role: "individual",
+        orgId: null,
+        orgName: null,
+      });
+    } catch { /* user doc may already be gone — non-fatal */ }
+  }
+
+  // 5. Finally the org doc itself
+  await deleteDoc(doc(db, "orgs", orgId));
+}
+
 // ── Org Members ──
 export async function addOrgMember(orgId, uid, data) {
   await setDoc(doc(db, "orgMembers", orgId, "members", uid), {

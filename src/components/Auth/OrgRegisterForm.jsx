@@ -6,12 +6,21 @@ import { auth } from "../../firebase/config";
 
 function friendlyError(err) {
   const code = err.code || "";
+  // Firebase Auth codes checked FIRST so a generic 'permission' substring
+  // in the error message doesn't swallow the specific reason. Earlier
+  // version put the permission check ahead which meant retrying with an
+  // already-registered email surfaced as 'Registration failed' instead
+  // of the actionable 'This email is already registered' message.
   if (code === "auth/email-already-in-use") return "This email is already registered. Please sign in.";
   if (code === "auth/invalid-email") return "Please enter a valid email address.";
   if (code === "auth/weak-password") return "Password must be at least 6 characters.";
   if (code === "auth/network-request-failed") return "Network error. Check your internet connection.";
-  if (err.message?.includes("permission")) return "Registration failed. Please try again or contact SenseFlow team.";
-  return err.message;
+  if (code === "permission-denied" || err.message?.includes("permission")) {
+    return "Registration failed. Please try again or contact SenseFlow team.";
+  }
+  // Fall through — surface the actual error so support can diagnose
+  // rather than showing the same generic message for every unknown case.
+  return err.message || "Something went wrong. Please try again.";
 }
 
 export default function OrgRegisterForm() {
