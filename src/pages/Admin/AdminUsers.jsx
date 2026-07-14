@@ -1,5 +1,8 @@
 import { useState, useEffect } from "react";
+import { httpsCallable } from "firebase/functions";
 import { getAllUsers, updateUserDoc, getUserSubscriptions, getAllPlans, getAllOrgs, removeSubscriber } from "../../firebase/db";
+import { functions } from "../../firebase/config";
+import { useAuth } from "../../context/AuthContext";
 
 const ROLES = ["individual", "orgAdmin", "orgMember", "superadmin"];
 
@@ -21,6 +24,7 @@ function getEffectiveStatus(u, orgsMap) {
 }
 
 export default function AdminUsers() {
+  const { user: currentUser } = useAuth();
   const [users, setUsers] = useState([]);
   const [plans, setPlans] = useState([]);
   const [orgsMap, setOrgsMap] = useState({});
@@ -29,6 +33,13 @@ export default function AdminUsers() {
   const [selectedUser, setSelectedUser] = useState(null);
   const [userSubs, setUserSubs] = useState([]);
   const [loadingSubs, setLoadingSubs] = useState(false);
+  // Delete-confirm modal state. Requires the admin to type the target
+  // user's email exactly, matching GitHub's destructive-action pattern.
+  // Rare high-consequence action → cheap confirmation friction is fine.
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [deleteConfirmText, setDeleteConfirmText] = useState("");
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState("");
 
   async function load() {
     const [u, p, orgs] = await Promise.all([getAllUsers(), getAllPlans(), getAllOrgs()]);
@@ -77,6 +88,27 @@ export default function AdminUsers() {
       autoDeactivate: !!date,
     });
     await load();
+  }
+
+  async function confirmDelete() {
+    if (!deleteTarget) return;
+    if (deleteConfirmText.trim().toLowerCase() !== (deleteTarget.email || "").toLowerCase()) {
+      setDeleteError("Email doesn't match. Type exactly what's shown.");
+      return;
+    }
+    setDeleting(true);
+    setDeleteError("");
+    try {
+      const call = httpsCallable(functions, "adminDeleteUser");
+      await call({ uid: deleteTarget.uid });
+      setDeleteTarget(null);
+      setDeleteConfirmText("");
+      await load();
+    } catch (err) {
+      setDeleteError(err.message || "Delete failed. Try again.");
+    } finally {
+      setDeleting(false);
+    }
   }
 
   async function viewSubscriptions(user) {
@@ -164,11 +196,65 @@ export default function AdminUsers() {
                   className="px-2 py-1 border border-gray-200 rounded text-xs focus:outline-none"
                   title="Subscription end date"
                 />
+                {/* Permanent delete — Cloud Function wipes Auth + Firestore
+                    + subscriptions in one go. Guarded by type-name confirm
+                    in the modal. Cannot delete self or another superadmin. */}
+                {u.uid !== currentUser?.uid && u.role !== "superadmin" && (
+                  <button
+                    onClick={() => { setDeleteTarget(u); setDeleteConfirmText(""); setDeleteError(""); }}
+                    className="px-3 py-1 rounded text-xs bg-red-600 text-white hover:bg-red-700"
+                    title="Permanently delete this user and all their data"
+                  >
+                    Delete
+                  </button>
+                )}
               </div>
             </div>
           );
         })}
       </div>
+
+      {/* Delete-confirm modal — type-name pattern to prevent accidental clicks. */}
+      {deleteTarget && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={() => !deleting && setDeleteTarget(null)}>
+          <div className="bg-white rounded-xl p-6 w-full max-w-md" onClick={(e) => e.stopPropagation()}>
+            <h3 className="font-bold text-lg text-red-600 mb-2">Delete user permanently</h3>
+            <p className="text-sm text-gray-700 mb-3">
+              This will remove <strong>{deleteTarget.displayName || deleteTarget.email}</strong> from Firebase Auth,
+              wipe their profile, org membership, device subscriptions, and FCM tokens. This action cannot be undone.
+            </p>
+            <p className="text-sm text-gray-700 mb-2">
+              Type the user's email to confirm:
+              <span className="block font-mono text-xs bg-gray-100 rounded px-2 py-1 mt-1">{deleteTarget.email}</span>
+            </p>
+            <input
+              type="text"
+              value={deleteConfirmText}
+              onChange={(e) => { setDeleteConfirmText(e.target.value); setDeleteError(""); }}
+              placeholder="Type email exactly"
+              disabled={deleting}
+              className="w-full px-3 py-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
+            />
+            {deleteError && <p className="text-red-500 text-xs mt-2">{deleteError}</p>}
+            <div className="flex gap-2 mt-4">
+              <button
+                onClick={() => setDeleteTarget(null)}
+                disabled={deleting}
+                className="flex-1 py-2 bg-gray-100 text-gray-700 rounded text-sm hover:bg-gray-200 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmDelete}
+                disabled={deleting}
+                className="flex-1 py-2 bg-red-600 text-white rounded text-sm hover:bg-red-700 disabled:opacity-50"
+              >
+                {deleting ? "Deleting..." : "Delete permanently"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* User subscriptions modal */}
       {selectedUser && (

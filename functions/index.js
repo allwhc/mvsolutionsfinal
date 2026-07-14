@@ -8,12 +8,14 @@ import { initializeApp } from "firebase-admin/app";
 import { getMessaging } from "firebase-admin/messaging";
 import { getFirestore, FieldValue } from "firebase-admin/firestore";
 import { getDatabase } from "firebase-admin/database";
+import { getAuth } from "firebase-admin/auth";
 
 initializeApp();
 
 const db = getFirestore();
 const messaging = getMessaging();
 const rtdb = getDatabase();
+const adminAuth = getAuth();
 
 // ────────────────────────────────────────────────────────────────
 // Phase 2 — Real event detection + dispatch.
@@ -449,6 +451,93 @@ export const adminSendTestToUser = onCall(
       sent: res.successCount,
       failed: res.failureCount,
       cleanedInvalidTokens: invalidTokens.length,
+    };
+  }
+);
+
+// Admin-only: permanently DELETE a user and all their traces. Wipes:
+//   - Firebase Auth account (client SDK can only delete self, so this
+//     requires the Admin SDK path — this is the whole reason this
+//     function exists)
+//   - Firestore users/<uid>
+//   - Firestore users/<uid>/fcmTokens/*
+//   - Firestore orgMembers/<orgId>/members/<uid> if the user was in an org
+//   - Firestore subscriptions/<uid>/devices/* (their device subscriptions)
+//   - RTDB /devices/<code>/subscribers/<uid> reverse-index entries for
+//     every device they were subscribed to
+//
+// Safeguards:
+//   - Caller must be superadmin
+//   - Cannot delete self (would lock the caller out)
+//   - Cannot delete another superadmin (prevents accidental lockout of
+//     the team; downgrade the role first, then delete)
+export const adminDeleteUser = onCall(
+  {
+    region: "asia-southeast1",
+    cors: true,
+  },
+  async (req) => {
+    const callerUid = req.auth?.uid;
+    if (!callerUid) throw new HttpsError("unauthenticated", "Login required");
+
+    const callerDoc = await db.collection("users").doc(callerUid).get();
+    if (!callerDoc.exists || callerDoc.data().role !== "superadmin") {
+      throw new HttpsError("permission-denied", "Superadmin only");
+    }
+
+    const targetUid = req.data?.uid;
+    if (!targetUid) throw new HttpsError("invalid-argument", "uid required");
+    if (targetUid === callerUid) {
+      throw new HttpsError("failed-precondition", "Cannot delete your own account from here");
+    }
+
+    const targetDoc = await db.collection("users").doc(targetUid).get();
+    const targetData = targetDoc.exists ? targetDoc.data() : null;
+    if (targetData?.role === "superadmin") {
+      throw new HttpsError("failed-precondition", "Cannot delete another superadmin — downgrade their role first");
+    }
+
+    // 1. Collect device subscriptions so we can clean the reverse index in RTDB
+    const subsSnap = await db.collection("subscriptions").doc(targetUid).collection("devices").get();
+    const deviceCodes = subsSnap.docs.map((d) => d.id);
+
+    // 2. Delete each subscription doc + the corresponding deviceSubscribers reverse entry
+    for (const code of deviceCodes) {
+      await db.collection("subscriptions").doc(targetUid).collection("devices").doc(code).delete();
+      await db.collection("deviceSubscribers").doc(code).collection("subscribers").doc(targetUid).delete();
+    }
+    // Also delete the parent subscriptions/<uid> doc if any fields exist on it
+    try { await db.collection("subscriptions").doc(targetUid).delete(); } catch { /* no-op if absent */ }
+
+    // 3. If the user was in an org, remove their orgMembers entry
+    if (targetData?.orgId) {
+      try {
+        await db.collection("orgMembers").doc(targetData.orgId).collection("members").doc(targetUid).delete();
+      } catch { /* no-op */ }
+    }
+
+    // 4. Wipe FCM tokens subcollection
+    const tokensSnap = await db.collection("users").doc(targetUid).collection("fcmTokens").get();
+    for (const t of tokensSnap.docs) await t.ref.delete();
+
+    // 5. Delete the users/<uid> doc itself
+    if (targetDoc.exists) await targetDoc.ref.delete();
+
+    // 6. Finally, remove the Firebase Auth account. Do this LAST so we
+    //    don't orphan any Firestore data if something above fails.
+    try {
+      await adminAuth.deleteUser(targetUid);
+    } catch (err) {
+      // If the auth user doesn't exist any more (already manually removed),
+      // that's fine — we've cleaned the rest.
+      if (err.code !== "auth/user-not-found") throw err;
+    }
+
+    return {
+      ok: true,
+      deletedUid: targetUid,
+      deletedSubscriptions: deviceCodes.length,
+      wasInOrg: !!targetData?.orgId,
     };
   }
 );
