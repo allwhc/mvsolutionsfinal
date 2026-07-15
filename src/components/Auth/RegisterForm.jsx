@@ -29,7 +29,11 @@ export default function RegisterForm() {
     setLoading(true);
     try {
       await registerWithEmail(email, password, name);
-      navigate("/dashboard");
+      // Full reload so AuthContext remounts with the users doc already
+      // in Firestore. Otherwise onAuthStateChanged fires before
+      // createUserDoc completes and userData caches as null. Same fix
+      // as OrgRegisterForm.
+      window.location.href = "/dashboard";
     } catch (err) {
       setError(friendlyError(err));
     }
@@ -41,7 +45,7 @@ export default function RegisterForm() {
     setLoading(true);
     try {
       await loginWithGoogle();
-      navigate("/dashboard");
+      window.location.href = "/dashboard";
     } catch (err) {
       setError(friendlyError(err));
     }

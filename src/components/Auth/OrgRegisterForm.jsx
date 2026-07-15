@@ -81,7 +81,15 @@ export default function OrgRegisterForm() {
         addedBy: user.uid,
       });
 
-      navigate("/dashboard");
+      // Force a full-page navigation instead of react-router navigate().
+      // Reason: onAuthStateChanged in AuthContext fires the instant
+      // createUserWithEmailAndPassword resolves — which is BEFORE
+      // createUserDoc has written the users/<uid> row. AuthContext then
+      // caches userData=null and never re-reads. The user would end up
+      // with role=orgAdmin in Firestore but no 'Organisation' link in
+      // nav until they log out and back in. Full reload remounts
+      // AuthContext, which now sees the fully-populated users doc.
+      window.location.href = "/dashboard";
     } catch (err) {
       setError(friendlyError(err));
     }
