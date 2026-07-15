@@ -4,6 +4,7 @@ import { useAuth } from "../context/AuthContext";
 import {
   getDevice, isSubscribed, subscribeToDevice, getDeviceSubscribers,
   getOrgGroups, updateOrgGroup, validateDeviceInvite,
+  addDeviceToOrg, isDeviceInOrg,
 } from "../firebase/db";
 
 export default function Subscribe() {
@@ -45,8 +46,22 @@ export default function Subscribe() {
       const device = await getDevice(code.trim());
       if (!device) { setError("Device not found in catalog"); setLoading(false); return; }
       if (device.isActive === false) { setError("This device is currently deactivated"); setLoading(false); return; }
-      const already = await isSubscribed(user.uid, code.trim());
-      if (already) { setError("You are already subscribed to this device"); setLoading(false); return; }
+      // Org members can't add devices — only orgAdmin can. Fail early
+      // with a helpful message rather than letting them get partway
+      // through the flow and hit a permission-denied error.
+      if (isOrgMember && !isOrgAdmin) {
+        setError("Only your organisation admin can add devices. Ask them to scan / enter this device code.");
+        setDeviceInfo(null); setLoading(false); return;
+      }
+      // "Already added" check — for org accounts, that means the org
+      // already owns this device; for individual, it's a per-user check.
+      if (isOrg && orgId) {
+        const already = await isDeviceInOrg(orgId, code.trim());
+        if (already) { setError("This device is already in your organisation."); setLoading(false); return; }
+      } else {
+        const already = await isSubscribed(user.uid, code.trim());
+        if (already) { setError("You are already subscribed to this device"); setLoading(false); return; }
+      }
 
       const subs = await getDeviceSubscribers(code.trim());
       setSubscribers(subs);
@@ -96,20 +111,34 @@ export default function Subscribe() {
         if (pin !== deviceInfo.accessPin) { setError("Incorrect PIN"); setLoading(false); return; }
       }
 
-      const isFirstSubscriber = subscribers.length === 0;
       const deviceName = deviceInfo.deviceName || code.trim();
-      await subscribeToDevice(user.uid, code.trim(), deviceName, isFirstSubscriber);
 
-      // If subscribing to org group
-      if (subType === "org" && selectedGroup && orgId) {
-        const group = groups.find((g) => g.groupId === selectedGroup);
-        if (group) {
-          const codes = group.deviceCodes || [];
-          if (!codes.includes(code.trim())) {
-            await updateOrgGroup(orgId, selectedGroup, { deviceCodes: [...codes, code.trim()] });
+      // Two paths based on account type:
+      //   ORG (admin) → attach device to the org's shared list. Every
+      //                 member sees it automatically, no personal subscribe.
+      //   INDIVIDUAL  → per-user subscription (unchanged behavior).
+      if (isOrg && orgId && isOrgAdmin) {
+        await addDeviceToOrg(orgId, code.trim(), deviceName, user.uid);
+
+        // Optional: also attach to a wing/group if picked
+        if (selectedGroup) {
+          const group = groups.find((g) => g.groupId === selectedGroup);
+          if (group) {
+            const codes = group.deviceCodes || [];
+            if (!codes.includes(code.trim())) {
+              await updateOrgGroup(orgId, selectedGroup, { deviceCodes: [...codes, code.trim()] });
+            }
           }
         }
+
+        setSuccess("Device added to your organisation. All members can now see it.");
+        setTimeout(() => navigate("/dashboard"), 1500);
+        return;
       }
+
+      // Individual path — unchanged
+      const isFirstSubscriber = subscribers.length === 0;
+      await subscribeToDevice(user.uid, code.trim(), deviceName, isFirstSubscriber);
 
       setSuccess(isFirstSubscriber
         ? "Subscribed as owner! You can set access controls from device details."

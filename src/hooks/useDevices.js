@@ -1,13 +1,17 @@
 import { useState, useEffect } from "react";
 import { useAuth } from "../context/AuthContext";
-import { getUserSubscriptions } from "../firebase/db";
+import { getUserSubscriptions, getOrgDevices } from "../firebase/db";
 import { listenToDeviceLive, listenToDeviceInfo } from "../firebase/rtdb";
 import { getDevice } from "../firebase/db";
 
 export function useDevices() {
-  const { user } = useAuth();
+  const { user, userData } = useAuth();
   const [devices, setDevices] = useState([]);
   const [loading, setLoading] = useState(true);
+  // Route based on account type: org accounts read from the org's shared
+  // device list (all members see the same devices, no per-user subscribe);
+  // individual accounts read from their personal subscriptions.
+  const orgId = userData?.orgId || null;
 
   useEffect(() => {
     if (!user) { setDevices([]); setLoading(false); return; }
@@ -51,7 +55,11 @@ export function useDevices() {
     }
 
     async function load() {
-      const subs = await getUserSubscriptions(user.uid);
+      // Org accounts: read from the shared org list. Individual accounts:
+      // keep the existing per-user subscription flow.
+      const subs = orgId
+        ? await getOrgDevices(orgId)
+        : await getUserSubscriptions(user.uid);
       if (cancelled) return;
       const deviceMap = {};
 
@@ -82,7 +90,7 @@ export function useDevices() {
       document.removeEventListener("visibilitychange", onVisibilityChange);
       detachListeners();
     };
-  }, [user]);
+  }, [user, orgId]);
 
   return { devices, loading };
 }

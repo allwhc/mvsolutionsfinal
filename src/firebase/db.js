@@ -78,6 +78,12 @@ export async function deleteOrg(orgId) {
     await deleteDoc(g.ref);
   }
 
+  // 3b. Delete every device attachment
+  const orgDevSnap = await getDocs(collection(db, "orgDevices", orgId, "devices"));
+  for (const d of orgDevSnap.docs) {
+    await deleteDoc(d.ref);
+  }
+
   // 4. Downgrade each member's user doc to individual
   for (const uid of memberUids) {
     try {
@@ -129,6 +135,32 @@ export async function updateOrgGroup(orgId, groupId, data) {
 
 export async function deleteOrgGroup(orgId, groupId) {
   await deleteDoc(doc(db, "orgGroups", orgId, "groups", groupId));
+}
+
+// ── Org Devices — the shared device list for an org ─────────────────
+// Simplistic model: org owns devices, every member sees every device
+// automatically, only orgAdmin can add/remove. Replaces per-user
+// subscriptions for accounts that belong to an org.
+export async function getOrgDevices(orgId) {
+  const snap = await getDocs(collection(db, "orgDevices", orgId, "devices"));
+  return snap.docs.map((d) => ({ deviceCode: d.id, ...d.data() }));
+}
+
+export async function addDeviceToOrg(orgId, deviceCode, deviceName, addedByUid) {
+  await setDoc(doc(db, "orgDevices", orgId, "devices", deviceCode), {
+    deviceName: deviceName || deviceCode,
+    addedAt: serverTimestamp(),
+    addedBy: addedByUid,
+  });
+}
+
+export async function removeDeviceFromOrg(orgId, deviceCode) {
+  await deleteDoc(doc(db, "orgDevices", orgId, "devices", deviceCode));
+}
+
+export async function isDeviceInOrg(orgId, deviceCode) {
+  const snap = await getDoc(doc(db, "orgDevices", orgId, "devices", deviceCode));
+  return snap.exists();
 }
 
 // ── Device Catalog ──

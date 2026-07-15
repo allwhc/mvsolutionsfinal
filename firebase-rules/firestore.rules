@@ -38,6 +38,15 @@ service cloud.firestore {
       allow write: if request.auth != null && (isOrgAdmin(orgId) || isSuperAdmin());
     }
 
+    // Org Devices — the shared device list for an organisation. Any
+    // member sees every device in the org's list (no per-user subscribe
+    // dance). Only orgAdmin can add / remove. This replaces the
+    // per-user subscriptions model for org accounts.
+    match /orgDevices/{orgId}/devices/{deviceCode} {
+      allow read: if request.auth != null && (isOrgMember(orgId) || isSuperAdmin());
+      allow write: if request.auth != null && (isOrgAdmin(orgId) || isSuperAdmin());
+    }
+
     // Device Catalog — all authenticated can read, authenticated can update (subscriberCount, ownerUid), superadmin full write
     match /deviceCatalog/{deviceCode} {
       allow read: if request.auth != null;
