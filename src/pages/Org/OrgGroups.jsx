@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useAuth } from "../../context/AuthContext";
-import { getOrgGroups, createOrgGroup, deleteOrgGroup, updateOrgGroup, getUserSubscriptions } from "../../firebase/db";
+import { getOrgGroups, createOrgGroup, deleteOrgGroup, updateOrgGroup, getOrgDevices } from "../../firebase/db";
 
 export default function OrgGroups() {
   const { user, userData } = useAuth();
@@ -23,7 +23,10 @@ export default function OrgGroups() {
     // Flip loading off so the empty-state can render instead of an
     // infinite spinner. Same fix as OrgDashboard.
     if (!orgId) { setLoading(false); return; }
-    const [g, d] = await Promise.all([getOrgGroups(orgId), getUserSubscriptions(user.uid)]);
+    // Devices list comes from the org's SHARED pool — not the user's
+    // personal subscriptions (org members don't have those any more).
+    // Wings/groups are pure labels over the org's device pool.
+    const [g, d] = await Promise.all([getOrgGroups(orgId), getOrgDevices(orgId)]);
     setGroups(g);
     setDevices(d);
     setLoading(false);
@@ -175,9 +178,9 @@ export default function OrgGroups() {
             <div className="space-y-2 mb-4">
               {devices.length === 0 ? (
                 <div className="text-center py-6">
-                  <p className="text-gray-400 text-sm mb-3">No devices subscribed yet</p>
+                  <p className="text-gray-400 text-sm mb-3">No devices in your organisation yet</p>
                   <a href="/subscribe" className="inline-block bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700">
-                    + Add Device
+                    + Add Device to Organisation
                   </a>
                 </div>
               ) : devices.map((d) => (
