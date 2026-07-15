@@ -151,14 +151,20 @@ export default function DeviceDetail() {
         setAccessPin(d.accessPin || "");
         const subs = await getDeviceSubscribers(code);
         setSubscribers(subs);
-        // Load cleaning data from subscription
+        // Tank capacity now lives on the shared device catalog — one
+        // physical tank, one capacity, visible to every subscriber /
+        // org member. Previously it was per-user (subscriptions/<uid>/
+        // devices/<code>.tankCapacityLitres) which meant every new
+        // subscriber saw 0L until they set it themselves.
+        setTankCapacityLitres(d.tankCapacityLitres || 0);
+        // Load per-user cleaning + alert data from subscription (still
+        // per-user — each subscriber can have their own alert thresholds).
         const { getDoc } = await import("firebase/firestore");
         const subSnap = await getDoc(doc(db, "subscriptions", user.uid, "devices", code));
         if (subSnap.exists()) {
           const subData = subSnap.data();
           setLastCleanedAt(subData.lastCleanedAt || null);
           setCleanIntervalDays(subData.cleanIntervalDays || 30);
-          setTankCapacityLitres(subData.tankCapacityLitres || 0);
           setAlertLowPct(subData.alertLowPct ?? "");
           setAlertHighPct(subData.alertHighPct ?? "");
           setNotifRules(subData.notificationRules || {});
@@ -356,17 +362,24 @@ export default function DeviceDetail() {
             </div>
             <span className="text-gray-500">Tank Capacity</span>
             <div className="flex items-center gap-1">
+              {/* Tank capacity lives on the shared device catalog now —
+                  one physical tank, one capacity, seen by every user or
+                  org member. Only the owner (or superadmin) can edit;
+                  everyone else sees the value read-only. */}
               <input type="number" min="0" max="100000" value={tankCapacityLitres}
                 onChange={(e) => setTankCapacityLitres(parseInt(e.target.value) || 0)}
-                className="w-20 px-2 py-0.5 border border-gray-200 rounded text-sm" />
+                disabled={!isOwner && !isSuperAdmin}
+                className="w-20 px-2 py-0.5 border border-gray-200 rounded text-sm disabled:bg-gray-50 disabled:text-gray-500" />
               <span className="text-gray-500 text-xs">
                 {tankCapacityLitres >= 1000
                   ? `= ${(tankCapacityLitres / 1000).toFixed(tankCapacityLitres % 1000 === 0 ? 0 : 1)} KL`
                   : "litres"}
               </span>
-              <button onClick={async () => {
-                await updateDoc(doc(db, "subscriptions", user.uid, "devices", code), { tankCapacityLitres });
-              }} className="text-xs text-blue-600 hover:underline ml-1">Save</button>
+              {(isOwner || isSuperAdmin) && (
+                <button onClick={async () => {
+                  await updateDoc(doc(db, "deviceCatalog", code), { tankCapacityLitres });
+                }} className="text-xs text-blue-600 hover:underline ml-1">Save</button>
+              )}
             </div>
             <span className="text-gray-500">Status</span>
             <span>{(() => {
@@ -381,7 +394,7 @@ export default function DeviceDetail() {
           <button onClick={async () => {
             const today = new Date().toISOString().split("T")[0];
             await updateDoc(doc(db, "subscriptions", user.uid, "devices", code), {
-              lastCleanedAt: today, cleanIntervalDays, tankCapacityLitres,
+              lastCleanedAt: today, cleanIntervalDays,
             });
             setLastCleanedAt(today);
           }} className="w-full bg-green-50 text-green-700 py-2 rounded-lg text-sm font-medium hover:bg-green-100">

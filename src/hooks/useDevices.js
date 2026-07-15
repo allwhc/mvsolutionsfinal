@@ -69,6 +69,11 @@ export function useDevices() {
         deviceMap[sub.deviceCode] = {
           ...sub,
           catalog,
+          // Tank capacity now lives on the shared catalog. Fall back to
+          // the old per-subscription value for individuals who set it
+          // before the migration but never re-saved. Owner re-saving
+          // once will move it to catalog for everyone.
+          tankCapacityLitres: catalog?.tankCapacityLitres ?? sub.tankCapacityLitres ?? 0,
           live: null,
           info: null,
         };
