@@ -15,8 +15,14 @@ export default function OrgGroups() {
   const [renameGroup, setRenameGroup] = useState(null);
   const [renameName, setRenameName] = useState("");
 
+  const [createError, setCreateError] = useState("");
+  const [creating, setCreating] = useState(false);
+
   async function load() {
-    if (!orgId) return;
+    // Guard: user has orgAdmin/orgMember role but no orgId attached.
+    // Flip loading off so the empty-state can render instead of an
+    // infinite spinner. Same fix as OrgDashboard.
+    if (!orgId) { setLoading(false); return; }
     const [g, d] = await Promise.all([getOrgGroups(orgId), getUserSubscriptions(user.uid)]);
     setGroups(g);
     setDevices(d);
@@ -27,11 +33,31 @@ export default function OrgGroups() {
 
   async function handleCreate(e) {
     e.preventDefault();
-    const groupId = newName.toLowerCase().replace(/[^a-z0-9]/g, "_");
-    await createOrgGroup(orgId, groupId, { name: newName, deviceCodes: [] });
-    setNewName("");
-    setShowAdd(false);
-    await load();
+    const trimmed = newName.trim();
+    if (!trimmed) { setCreateError("Group name can't be empty."); return; }
+    const groupId = trimmed.toLowerCase().replace(/[^a-z0-9]/g, "_");
+    // Firestore rejects empty document IDs. If the user typed only
+    // non-alphanumeric characters ("---", "!!!") groupId collapses
+    // to "" — reject upfront with a friendly message.
+    if (!groupId) { setCreateError("Group name must contain letters or numbers."); return; }
+    // Duplicate check — two groups with the same normalised id would
+    // silently overwrite each other's deviceCodes on the second save.
+    if (groups.some((g) => g.groupId === groupId)) {
+      setCreateError("A group with that name already exists.");
+      return;
+    }
+    setCreating(true);
+    setCreateError("");
+    try {
+      await createOrgGroup(orgId, groupId, { name: trimmed, deviceCodes: [] });
+      setNewName("");
+      setShowAdd(false);
+      await load();
+    } catch (err) {
+      setCreateError(err.message || "Failed to create group.");
+    } finally {
+      setCreating(false);
+    }
   }
 
   async function handleDelete(groupId) {
@@ -70,6 +96,18 @@ export default function OrgGroups() {
     return <div className="flex justify-center py-10"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div></div>;
   }
 
+  if (!orgId) {
+    return (
+      <div className="max-w-lg mx-auto mt-10 bg-yellow-50 border border-yellow-200 rounded-xl p-6 text-center">
+        <h3 className="font-semibold text-gray-900 mb-1">No organisation assigned</h3>
+        <p className="text-sm text-gray-600">
+          Your account has an organisation role but isn't linked to any organisation yet.
+          Ask a SenseFlow superadmin to assign you to an organisation, or contact support.
+        </p>
+      </div>
+    );
+  }
+
   return (
     <div>
       <div className="flex items-center justify-between mb-6">
@@ -80,11 +118,19 @@ export default function OrgGroups() {
       </div>
 
       {showAdd && (
-        <form onSubmit={handleCreate} className="bg-white rounded-xl border border-gray-200 p-4 mb-4 flex gap-2">
-          <input type="text" placeholder="Group Name" value={newName} onChange={(e) => setNewName(e.target.value)}
-            className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm" required />
-          <button type="submit" className="bg-green-600 text-white px-4 py-2 rounded-lg text-sm">Create</button>
-        </form>
+        <div className="mb-4">
+          <form onSubmit={handleCreate} className="bg-white rounded-xl border border-gray-200 p-4 flex gap-2">
+            <input type="text" placeholder="Group Name (e.g. Wing A)" value={newName}
+              onChange={(e) => { setNewName(e.target.value); setCreateError(""); }}
+              disabled={creating}
+              className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm" required />
+            <button type="submit" disabled={creating}
+              className="bg-green-600 text-white px-4 py-2 rounded-lg text-sm disabled:opacity-50">
+              {creating ? "Creating..." : "Create"}
+            </button>
+          </form>
+          {createError && <p className="text-red-500 text-xs mt-2 px-1">{createError}</p>}
+        </div>
       )}
 
       <div className="space-y-3">

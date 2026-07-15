@@ -14,7 +14,7 @@ export default function OrgInvite() {
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
-    if (!orgId) return;
+    if (!orgId) { setLoading(false); return; }
     Promise.all([getOrg(orgId), getOrgMembers(orgId)]).then(([o, m]) => {
       setOrg(o);
       setMemberCount(m.length);
@@ -33,6 +33,18 @@ export default function OrgInvite() {
 
   if (loading) {
     return <div className="flex justify-center py-10"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div></div>;
+  }
+
+  if (!orgId) {
+    return (
+      <div className="max-w-lg mx-auto mt-10 bg-yellow-50 border border-yellow-200 rounded-xl p-6 text-center">
+        <h3 className="font-semibold text-gray-900 mb-1">No organisation assigned</h3>
+        <p className="text-sm text-gray-600">
+          Your account has an organisation role but isn't linked to any organisation yet.
+          Ask a SenseFlow superadmin to assign you to an organisation, or contact support.
+        </p>
+      </div>
+    );
   }
 
   return (
