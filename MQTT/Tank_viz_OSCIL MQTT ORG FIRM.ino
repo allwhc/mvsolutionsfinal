@@ -70,7 +70,7 @@
 
 // Device info
 #define DEVICE_NAME       "SenseFlow-Node-DIP"
-#define FIRMWARE_VERSION  "17.0.16"
+#define FIRMWARE_VERSION  "17.0.17"
 #define FIRMWARE_CODE     "SF-OSC-2026"
 #define AP_PASSWORD       "mvstech9867"
 
@@ -223,7 +223,16 @@ const int DIP_PINS[] = {34, 35, 32, 33};
 
 // Timing
 #define HEARTBEAT_INTERVAL    300000   // 5 minutes
-#define COMMAND_CHECK_INTERVAL 5000    // 5 seconds
+#define COMMAND_CHECK_INTERVAL 30000   // 30 seconds — bumped from 5s to cut
+                                        // RTDB command polling by 6x. Cost
+                                        // driver: 5 boolean reads every 5s
+                                        // per device ≈ 26 MB/day/device of
+                                        // download bandwidth. At 30s that
+                                        // drops to ~4 MB/day. Trade-off: a
+                                        // Restart / Refresh / Test command
+                                        // from cloud takes up to 30s to
+                                        // fire instead of 5s. Acceptable
+                                        // for admin-triggered actions.
 #define DIP_DEBOUNCE_MS          0     // disabled — sync sampling + 2s read gap = natural filter
 #define US_READ_INTERVAL      5000     // Ultrasonic read interval
 #define LED_CYCLE_DURATION    30000    // 30 seconds level display
@@ -3115,9 +3124,13 @@ void loop() {
         handleLED();
       }
 
-      // Check config every 30 seconds (analyticsOn flag)
+      // Check config every 60 seconds (analyticsOn / notifyOn / diagnosticsOn
+      // flags). Was 30s — bumped to 60s to halve RTDB config polling
+      // bandwidth. These flags change once in a blue moon (admin toggles),
+      // 60s response time is fine. Combined with the command-poll bump,
+      // baseline RTDB downloads drop ~75% per device.
       static unsigned long lastConfigCheck = 0;
-      if (now - lastConfigCheck >= 30000) {
+      if (now - lastConfigCheck >= 60000) {
         lastConfigCheck = now;
         checkConfig();
       }

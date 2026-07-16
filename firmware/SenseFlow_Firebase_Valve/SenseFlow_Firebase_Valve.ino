@@ -56,7 +56,7 @@
 
 // Device info
 #define DEVICE_NAME       "SenseFlow-Valve"
-#define FIRMWARE_VERSION  "1.0.3"
+#define FIRMWARE_VERSION  "1.0.4"
 #define FIRMWARE_CODE     "SF-FBV-2026-01"
 #define AP_PASSWORD       "mvstech9867"
 
@@ -90,8 +90,15 @@ const int DIP_PINS[] = {32, 33, 14, 27, 34, 35};
 
 // Timing
 #define HEARTBEAT_INTERVAL     300000   // 5 minutes
-#define COMMAND_CHECK_INTERVAL 15000    // 15 seconds
-#define CONFIG_CHECK_INTERVAL  30000    // 30 seconds
+#define COMMAND_CHECK_INTERVAL 30000    // 30 seconds — matches sensor
+                                        // firmware; cuts RTDB command
+                                        // poll bandwidth in half vs the
+                                        // old 15s. Restart / test commands
+                                        // fire within 30s of admin click.
+#define CONFIG_CHECK_INTERVAL  60000    // 60 seconds — analytics/notify/diag
+                                        // flags change rarely; 60s response
+                                        // is fine and halves config-poll
+                                        // bandwidth.
 #define DIP_DEBOUNCE_MS         2000
 #define FAULT_TIMEOUT_MS        (3UL * 60UL * 1000UL)
 #define FAULT_RETRY_INTERVAL_MS (5UL * 60UL * 1000UL)
