@@ -1,0 +1,1965 @@
+/*
+ * SenseFlow Firebase Valve Controller v1.0.0
+ *
+ * ESP32 valve + sensor device that pushes data to Firebase RTDB.
+ * Based on RS485 valve slave firmware, adapted for direct Firebase.
+ *
+ * Features:
+ *   - Motorized ball valve control (230V or 24V via #define)
+ *   - DIP water level sensors (1-6 configurable)
+ *   - Auto mode: open/close based on thresholds (stored in NVS)
+ *   - Firebase RTDB: live data push, config read, command check
+ *   - Addressable LED (WS2812B): water level color + system status
+ *   - Green/Red LEDs: valve state indication
+ *   - Physical buttons: open/close, both-hold 3s = exit auto mode
+ *   - MvsConnect AP for WiFi setup
+ *   - MvsOTA for over-the-air updates
+ *   - Fault detection, retry, limit switch validation
+ *
+ * Device Code: SF-XXXXXXXX-SN (generated once, stored in NVS)
+ * Device Class: 0x01 (Valve)
+ * Auth: Firebase anonymous authentication
+ *
+ * Firebase structure:
+ *   /devices/{code}/live/    — valveState, sensorBits, confirmedPct, flags, rssi, timestamp
+ *   /devices/{code}/info/    — online, firmwareVersion, deviceClass, sensorType, sensorCount
+ *   /devices/{code}/config/  — autoMode, minPercent, maxPercent (written by web dashboard)
+ *   /devices/{code}/commands/ — openRequested, closeRequested, refreshRequested, testRequested, restartRequested
+ *
+ * Valve types:
+ *   230V: Limit switches readable anytime (FB_FORWARD/FB_REVERSE)
+ *   24V:  Limit switches only readable when relay is ON (pulse-verify needed)
+ */
+
+// Channel toggles must come before includes so the right libraries are pulled in.
+#define ENABLE_CLOUD                 1
+#define ENABLE_LOCAL_MQTT            1
+// MQTT broker location: 0 = LAN Pi gateway, 1 = cloud broker (HiveMQ/EMQX/VPS).
+#define USE_CLOUD_MQTT               0
+#define CLOUD_MQTT_USE_TLS           1
+#if ENABLE_CLOUD == 0 && ENABLE_LOCAL_MQTT == 0
+  #warning "Both cloud and MQTT disabled — device will be local-AP-only"
+#endif
+
+#include <WiFi.h>
+#include "esp_task_wdt.h"
+#include "esp_system.h"
+#include <WiFiUdp.h>
+#include <Preferences.h>
+#if ENABLE_CLOUD
+  #include <Firebase_ESP_Client.h>
+  #include <addons/TokenHelper.h>
+#endif
+#include <MvsConnect.h>
+#include <mvsota_esp32.h>
+#include <FastLED_min.h>
+#if ENABLE_LOCAL_MQTT
+  #include <PubSubClient.h>
+  #if USE_CLOUD_MQTT && CLOUD_MQTT_USE_TLS
+    #include <WiFiClientSecure.h>
+  #endif
+  #include "mbedtls/sha256.h"
+#endif
+
+// ══════════════════════════════════════════════════
+//  CONFIGURATION — CHANGE THESE PER DEPLOYMENT
+// ══════════════════════════════════════════════════
+
+// Valve type: 230 = 230V AC valve, 24 = 24V DC valve
+#define VALVE_TYPE        230
+
+// DIP sensor count (1–6)
+#define SENSOR_COUNT      4
+
+// Firebase project config
+#define FIREBASE_API_KEY      "AIzaSyAyx29tFxNbERqbuM9iTFvWbVcehwtURw4"
+#define FIREBASE_DB_URL       "https://senseflow-5a9bb-default-rtdb.asia-southeast1.firebasedatabase.app"
+#define FIREBASE_PROJECT_ID   "senseflow-5a9bb"
+
+// Device info
+#define DEVICE_NAME       "SenseFlow-Valve"
+#define FIRMWARE_VERSION  "2.0.0"
+#define FIRMWARE_CODE     "SF-FBV-MQTT-2026-01"
+#define AP_PASSWORD       "mvstech9867"
+
+// ── MQTT broker config (LAN or cloud — selected by USE_CLOUD_MQTT above) ──
+#define MQTT_PUBLISH_INTERVAL_MS   2000
+
+#if USE_CLOUD_MQTT == 0
+  // LAN mode — Pi runs Mosquitto, ESP32 auto-discovers via UDP, derived password.
+  #define MQTT_PORT                  1883
+  #define MQTT_DISCOVERY_PORT        1900
+  #define MQTT_DISCOVERY_MSG         "SENSEFLOW_DISCOVER"
+  #define MQTT_DISCOVERY_REPLY       "SENSEFLOW_HERE"
+  #define MQTT_DISCOVERY_INTERVAL_MS 60000
+  #define MQTT_SECRET             "mvs_kalp_2026_xY9k_rotate_me"
+#else
+  // Cloud mode — direct connect to HiveMQ / EMQX / VPS Mosquitto via TLS.
+  #define MQTT_PORT                  8883
+  #define CLOUD_MQTT_HOST            "REPLACE_WITH_BROKER_HOST"
+  #define CLOUD_MQTT_USER            "REPLACE_WITH_USERNAME"
+  #define CLOUD_MQTT_PASS            "REPLACE_WITH_PASSWORD_OR_TOKEN"
+  #if CLOUD_MQTT_USE_TLS
+    static const char* CLOUD_MQTT_CA_CERT = R"PEM(
+-----BEGIN CERTIFICATE-----
+REPLACE_WITH_CA_CERT_PEM
+-----END CERTIFICATE-----
+)PEM";
+  #endif
+#endif
+
+// ══════════════════════════════════════════════════
+//  CONSTANTS
+// ══════════════════════════════════════════════════
+
+// Device classes
+#define CLS_VALVE   0x01
+#define CLS_SENSOR  0x02
+#define CLS_MOTOR   0x03
+
+// Sensor types
+#define SNS_DIP         0x01
+
+// ── Valve pins ──────────────────────────────────
+#define BTN_TOGGLE     21    // Single button: short=toggle, long=clear error
+#define RELAY_FORWARD   4    // REL1_PMPSTRT_VLVOP on PCB
+#define RELAY_REVERSE  16    // REL2_PMPSTOP_VLVCLS on PCB
+#define FB_FORWARD     18    // Limit switch OPEN
+#define FB_REVERSE     19    // Limit switch CLOSE
+// Legacy discrete green/red LED pins kept as safe outputs — both LED roles
+// are now on the WS2812B cascade (GPIO 15). These pins still get
+// pinMode()/digitalWrite() in legacy code paths, harmless if no LED wired.
+#define LED_OPEN       23
+#define LED_CLOSE      13
+
+// ── DIP probes (match sensor map: bottom→top GPIO 34/35/32/33) ──
+const int DIP_PINS[] = {34, 35, 32, 33};
+#define DIP_COMMON_PIN 12    // EXCITE on PCB (strapping pin — external pull-down keeps it LOW at boot)
+
+// ── OCSIL pulsed excitation (same as sensor) ────
+#define EXCITATION_MODE        1     // 0 = constant DC, 1 = OCSIL pulsed
+#define PROBE_LIFE_PROFILE     2     // ~4 years
+#if EXCITATION_MODE == 1
+  #if PROBE_LIFE_PROFILE == 2
+    // Tightened for EMI noise rejection on top-of-water probe
+    #define DIP_SETTLE_US         300
+    #define DIP_SAMPLES_PER_READ   15
+    #define DIP_AGREE_THRESHOLD    15
+    #define DIP_READ_INTERVAL_MS 3000
+  #else
+    #error "Only profile 2 wired up here"
+  #endif
+#else
+  #define DIP_READ_INTERVAL_MS 2000
+#endif
+#define DIP_WET_CONFIRM 3            // asymmetric debounce: dry→wet needs 3 confirms
+
+// Addressable LEDs (cascade): GPIO 15 → LED1 DIN, LED1 DOUT → LED2 DIN
+//   LED1 = tank + system status (level color + WiFi/internet/cloud blink)
+//   LED2 = valve status (OPEN green / CLOSED red / OPENING-CLOSING blink / FAULT purple)
+#define LED_PIN      15
+#define LED_COUNT     2
+
+// Timing
+#define HEARTBEAT_INTERVAL     300000   // 5 minutes
+#define COMMAND_CHECK_INTERVAL 15000    // 15 seconds
+#define CONFIG_CHECK_INTERVAL  30000    // 30 seconds
+#define DIP_DEBOUNCE_MS            0   // disabled — OCSIL + asymmetric debounce handle filtering
+#define FAULT_TIMEOUT_MS        (3UL * 60UL * 1000UL)
+#define FAULT_RETRY_INTERVAL_MS (5UL * 60UL * 1000UL)
+#define BLINK_INTERVAL_MS       500UL
+#define BLINK_INTERVAL_SLOW_MS  1500UL
+#define DEBOUNCE_MS             1000UL
+#define DEBOUNCE_BTN_MS         50UL
+#define BOTH_BTN_HOLD_MS        3000UL
+
+// 24V pulse verify
+#if VALVE_TYPE == 24
+  #define PULSE_VERIFY_MS  100
+#endif
+
+// DIP percent table
+const uint8_t DIP_PCT_1[] = {100};
+const uint8_t DIP_PCT_2[] = {50, 100};
+const uint8_t DIP_PCT_3[] = {33, 67, 100};
+const uint8_t DIP_PCT_4[] = {25, 50, 75, 100};
+const uint8_t DIP_PCT_5[] = {20, 40, 60, 80, 100};
+const uint8_t DIP_PCT_6[] = {17, 33, 50, 67, 83, 100};
+const uint8_t* DIP_PCT_TABLE[] = {
+  NULL, DIP_PCT_1, DIP_PCT_2, DIP_PCT_3, DIP_PCT_4, DIP_PCT_5, DIP_PCT_6
+};
+
+// ══════════════════════════════════════════════════
+//  GLOBALS
+// ══════════════════════════════════════════════════
+
+Preferences prefs;
+MvsConnect mvs(DEVICE_NAME, FIRMWARE_VERSION);
+MvsOTA mvsota;
+
+// Firebase
+#if ENABLE_CLOUD
+FirebaseData fbdo;
+FirebaseAuth fbAuth;
+FirebaseConfig fbConfig;
+#endif
+bool firebaseReady = false;   // stays false when ENABLE_CLOUD==0
+
+#if ENABLE_LOCAL_MQTT
+  #if USE_CLOUD_MQTT && CLOUD_MQTT_USE_TLS
+    WiFiClientSecure mqttNetClient;
+  #else
+    WiFiClient       mqttNetClient;
+  #endif
+  PubSubClient mqttClient(mqttNetClient);
+  #if USE_CLOUD_MQTT == 0
+    WiFiUDP    mqttUdp;
+    IPAddress  mqttBrokerIp;
+  #endif
+  bool          mqttBrokerKnown   = false;
+  unsigned long lastMqttDiscovery = 0;
+  unsigned long lastMqttPublish   = 0;
+  unsigned long lastMqttReconnect = 0;
+#endif
+
+// Device identity
+String deviceCode = "";
+String apName = "";
+
+// ── Valve state ─────────────────────────────────
+enum ValveState {
+  STATE_RECOVERY,   // 0
+  STATE_OPENING,    // 1
+  STATE_OPEN,       // 2
+  STATE_CLOSING,    // 3
+  STATE_CLOSED,     // 4
+  STATE_FAULT,      // 5
+  STATE_LS_ERROR    // 6
+};
+
+ValveState valveState = STATE_RECOVERY;
+
+// Auto mode config (stored in NVS + synced from Firebase /config/)
+bool    autoMode    = false;
+uint8_t minPercent  = 25;
+uint8_t maxPercent  = 75;
+
+// Relay state tracking
+bool currentRelayFwd = false;
+bool currentRelayRev = false;
+
+// Fault timer
+unsigned long faultTimerStart  = 0;
+bool          faultTimerActive = false;
+
+// Fault retry
+unsigned long faultRetryTimerStart   = 0;
+bool          faultRetrying          = false;
+unsigned long faultRetryAttemptStart = 0;
+int           faultRetryCount        = 0;
+char          faultDirection         = 'O';  // 'O'=was opening, 'C'=was closing
+
+// Both-button hold
+unsigned long bothBtnHoldStart = 0;
+bool          bothBtnHolding   = false;
+
+// ── Debounce ────────────────────────────────────
+struct Debounce {
+  bool          lastRaw;
+  bool          stableValue;
+  unsigned long stableStart;
+};
+
+Debounce dbOpen   = {false, false, 0};
+Debounce dbClose  = {false, false, 0};
+Debounce dbBtnFwd = {true, true, 0};
+Debounce dbBtnRev = {true, true, 0};
+Debounce dbLevel[6] = {{false,false,0},{false,false,0},{false,false,0},
+                        {false,false,0},{false,false,0},{false,false,0}};
+bool lastBtnFwd = true;
+bool lastBtnRev = true;
+
+// ── Sensor state ────────────────────────────────
+bool    levelActive[6] = {false};
+bool    sensorError = false;
+uint8_t sensorBits = 0;
+uint8_t confirmedPct = 0;
+uint8_t flags = 0;
+// flags: bit0=sensorError, bit1=faultRetrying, bit2=relayFwd, bit3=relayRev, bit4=autoMode
+
+// Analytics
+bool analyticsOn = false;
+
+// Last sent values
+uint8_t lastSentValveState = 0xFF;
+uint8_t lastSentBits = 0xFF;
+uint8_t lastSentPct = 0xFF;
+uint8_t lastSentFlags = 0xFF;
+
+// Deferred actions
+volatile bool pendingSave = false;
+
+// Timing
+unsigned long lastHeartbeat = 0;
+unsigned long lastCommandCheck = 0;
+unsigned long lastConfigCheck = 0;
+
+// Manual WiFi flag
+bool manualWiFiInProgress = false;
+unsigned long manualWiFiStart = 0;
+
+// Push fail tracking
+int consecutiveFailCount = 0;
+bool pushFailFlash = false;
+unsigned long pushFailFlashStart = 0;
+unsigned long lastSuccessfulPush = 0;
+
+// Addressable LED state
+CRGB rgbLeds[LED_COUNT];
+bool internetAvailable = false;          // DNS chain check result
+bool firebaseHealthy   = false;          // false after consecutive Firebase fails
+unsigned long lastInternetCheck       = 0;
+unsigned long lastFirebaseHealthRetry = 0;
+unsigned long ledCycleStart = 0;
+bool ledShowingWifi = false;
+unsigned long wifiBlinkStart = 0;
+bool testBlinkActive = false;
+unsigned long testBlinkStart = 0;
+
+// ══════════════════════════════════════════════════
+//  DEBOUNCE
+// ══════════════════════════════════════════════════
+
+bool updateDebounce(Debounce &db, bool rawReading, unsigned long debounceMs) {
+  if (rawReading != db.lastRaw) {
+    db.lastRaw     = rawReading;
+    db.stableStart = millis();
+  } else {
+    if ((millis() - db.stableStart) >= debounceMs) {
+      db.stableValue = rawReading;
+    }
+  }
+  return db.stableValue;
+}
+
+// ══════════════════════════════════════════════════
+//  DEVICE CODE
+// ══════════════════════════════════════════════════
+
+String generateRandomCode() {
+  const char charset[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+  String code = "SF-";
+  for (int i = 0; i < 8; i++) {
+    code += charset[random(0, 36)];
+  }
+  code += "-SN";
+  return code;
+}
+
+void loadOrCreateDeviceCode() {
+  prefs.begin("senseflow", false);
+  deviceCode = prefs.getString("devcode", "");
+
+  if (deviceCode.length() == 0) {
+    uint32_t seed = esp_random();
+    randomSeed(seed);
+    deviceCode = generateRandomCode();
+    prefs.putString("devcode", deviceCode);
+    Serial.println("Generated new device code: " + deviceCode);
+  } else {
+    Serial.println("Loaded device code from NVS: " + deviceCode);
+  }
+
+  // Load auto mode config from NVS
+  autoMode   = prefs.getBool("automode", false);
+  minPercent = prefs.getUChar("minpct", 25);
+  maxPercent = prefs.getUChar("maxpct", 75);
+
+  prefs.end();
+
+  // Sanity check
+  if (minPercent >= maxPercent) { minPercent = 25; maxPercent = 75; }
+
+  apName = DEVICE_NAME;
+  apName += "-";
+  apName += deviceCode.substring(3, 7);
+  apName += "_mvstech";
+  mvs.setDeviceName(String(DEVICE_NAME) + "-" + deviceCode.substring(3, 7));
+}
+
+void saveConfig() {
+  prefs.begin("senseflow", false);
+  prefs.putBool("automode", autoMode);
+  prefs.putUChar("minpct", minPercent);
+  prefs.putUChar("maxpct", maxPercent);
+  prefs.end();
+  Serial.printf("[NVS] Saved: auto=%s min=%d%% max=%d%%\n",
+    autoMode ? "ON" : "OFF", minPercent, maxPercent);
+}
+
+void printRegistrationInfo() {
+  Serial.println("\n========================================");
+  Serial.println("  SENSEFLOW VALVE REGISTRATION INFO");
+  Serial.println("========================================");
+  Serial.print("  Code:           "); Serial.println(deviceCode);
+  Serial.println("  Class:          VALVE (0x01)");
+  Serial.print("  Valve Type:     "); Serial.println(VALVE_TYPE == 24 ? "24V DC" : "230V AC");
+  Serial.print("  Sensors:        "); Serial.println(SENSOR_COUNT > 0 ? String(SENSOR_COUNT) + " DIP" : "None");
+  Serial.print("  Firmware:       "); Serial.println(FIRMWARE_VERSION);
+  Serial.print("  MAC:            "); Serial.println(WiFi.macAddress());
+  Serial.print("  Auto Mode:      "); Serial.println(autoMode ? "ON" : "OFF");
+  Serial.printf("  Thresholds:     %d%% / %d%%\n", minPercent, maxPercent);
+  Serial.println("========================================\n");
+}
+
+// ══════════════════════════════════════════════════
+//  DNS + INTERNET CHECK
+// ══════════════════════════════════════════════════
+
+void setGoogleDNS() {
+  IPAddress dns1(8, 8, 8, 8);
+  IPAddress dns2(8, 8, 4, 4);
+  WiFi.config(WiFi.localIP(), WiFi.gatewayIP(), WiFi.subnetMask(), dns1, dns2);
+  Serial.println("DNS set to 8.8.8.8 / 8.8.4.4");
+}
+
+// Internet check with DNS-server fallback chain (Google → Cloudflare → Quad9).
+// Returns true on first success, false only if all three fail.
+bool checkInternet() {
+  if (WiFi.status() != WL_CONNECTED) return false;
+  const char* dnsServers[] = { "8.8.8.8", "1.1.1.1", "9.9.9.9" };
+  for (int i = 0; i < 3; i++) {
+    WiFiClient client;
+    if (client.connect(dnsServers[i], 53, 1000)) {
+      client.stop();
+      return true;
+    }
+    client.stop();
+  }
+  return false;
+}
+
+// ══════════════════════════════════════════════════
+//  ADDRESSABLE LEDs (2× WS2812B cascade on GPIO 15)
+//    LED1 = tank + system status
+//    LED2 = valve status
+// ══════════════════════════════════════════════════
+
+void ledShow() { FastLED_min<LED_PIN>.show(); }
+
+void setLED(uint8_t r, uint8_t g, uint8_t b) {       // LED1 (status)
+  rgbLeds[0] = CRGB(r, g, b);
+  ledShow();
+}
+void setLED2(uint8_t r, uint8_t g, uint8_t b) {       // LED2 (valve)
+  rgbLeds[1] = CRGB(r, g, b);
+  ledShow();
+}
+void setLEDOff()  { setLED(0, 0, 0); }
+void setLED2Off() { setLED2(0, 0, 0); }
+
+void setLevelColor(uint8_t pct) {
+  if (pct == 0)       setLED(255, 0, 0);
+  else if (pct <= 25) setLED(255, 80, 0);
+  else if (pct <= 50) setLED(255, 200, 0);
+  else if (pct <= 75) setLED(0, 229, 255);
+  else                setLED(0, 200, 0);
+}
+
+// LED1 — tank + system status (mirrors sensor firmware logic).
+// pushFailFlash removed — cloud-fail now shown via red blink in 5s slot.
+void handleLED() {
+  unsigned long now = millis();
+
+  // Test blink (Firebase TEST command) — LED1 rainbow only
+  if (testBlinkActive) {
+    unsigned long elapsed = now - testBlinkStart;
+    if (elapsed < 1800) {
+      int phase = (elapsed / 200) % 3;
+      if (phase == 0) setLED(255, 0, 0);
+      else if (phase == 1) setLED(0, 255, 0);
+      else setLED(0, 0, 255);
+    } else { testBlinkActive = false; }
+    return;
+  }
+
+  unsigned long cycleElapsed = now - ledCycleStart;
+  if (cycleElapsed >= 35000) { ledCycleStart = now; ledShowingWifi = false; }
+
+  if (cycleElapsed >= 30000) {
+    // 5-second status slot: white / pink / red / blue
+    if (!ledShowingWifi) { ledShowingWifi = true; wifiBlinkStart = now; }
+    int blinkPhase = ((now - wifiBlinkStart) / 250) % 2;
+    bool wifiUp = (WiFi.status() == WL_CONNECTED);
+    if (!wifiUp) {
+      if (blinkPhase == 0) setLED(255, 255, 255); else setLEDOff();   // white
+    } else if (!internetAvailable) {
+      if (blinkPhase == 0) setLED(255, 0, 100); else setLEDOff();     // pink
+    } else if (ENABLE_CLOUD && !firebaseHealthy) {
+      if (blinkPhase == 0) setLED(255, 0, 0); else setLEDOff();       // red
+    } else {
+      if (blinkPhase == 0) setLED(0, 0, 255); else setLEDOff();       // blue
+    }
+  } else {
+    // 30-second tank-level slot
+    ledShowingWifi = false;
+    if (sensorError) {
+      setLED(148, 51, 234);   // purple — sensor pattern fault
+    } else {
+      setLevelColor(confirmedPct);
+    }
+  }
+}
+
+// Legacy callers used updateValveLEDs() — keep as alias so we don't touch
+// the rest of the state machine.
+void handleValveLED();
+inline void updateValveLEDs() { handleValveLED(); }
+
+// LED2 — valve status (cascaded after LED1 on GPIO 15).
+void handleValveLED() {
+  unsigned long now = millis();
+  bool fastBlink = (now / 500) % 2;
+  bool fastestBlink = (now / 250) % 2;
+
+  switch (valveState) {
+    case STATE_OPEN:      setLED2(0, 200, 0); break;             // solid green
+    case STATE_CLOSED:    setLED2(200, 0, 0); break;             // solid red
+    case STATE_OPENING:   setLED2(fastBlink ? 0 : 0,
+                                  fastBlink ? 200 : 0,
+                                  0); break;                      // green blink
+    case STATE_CLOSING:   setLED2(fastBlink ? 200 : 0,
+                                  0, 0); break;                   // red blink
+    case STATE_RECOVERY:  setLED2(fastBlink ? 255 : 0,
+                                  fastBlink ? 180 : 0,
+                                  0); break;                      // yellow blink
+    case STATE_FAULT:     setLED2(148, 51, 234); break;          // solid purple
+    case STATE_LS_ERROR:  setLED2(fastestBlink ? 148 : 0,
+                                  fastestBlink ? 51 : 0,
+                                  fastestBlink ? 234 : 0); break; // purple fast blink
+  }
+}
+
+String stateName(ValveState s) {
+  switch (s) {
+    case STATE_RECOVERY: return "RECOVERY";
+    case STATE_OPENING:  return "OPENING";
+    case STATE_OPEN:     return "OPEN";
+    case STATE_CLOSING:  return "CLOSING";
+    case STATE_CLOSED:   return "CLOSED";
+    case STATE_FAULT:    return "FAULT";
+    case STATE_LS_ERROR: return "LS_ERROR";
+    default:             return "UNKNOWN";
+  }
+}
+
+// ══════════════════════════════════════════════════
+//  RELAY CONTROL (with safety interlock)
+// ══════════════════════════════════════════════════
+
+void setRelays(bool fwd, bool rev) {
+  if (fwd && rev) {
+    if (currentRelayFwd || currentRelayRev) {
+      digitalWrite(RELAY_FORWARD, LOW);
+      digitalWrite(RELAY_REVERSE, LOW);
+      currentRelayFwd = false;
+      currentRelayRev = false;
+      Serial.println("[ERROR] Both relays requested - blocking");
+    }
+    return;
+  }
+  if (fwd != currentRelayFwd || rev != currentRelayRev) {
+    if ((fwd && currentRelayRev) || (rev && currentRelayFwd)) {
+      digitalWrite(RELAY_FORWARD, LOW);
+      digitalWrite(RELAY_REVERSE, LOW);
+      currentRelayFwd = false;
+      currentRelayRev = false;
+      delay(100);
+    }
+    digitalWrite(RELAY_FORWARD, fwd ? HIGH : LOW);
+    digitalWrite(RELAY_REVERSE, rev ? HIGH : LOW);
+    currentRelayFwd = fwd;
+    currentRelayRev = rev;
+  }
+}
+
+// ══════════════════════════════════════════════════
+//  VALVE COMMAND (shared by buttons, serial, Firebase)
+// ══════════════════════════════════════════════════
+
+#define ACK_EXECUTED  0x00
+#define ACK_ALREADY   0x01
+#define ACK_FAULT     0x02
+#define ACK_LS_ERROR  0x03
+#define ACK_RECOVERY  0x04
+
+uint8_t executeValveCommand(char cmd) {
+  if (cmd == 'O' || cmd == 'o') {
+    if      (valveState == STATE_FAULT)    return ACK_FAULT;
+    else if (valveState == STATE_LS_ERROR) return ACK_LS_ERROR;
+    else if (valveState == STATE_RECOVERY) return ACK_RECOVERY;
+    else if (valveState == STATE_OPEN || valveState == STATE_OPENING)
+                                           return ACK_ALREADY;
+    else {
+      #if VALVE_TYPE == 24
+        // Pulse verify: briefly power relay to check if already open
+        setRelays(true, false);
+        delay(PULSE_VERIFY_MS);
+        if (digitalRead(FB_FORWARD)) {
+          setRelays(false, false);
+          valveState = STATE_OPEN;
+          return ACK_ALREADY;
+        }
+      #endif
+      valveState = STATE_OPENING;
+      setRelays(true, false);
+      updateValveLEDs();
+      return ACK_EXECUTED;
+    }
+  }
+  if (cmd == 'C' || cmd == 'c') {
+    if      (valveState == STATE_FAULT)    return ACK_FAULT;
+    else if (valveState == STATE_LS_ERROR) return ACK_LS_ERROR;
+    else if (valveState == STATE_RECOVERY) return ACK_RECOVERY;
+    else if (valveState == STATE_CLOSED || valveState == STATE_CLOSING)
+                                           return ACK_ALREADY;
+    else {
+      #if VALVE_TYPE == 24
+        setRelays(false, true);
+        delay(PULSE_VERIFY_MS);
+        if (digitalRead(FB_REVERSE)) {
+          setRelays(false, false);
+          valveState = STATE_CLOSED;
+          return ACK_ALREADY;
+        }
+      #endif
+      valveState = STATE_CLOSING;
+      setRelays(false, true);
+      updateValveLEDs();
+      return ACK_EXECUTED;
+    }
+  }
+  return ACK_EXECUTED;
+}
+
+// ══════════════════════════════════════════════════
+//  FAULT HANDLING
+// ══════════════════════════════════════════════════
+
+void updateFaultTimer(bool openLS, bool closeLS) {
+  if (openLS || closeLS) {
+    faultTimerActive = false;
+    faultTimerStart  = 0;
+  } else {
+    if (!faultTimerActive) {
+      faultTimerStart  = millis();
+      faultTimerActive = true;
+    }
+  }
+}
+
+bool faultTimerExpired() {
+  return faultTimerActive &&
+         ((millis() - faultTimerStart) >= FAULT_TIMEOUT_MS);
+}
+
+void handleFaultState(bool openLS, bool closeLS) {
+  // Only exit fault if the TARGET LS triggers (the direction we were trying to go)
+  if (faultDirection == 'O' && openLS) {
+    Serial.println("[FAULT] Open LS confirmed - exiting - STATE_OPEN");
+    setRelays(false, false);
+    faultRetrying = false; faultRetryCount = 0; faultTimerActive = false;
+    valveState = STATE_OPEN;
+    return;
+  }
+  if (faultDirection == 'C' && closeLS) {
+    Serial.println("[FAULT] Close LS confirmed - exiting - STATE_CLOSED");
+    setRelays(false, false);
+    faultRetrying = false; faultRetryCount = 0; faultTimerActive = false;
+    valveState = STATE_CLOSED;
+    return;
+  }
+  if (!faultRetrying) {
+    if ((millis() - faultRetryTimerStart) >= FAULT_RETRY_INTERVAL_MS) {
+      faultRetryCount++;
+      faultRetrying = true;
+      faultRetryAttemptStart = millis();
+      faultTimerActive = false;
+      faultTimerStart  = 0;
+      Serial.printf("[FAULT] Retry #%d direction=%c\n", faultRetryCount, faultDirection);
+      // Retry in the SAME direction that failed
+      if (faultDirection == 'C') setRelays(false, true);
+      else setRelays(true, false);
+    }
+  } else {
+    // Keep relay on during retry
+    if (faultDirection == 'C') setRelays(false, true);
+    else setRelays(true, false);
+    if ((millis() - faultRetryAttemptStart) >= FAULT_TIMEOUT_MS) {
+      Serial.printf("[FAULT] Retry #%d failed\n", faultRetryCount);
+      setRelays(false, false);
+      faultRetrying        = false;
+      faultRetryTimerStart = millis();
+    }
+  }
+}
+
+// ══════════════════════════════════════════════════
+//  DIP SENSOR LOGIC
+// ══════════════════════════════════════════════════
+
+#if SENSOR_COUNT > 0
+
+int countConsecutive(uint8_t bits, int count) {
+  int consecutive = 0;
+  for (int i = 0; i < count; i++) {
+    if (bits & (1 << i)) consecutive++;
+    else break;
+  }
+  return consecutive;
+}
+
+bool checkSensorError(uint8_t bits, int count) {
+  int totalOn = 0;
+  for (int i = 0; i < count; i++) {
+    if (bits & (1 << i)) totalOn++;
+  }
+  return (totalOn != countConsecutive(bits, count));
+}
+
+uint8_t bitsToPercent(uint8_t bits, int count) {
+  int consecutive = countConsecutive(bits, count);
+  if (consecutive == 0) return 0;
+  if (count >= 1 && count <= 6) return DIP_PCT_TABLE[count][consecutive - 1];
+  return 0;
+}
+
+// ── OCSIL synchronous DIP read (matches sensor firmware) ──
+// Drives DIP_COMMON_PIN HIGH then LOW for DIP_SAMPLES_PER_READ cycles. A
+// probe is "wet" for a cycle only if it reads HIGH while common is HIGH AND
+// LOW while common is LOW. Requires 15-of-15 agreement → strict noise reject.
+uint8_t readDipRaw() {
+#if EXCITATION_MODE == 1
+  uint8_t agreeCount[6] = {0, 0, 0, 0, 0, 0};
+  for (int s = 0; s < DIP_SAMPLES_PER_READ; s++) {
+    digitalWrite(DIP_COMMON_PIN, HIGH);
+    delayMicroseconds(DIP_SETTLE_US);
+    uint8_t highSample = 0;
+    for (int i = 0; i < SENSOR_COUNT; i++) {
+      if (digitalRead(DIP_PINS[i]) == HIGH) highSample |= (1 << i);
+    }
+    digitalWrite(DIP_COMMON_PIN, LOW);
+    delayMicroseconds(DIP_SETTLE_US);
+    uint8_t lowSample = 0;
+    for (int i = 0; i < SENSOR_COUNT; i++) {
+      if (digitalRead(DIP_PINS[i]) == LOW) lowSample |= (1 << i);
+    }
+    uint8_t agree = highSample & lowSample;
+    for (int i = 0; i < SENSOR_COUNT; i++) {
+      if (agree & (1 << i)) agreeCount[i]++;
+    }
+  }
+  digitalWrite(DIP_COMMON_PIN, LOW);   // park LOW between reads
+  uint8_t bits = 0;
+  for (int i = 0; i < SENSOR_COUNT; i++) {
+    if (agreeCount[i] >= DIP_AGREE_THRESHOLD) bits |= (1 << i);
+  }
+  return bits;
+#else
+  // Constant DC — plain digitalRead
+  uint8_t bits = 0;
+  for (int i = 0; i < SENSOR_COUNT; i++) {
+    if (digitalRead(DIP_PINS[i]) == HIGH) bits |= (1 << i);
+  }
+  return bits;
+#endif
+}
+
+// Asymmetric debounce: dry→wet needs DIP_WET_CONFIRM consecutive reads, wet→dry instant.
+// Called from loop instead of the old per-pin updateDebounce loop.
+void readDipWithAsymDebounce() {
+  static unsigned long lastDipRead = 0;
+  static uint8_t wetConfirmCount[6] = {0, 0, 0, 0, 0, 0};
+  if (millis() - lastDipRead < DIP_READ_INTERVAL_MS) return;
+  lastDipRead = millis();
+
+  uint8_t currentRaw = readDipRaw();
+  for (int i = 0; i < SENSOR_COUNT; i++) {
+    bool rawWet = (currentRaw >> i) & 1;
+    bool committedWet = levelActive[i];
+    if (rawWet && !committedWet) {
+      if (wetConfirmCount[i] < 255) wetConfirmCount[i]++;
+      if (wetConfirmCount[i] >= DIP_WET_CONFIRM) {
+        levelActive[i] = true;
+        wetConfirmCount[i] = 0;
+      }
+    } else if (!rawWet && committedWet) {
+      levelActive[i] = false;             // drain shows instantly
+      wetConfirmCount[i] = 0;
+    } else {
+      wetConfirmCount[i] = 0;             // reset on inconsistency
+    }
+  }
+}
+
+void validateSensors() {
+  sensorBits = 0;
+  for (int i = 0; i < SENSOR_COUNT; i++) {
+    if (levelActive[i]) sensorBits |= (1 << i);
+  }
+
+  sensorError = checkSensorError(sensorBits, SENSOR_COUNT);
+  if (sensorError) flags |= 0x01; else flags &= ~0x01;
+
+  confirmedPct = bitsToPercent(sensorBits, SENSOR_COUNT);
+}
+
+bool isValidPercent(uint8_t pct) {
+  if (pct == 0) return true;
+  for (int i = 0; i < SENSOR_COUNT; i++) {
+    if (DIP_PCT_TABLE[SENSOR_COUNT][i] == pct) return true;
+  }
+  return false;
+}
+
+#else
+// No sensors — stubs
+void validateSensors() {}
+bool isValidPercent(uint8_t) { return true; }
+#endif
+
+// ══════════════════════════════════════════════════
+//  AUTO MODE EVALUATOR
+// ══════════════════════════════════════════════════
+
+#if SENSOR_COUNT > 0
+void evaluateAutoMode() {
+  if (!autoMode) return;
+  if (sensorError) return;
+  if (valveState != STATE_OPEN && valveState != STATE_CLOSED) return;
+
+  if (valveState == STATE_CLOSED && confirmedPct <= minPercent) {
+    Serial.printf("[AUTO] %d%% <= min %d%% - opening\n", confirmedPct, minPercent);
+    executeValveCommand('O');
+    return;
+  }
+  if (valveState == STATE_OPEN && confirmedPct >= maxPercent) {
+    Serial.printf("[AUTO] %d%% >= max %d%% - closing\n", confirmedPct, maxPercent);
+    executeValveCommand('C');
+    return;
+  }
+}
+#else
+void evaluateAutoMode() {} // No sensors — auto mode handled externally
+#endif
+
+// ══════════════════════════════════════════════════
+//  FIREBASE
+// ══════════════════════════════════════════════════
+
+#if !ENABLE_CLOUD
+// Stubs so call sites compile when cloud is disabled.
+void  initFirebase() {}
+bool  checkFirebaseReady() { return false; }
+void  writePendingDevice() {}
+bool  pushLiveData() { return false; }
+void  updateDeviceInfo(bool) {}
+void  checkCommands() {}
+void  checkConfig() {}
+void  writeHistory() {}
+#else
+
+void initFirebase() {
+  Serial.println("[FB] initFirebase called");
+  if (WiFi.status() == WL_CONNECTED) setGoogleDNS();
+
+  fbConfig.api_key = FIREBASE_API_KEY;
+  fbConfig.database_url = FIREBASE_DB_URL;
+  fbConfig.token_status_callback = tokenStatusCallback;
+  // Aggressive timeouts so dead network doesn't block the main loop.
+  fbConfig.timeout.serverResponse   = 2000;
+  fbConfig.timeout.socketConnection = 2000;
+  fbConfig.timeout.sslHandshake     = 3000;
+
+  Firebase.begin(&fbConfig, &fbAuth);
+  Firebase.reconnectNetwork(true);
+
+  Serial.println("[FB] Calling signUp for anonymous auth...");
+  if (Firebase.signUp(&fbConfig, &fbAuth, "", "")) {
+    Serial.println("[FB] Anonymous auth OK!");
+  } else {
+    Serial.println("[FB] Auth FAILED: " + String(fbConfig.signer.signupError.message.c_str()));
+  }
+}
+
+bool checkFirebaseReady() {
+  if (Firebase.ready()) {
+    if (!firebaseReady) {
+      firebaseReady = true;
+      firebaseHealthy = true;
+      consecutiveFailCount = 0;
+      Serial.println("Firebase ready!");
+      writePendingDevice();
+      buildFlags();
+      pushLiveData();
+      updateDeviceInfo(true);
+      pushConfigToFirebase();
+      Serial.println("Initial heartbeat sent!");
+    }
+    return true;
+  }
+  return false;
+}
+
+void writePendingDevice() {
+  String path = "pendingDevices/" + deviceCode;
+  FirebaseJson json;
+  json.set("deviceClass", CLS_VALVE);
+  json.set("sensorType", SNS_DIP);
+  json.set("sensorCount", SENSOR_COUNT);
+  json.set("valveType", VALVE_TYPE);
+  json.set("firmwareVersion", FIRMWARE_VERSION);
+  json.set("macAddress", WiFi.macAddress());
+  json.set("firstSeenAt/.sv", "timestamp");
+  Firebase.RTDB.setJSON(&fbdo, path.c_str(), &json);
+}
+
+void buildFlags() {
+  // Rebuild flags byte from current state
+  flags = 0;
+  if (sensorError)     flags |= 0x01;  // bit0
+  if (faultRetrying)   flags |= 0x02;  // bit1
+  if (currentRelayFwd) flags |= 0x04;  // bit2
+  if (currentRelayRev) flags |= 0x08;  // bit3
+  if (autoMode)        flags |= 0x10;  // bit4
+}
+
+bool pushLiveData() {
+  // Layered gate: WiFi → internet → firebase. Skips silently if cloud unreachable.
+  if (WiFi.status() != WL_CONNECTED) return false;
+  if (!internetAvailable)             return false;
+  if (!firebaseHealthy)               return false;
+
+  buildFlags();
+  String path = "devices/" + deviceCode + "/live";
+  FirebaseJson json;
+  json.set("valveState", (int)valveState);
+  json.set("sensorBits", sensorBits);
+  json.set("confirmedPct", confirmedPct);
+  json.set("flags", flags);
+  json.set("rssi", WiFi.RSSI());
+  json.set("timestamp/.sv", "timestamp");
+
+  if (Firebase.RTDB.setJSON(&fbdo, path.c_str(), &json)) {
+    lastSentValveState = (uint8_t)valveState;
+    lastSentBits = sensorBits;
+    lastSentPct = confirmedPct;
+    lastSentFlags = flags;
+    consecutiveFailCount = 0;
+    lastSuccessfulPush = millis();
+    Serial.printf("Pushed: valve=%s pct=%d%% bits=%d flags=0x%02X\n",
+      stateName(valveState).c_str(), confirmedPct, sensorBits, flags);
+    return true;
+  }
+
+  consecutiveFailCount++;
+  Serial.printf("Push FAILED (%d): %s\n", consecutiveFailCount, fbdo.errorReason().c_str());
+  // After 3 strikes mark cloud unhealthy. LED state machine shows this via
+  // red blink in 5s slot. No solid-red spam.
+  if (consecutiveFailCount >= 3) {
+    Serial.println("[FB] 3 consecutive fails — marking cloud unhealthy");
+    firebaseHealthy = false;
+    consecutiveFailCount = 0;
+  }
+  return false;
+}
+
+void updateDeviceInfo(bool online) {
+  if (!firebaseHealthy) return;
+  String path = "devices/" + deviceCode + "/info";
+  FirebaseJson json;
+  json.set("online", online);
+  json.set("lastSeen/.sv", "timestamp");
+  json.set("firmwareVersion", FIRMWARE_VERSION);
+  json.set("deviceClass", CLS_VALVE);
+  json.set("sensorType", SNS_DIP);
+  json.set("sensorCount", SENSOR_COUNT);
+  json.set("valveType", VALVE_TYPE);
+  Firebase.RTDB.setJSON(&fbdo, path.c_str(), &json);
+}
+
+// Push current config to Firebase (so web dashboard shows current values)
+void pushConfigToFirebase() {
+  if (!firebaseHealthy) return;
+  String path = "devices/" + deviceCode + "/config";
+  FirebaseJson json;
+  json.set("autoMode", autoMode);
+  json.set("minPercent", minPercent);
+  json.set("maxPercent", maxPercent);
+  Firebase.RTDB.setJSON(&fbdo, path.c_str(), &json);
+}
+
+// Read config from Firebase (user changes from web dashboard)
+void checkConfig() {
+  if (!firebaseHealthy) return;
+  String basePath = "devices/" + deviceCode + "/config/";
+  bool changed = false;
+
+  if (Firebase.RTDB.getBool(&fbdo, (basePath + "autoMode").c_str())) {
+    bool newAuto = fbdo.boolData();
+    if (newAuto != autoMode) {
+      autoMode = newAuto;
+      changed = true;
+      Serial.printf("[CONFIG] autoMode changed to %s\n", autoMode ? "ON" : "OFF");
+    }
+  }
+  if (Firebase.RTDB.getInt(&fbdo, (basePath + "minPercent").c_str())) {
+    uint8_t newMin = (uint8_t)fbdo.intData();
+    if (newMin != minPercent && newMin < maxPercent) {
+      minPercent = newMin;
+      changed = true;
+    }
+  }
+  if (Firebase.RTDB.getInt(&fbdo, (basePath + "maxPercent").c_str())) {
+    uint8_t newMax = (uint8_t)fbdo.intData();
+    if (newMax != maxPercent && newMax > minPercent) {
+      maxPercent = newMax;
+      changed = true;
+    }
+  }
+
+  if (changed) saveConfig();
+
+  // Check analyticsOn flag
+  if (Firebase.RTDB.getBool(&fbdo, (basePath + "analyticsOn").c_str())) {
+    bool newVal = fbdo.boolData();
+    if (newVal != analyticsOn) {
+      analyticsOn = newVal;
+      Serial.printf("[CONFIG] analyticsOn = %s\n", analyticsOn ? "ON" : "OFF");
+    }
+  }
+}
+
+// Write history entry — only called on data change when analyticsOn
+void writeHistory() {
+  if (!analyticsOn) return;
+  if (!firebaseHealthy) return;
+  FirebaseJson json;
+  json.set("pct", confirmedPct);
+  json.set("bits", sensorBits);
+  json.set("valve", (int)valveState);
+  json.set("flags", flags);
+  json.set("ts/.sv", "timestamp");
+  if (Firebase.RTDB.pushJSON(&fbdo, ("devices/" + deviceCode + "/history").c_str(), &json)) {
+    Serial.println("[HISTORY] Entry recorded");
+  }
+}
+
+void checkCommands() {
+  if (!firebaseHealthy) return;
+  String basePath = "devices/" + deviceCode + "/commands/";
+
+  if (Firebase.RTDB.getBool(&fbdo, (basePath + "refreshRequested").c_str())) {
+    if (fbdo.boolData()) {
+      pushLiveData();
+      Firebase.RTDB.setBool(&fbdo, (basePath + "refreshRequested").c_str(), false);
+    }
+  }
+  handleLED();
+
+  if (Firebase.RTDB.getBool(&fbdo, (basePath + "openRequested").c_str())) {
+    if (fbdo.boolData()) {
+      Serial.println("[CMD] Firebase open requested");
+      executeValveCommand('O');
+      Firebase.RTDB.setBool(&fbdo, (basePath + "openRequested").c_str(), false);
+      pushLiveData();
+    }
+  }
+  handleLED();
+
+  if (Firebase.RTDB.getBool(&fbdo, (basePath + "closeRequested").c_str())) {
+    if (fbdo.boolData()) {
+      Serial.println("[CMD] Firebase close requested");
+      executeValveCommand('C');
+      Firebase.RTDB.setBool(&fbdo, (basePath + "closeRequested").c_str(), false);
+      pushLiveData();
+    }
+  }
+  handleLED();
+
+  if (Firebase.RTDB.getBool(&fbdo, (basePath + "testRequested").c_str())) {
+    if (fbdo.boolData()) {
+      testBlinkActive = true; testBlinkStart = millis();
+      Firebase.RTDB.setBool(&fbdo, (basePath + "testRequested").c_str(), false);
+    }
+  }
+  if (Firebase.RTDB.getBool(&fbdo, (basePath + "restartRequested").c_str())) {
+    if (fbdo.boolData()) {
+      Firebase.RTDB.setBool(&fbdo, (basePath + "restartRequested").c_str(), false);
+      updateDeviceInfo(false); delay(500); ESP.restart();
+    }
+  }
+}
+
+#endif  // ENABLE_CLOUD
+
+bool hasDataChanged() {
+  buildFlags();
+  return ((uint8_t)valveState != lastSentValveState ||
+          sensorBits != lastSentBits ||
+          confirmedPct != lastSentPct ||
+          flags != lastSentFlags);
+}
+
+// ══════════════════════════════════════════════════
+//  BOTH-BUTTON AUTO EXIT FLASH
+// ══════════════════════════════════════════════════
+
+void flashAutoExitConfirm() {
+  for (int i = 0; i < 3; i++) {
+    digitalWrite(LED_OPEN, HIGH); digitalWrite(LED_CLOSE, LOW);  delay(120);
+    digitalWrite(LED_OPEN, LOW);  digitalWrite(LED_CLOSE, HIGH); delay(120);
+  }
+  digitalWrite(LED_OPEN, LOW);
+  digitalWrite(LED_CLOSE, LOW);
+}
+
+// ══════════════════════════════════════════════════
+//  AP WEB PAGE
+// ══════════════════════════════════════════════════
+
+String buildCustomHTML() {
+  String html = R"rawliteral(
+<!DOCTYPE html><html><head>
+<meta name='viewport' content='width=device-width,initial-scale=1'>
+<title>SenseFlow Valve</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:system-ui;background:#1a1a2e;color:#eee;padding:12px}
+.card{background:#16213e;border-radius:12px;padding:14px;margin-bottom:10px}
+h1{font-size:18px;color:#0ea5e9;margin-bottom:2px}
+h2{font-size:13px;font-weight:600;color:#94a3b8;margin-bottom:8px}
+.code{font-family:monospace;font-size:16px;color:#38bdf8;letter-spacing:1px}
+.badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:600}
+.row{display:flex;justify-content:space-between;padding:5px 0;font-size:12px;border-bottom:1px solid #1e3a5f}
+.row:last-child{border:none}
+.label{color:#64748b}
+.val{color:#e2e8f0;font-weight:600}
+.btn{display:inline-block;padding:8px 16px;border:none;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;margin:3px}
+.btn-blue{background:#2563eb;color:#fff}
+.btn-red{background:#dc2626;color:#fff}
+.btn-green{background:#16a34a;color:#fff}
+.btn-gray{background:#334155;color:#cbd5e1}
+</style></head><body>
+)rawliteral";
+
+  // WiFi status
+  bool wifiOk = (WiFi.status() == WL_CONNECTED);
+  if (wifiOk) {
+    html += "<div style='background:#064e3b;border:1px solid #059669;border-radius:10px;padding:10px 14px;margin-bottom:10px;display:flex;align-items:center;gap:8px'>";
+    html += "<div style='width:10px;height:10px;border-radius:50%;background:#34d399'></div>";
+    html += "<div><div style='font-size:12px;font-weight:700;color:#ecfdf5'>WiFi Connected</div>";
+    html += "<div style='font-size:10px;color:#6ee7b7'>" + WiFi.SSID() + " &bull; " + WiFi.localIP().toString() + "</div></div></div>";
+  } else {
+    html += "<div style='background:#451a03;border:1px solid #92400e;border-radius:10px;padding:10px 14px;margin-bottom:10px'>";
+    html += "<div style='font-size:12px;font-weight:700;color:#fef2f2'>WiFi Not Connected</div></div>";
+  }
+
+  // Header
+  html += "<div class='card'>";
+  html += "<h1>SenseFlow Valve</h1>";
+  html += "<p class='code'>" + deviceCode + "</p>";
+  html += "<span class='badge' style='background:" + String(VALVE_TYPE == 24 ? "#7c3aed" : "#0ea5e9") + ";color:#fff'>";
+  html += String(VALVE_TYPE == 24 ? "24V DC" : "230V AC") + "</span> ";
+  html += "<span class='badge' style='background:" + String(autoMode ? "#16a34a" : "#64748b") + ";color:#fff'>";
+  html += String(autoMode ? "AUTO" : "MANUAL") + "</span>";
+  html += "</div>";
+
+  // Valve state
+  String stColor = "#3498db";
+  if (valveState == STATE_OPEN) stColor = "#27ae60";
+  else if (valveState == STATE_CLOSED) stColor = "#e74c3c";
+  else if (valveState == STATE_FAULT) stColor = "#e67e22";
+  else if (valveState == STATE_LS_ERROR) stColor = "#8e44ad";
+
+  html += "<div class='card' style='text-align:center'>";
+  html += "<h2>VALVE STATE</h2>";
+  html += "<div style='font-size:32px;font-weight:bold;color:" + stColor + "'>" + stateName(valveState) + "</div>";
+  html += "<div style='margin-top:8px'>";
+  html += "<a href='/api/valve?cmd=open'><button class='btn btn-green'>OPEN</button></a>";
+  html += "<a href='/api/valve?cmd=close'><button class='btn btn-red'>CLOSE</button></a>";
+  html += "</div></div>";
+
+  // Water level (only if sensors present)
+  #if SENSOR_COUNT > 0
+  html += "<div class='card'>";
+  html += "<h2>WATER LEVEL</h2>";
+  html += "<div style='font-size:28px;font-weight:bold;text-align:center;margin:6px 0'>" + String(confirmedPct) + "%</div>";
+  html += "<div style='display:flex;gap:6px;justify-content:center;margin:6px 0'>";
+  for (int i = 0; i < SENSOR_COUNT; i++) {
+    bool on = levelActive[i];
+    html += "<div style='width:20px;height:20px;border-radius:50%;background:" + String(on ? "#3b82f6" : "#334155") + ";border:2px solid " + String(on ? "#60a5fa" : "#475569") + "'></div>";
+  }
+  html += "</div>";
+  if (sensorError) html += "<div style='color:#a855f7;font-size:12px;text-align:center;font-weight:600'>SENSOR ERROR</div>";
+  html += "</div>";
+  #endif
+
+  // Auto mode config
+  html += "<div class='card'>";
+  html += "<h2>AUTO CONTROL</h2>";
+  html += "<div class='row'><span class='label'>Auto Mode</span><span class='val'>";
+  html += "<a href='/api/setconfig?auto=" + String(autoMode ? "0" : "1") + "'><button class='btn " + String(autoMode ? "btn-green" : "btn-gray") + "' style='padding:4px 12px'>" + String(autoMode ? "ON" : "OFF") + "</button></a></span></div>";
+  html += "<div class='row'><span class='label'>Open below</span><span class='val'>" + String(minPercent) + "%</span></div>";
+  html += "<div class='row'><span class='label'>Close above</span><span class='val'>" + String(maxPercent) + "%</span></div>";
+  html += "</div>";
+
+  // Status
+  html += "<div class='card'>";
+  html += "<h2>STATUS</h2>";
+  html += "<div class='row'><span class='label'>Firebase</span><span class='val'>" + String(firebaseReady ? "Ready" : "Not ready") + "</span></div>";
+  html += "<div class='row'><span class='label'>Last Push</span><span class='val'>" +
+    (lastSuccessfulPush > 0 ? String((millis() - lastSuccessfulPush) / 1000) + "s ago" : "Never") + "</span></div>";
+  html += "<div class='row'><span class='label'>Push Fails</span><span class='val'>" + String(consecutiveFailCount) + "</span></div>";
+  html += "<div class='row'><span class='label'>Uptime</span><span class='val'>" + String(millis() / 1000) + "s</span></div>";
+  html += "</div>";
+
+  // Actions
+  html += "<div class='card'>";
+  html += "<a href='/api/force-push'><button class='btn btn-blue'>Force Push</button></a>";
+  html += "<a href='/restart'><button class='btn btn-red'>Restart</button></a>";
+  html += "</div>";
+
+  // WiFi setup
+  html += "<div class='card'>";
+  html += "<h2>WiFi Setup</h2>";
+  html += "<form action='/setwifi' method='GET'>";
+  html += "<input type='text' name='ssid' placeholder='WiFi SSID' style='width:100%;margin-bottom:6px;padding:8px;background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:6px;font-size:12px' required>";
+  html += "<input type='password' name='pass' placeholder='Password' style='width:100%;padding:8px;background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:6px;font-size:12px'>";
+  html += "<button class='btn btn-green' type='submit' style='width:100%;margin-top:8px'>Connect WiFi</button>";
+  html += "</form></div>";
+
+  html += "<script>setInterval(()=>{if(!document.activeElement||document.activeElement.tagName==='BODY')location.reload()},5000)</script>";
+  html += "</body></html>";
+  return html;
+}
+
+// ══════════════════════════════════════════════════
+//  LOCAL MQTT — publish state + subscribe to commands
+// ══════════════════════════════════════════════════
+
+#if ENABLE_LOCAL_MQTT
+
+void mqttPublishState();
+
+#if USE_CLOUD_MQTT == 0
+String mqttDerivePassword() {
+  String input = deviceCode + MQTT_SECRET;
+  uint8_t hash[32];
+  mbedtls_sha256_context ctx;
+  mbedtls_sha256_init(&ctx);
+  mbedtls_sha256_starts(&ctx, 0);
+  mbedtls_sha256_update(&ctx, (const uint8_t*)input.c_str(), input.length());
+  mbedtls_sha256_finish(&ctx, hash);
+  mbedtls_sha256_free(&ctx);
+  char hex[17];
+  for (int i = 0; i < 8; i++) sprintf(hex + i * 2, "%02x", hash[i]);
+  hex[16] = 0;
+  return String(hex);
+}
+
+void mqttBroadcastDiscovery() {
+  if (WiFi.status() != WL_CONNECTED) return;
+  IPAddress bcast = WiFi.localIP();
+  bcast[3] = 255;
+  mqttUdp.beginPacket(bcast, MQTT_DISCOVERY_PORT);
+  mqttUdp.print(MQTT_DISCOVERY_MSG);
+  mqttUdp.endPacket();
+  Serial.println("[MQTT] discovery sent");
+}
+
+void mqttHandleDiscoveryReply() {
+  int pktSize = mqttUdp.parsePacket();
+  if (pktSize <= 0) return;
+  char buf[64] = {0};
+  int len = mqttUdp.read(buf, sizeof(buf) - 1);
+  if (len <= 0) return;
+  if (strncmp(buf, MQTT_DISCOVERY_REPLY, strlen(MQTT_DISCOVERY_REPLY)) == 0) {
+    mqttBrokerIp = mqttUdp.remoteIP();
+    mqttBrokerKnown = true;
+    mqttClient.setServer(mqttBrokerIp, MQTT_PORT);
+    Serial.print("[MQTT] gateway @ "); Serial.println(mqttBrokerIp);
+  }
+}
+#else
+void mqttCloudInit() {
+  if (mqttBrokerKnown) return;
+  #if CLOUD_MQTT_USE_TLS
+    mqttNetClient.setCACert(CLOUD_MQTT_CA_CERT);
+  #endif
+  mqttClient.setServer(CLOUD_MQTT_HOST, MQTT_PORT);
+  mqttBrokerKnown = true;
+  Serial.printf("[MQTT] Cloud broker set: %s:%d (TLS=%d)\n",
+                CLOUD_MQTT_HOST, MQTT_PORT, CLOUD_MQTT_USE_TLS);
+}
+#endif
+
+void mqttCommandCallback(char* topic, byte* payload, unsigned int len) {
+  String t = String(topic);
+  String p;
+  for (unsigned int i = 0; i < len; i++) p += (char)payload[i];
+  Serial.printf("[MQTT] cmd %s = %s\n", t.c_str(), p.c_str());
+
+  String base = "senseflow/" + deviceCode + "/cmd/";
+  if      (t == base + "open")    { executeValveCommand('O'); mqttPublishState(); }
+  else if (t == base + "close")   { executeValveCommand('C'); mqttPublishState(); }
+  else if (t == base + "refresh") { mqttPublishState(); }
+  else if (t == base + "automode") {
+    autoMode = (p == "1" || p == "true" || p == "ON");
+    prefs.begin("senseflow", false);
+    prefs.putBool("automode", autoMode);
+    prefs.end();
+    mqttPublishState();
+  }
+  else if (t == base + "restart") { delay(500); ESP.restart(); }
+}
+
+bool mqttEnsureConnected() {
+  if (!mqttBrokerKnown) return false;
+  if (mqttClient.connected()) return true;
+  if (millis() - lastMqttReconnect < 5000) return false;
+  lastMqttReconnect = millis();
+  String clientId = "sf-" + deviceCode;
+  #if USE_CLOUD_MQTT
+    String username = CLOUD_MQTT_USER;
+    String password = CLOUD_MQTT_PASS;
+  #else
+    String username = deviceCode;
+    String password = mqttDerivePassword();
+  #endif
+  String willTopic = "senseflow/" + deviceCode + "/info/online";
+  if (mqttClient.connect(clientId.c_str(), username.c_str(), password.c_str(),
+                         willTopic.c_str(), 0, true, "false")) {
+    Serial.println("[MQTT] connected (auth)");
+    mqttClient.publish(willTopic.c_str(), "true", true);
+    String cmdSub = "senseflow/" + deviceCode + "/cmd/+";
+    mqttClient.subscribe(cmdSub.c_str());
+    mqttPublishState();
+    return true;
+  }
+  Serial.printf("[MQTT] connect fail rc=%d\n", mqttClient.state());
+  return false;
+}
+
+void mqttPublishState() {
+  if (!mqttClient.connected()) return;
+  String topic = "senseflow/" + deviceCode + "/live";
+  String payload = "{";
+  payload += "\"state\":\"" + stateName(valveState) + "\",";
+  payload += "\"stateVal\":" + String((int)valveState) + ",";
+  payload += "\"bits\":" + String(sensorBits) + ",";
+  payload += "\"pct\":" + String(confirmedPct) + ",";
+  payload += "\"flags\":" + String(flags) + ",";
+  payload += "\"automode\":" + String(autoMode ? "true" : "false") + ",";
+  payload += "\"rssi\":" + String(WiFi.RSSI());
+  payload += "}";
+  mqttClient.publish(topic.c_str(), payload.c_str(), true);  // retained
+}
+
+void mqttLoop() {
+  if (WiFi.status() != WL_CONNECTED) return;
+
+#if USE_CLOUD_MQTT
+  if (!mqttBrokerKnown) mqttCloudInit();
+#else
+  if (!mqttBrokerKnown) {
+    if (millis() - lastMqttDiscovery >= MQTT_DISCOVERY_INTERVAL_MS || lastMqttDiscovery == 0) {
+      lastMqttDiscovery = millis();
+      mqttUdp.begin(MQTT_DISCOVERY_PORT);
+      mqttBroadcastDiscovery();
+    }
+    mqttHandleDiscoveryReply();
+    return;
+  }
+#endif
+
+  if (mqttEnsureConnected()) {
+    mqttClient.loop();
+    if (millis() - lastMqttPublish >= MQTT_PUBLISH_INTERVAL_MS) {
+      lastMqttPublish = millis();
+      mqttPublishState();
+    }
+  }
+}
+
+#endif  // ENABLE_LOCAL_MQTT
+
+// ══════════════════════════════════════════════════
+//  SETUP
+// ══════════════════════════════════════════════════
+
+void setup() {
+  Serial.begin(115200);
+  delay(500);
+  Serial.println("\n=== SenseFlow Firebase Valve v" FIRMWARE_VERSION " ===\n");
+
+  // Log reset reason — flag unclean restarts so installer notices
+  esp_reset_reason_t reason = esp_reset_reason();
+  Serial.printf("[BOOT] Reset reason: %d\n", (int)reason);
+
+  // Hardware watchdog — reboot if main loop ever blocks > 30 s.
+  // ESP32 core 3.x uses a config struct; older cores use (timeout, panic).
+  #if ESP_IDF_VERSION_MAJOR >= 5
+    esp_task_wdt_config_t wdt_cfg = {
+      .timeout_ms = 30000,
+      .idle_core_mask = 0,
+      .trigger_panic = true
+    };
+    esp_task_wdt_init(&wdt_cfg);
+  #else
+    esp_task_wdt_init(30, true);
+  #endif
+  esp_task_wdt_add(NULL);
+
+  // Valve pins
+  pinMode(BTN_TOGGLE,    INPUT_PULLUP);
+  pinMode(RELAY_FORWARD, OUTPUT);
+  pinMode(RELAY_REVERSE, OUTPUT);
+  pinMode(FB_FORWARD,    INPUT_PULLDOWN);
+  pinMode(FB_REVERSE,    INPUT_PULLDOWN);
+  pinMode(LED_OPEN,      OUTPUT);
+  pinMode(LED_CLOSE,     OUTPUT);
+
+  // Safe start
+  digitalWrite(RELAY_FORWARD, LOW);
+  digitalWrite(RELAY_REVERSE, LOW);
+  digitalWrite(LED_OPEN,  LOW);
+  digitalWrite(LED_CLOSE, LOW);
+
+  // DIP sensor pins
+  #if SENSOR_COUNT > 0
+  for (int i = 0; i < SENSOR_COUNT; i++) {
+    pinMode(DIP_PINS[i], INPUT_PULLDOWN);   // external 10k pull-down required on 34/35
+  }
+  // OCSIL common (excite) pin — parked LOW between read bursts
+  pinMode(DIP_COMMON_PIN, OUTPUT);
+  digitalWrite(DIP_COMMON_PIN, LOW);
+  #endif
+
+  // Addressable LED
+  FastLED_min<LED_PIN>.addLeds(rgbLeds, LED_COUNT);
+  FastLED_min<LED_PIN>.setBrightness(80);
+  setLED(255, 100, 0);   // LED1 orange on boot
+  setLED2(255, 100, 0);  // LED2 orange on boot
+
+  // Load device code + config from NVS
+  loadOrCreateDeviceCode();
+  printRegistrationInfo();
+
+  // Seed debouncers
+  bool openLS  = digitalRead(FB_FORWARD);
+  bool closeLS = digitalRead(FB_REVERSE);
+  dbOpen.lastRaw  = openLS;  dbOpen.stableValue  = openLS;  dbOpen.stableStart  = millis();
+  dbClose.lastRaw = closeLS; dbClose.stableValue = closeLS; dbClose.stableStart = millis();
+  for (int i = 0; i < 6; i++) {
+    dbLevel[i].lastRaw = false; dbLevel[i].stableValue = false; dbLevel[i].stableStart = millis();
+  }
+
+  // Boot LS check — determine initial valve state
+  #if VALVE_TYPE == 230
+    if (openLS && closeLS) {
+      Serial.println("[BOOT] Both LS HIGH - wiring fault");
+      valveState = STATE_LS_ERROR;
+    } else if (openLS) {
+      valveState = STATE_OPEN;
+      Serial.println("[BOOT] Open LS - STATE_OPEN");
+    } else if (closeLS) {
+      valveState = STATE_CLOSED;
+      Serial.println("[BOOT] Close LS - STATE_CLOSED");
+    } else {
+      valveState = STATE_RECOVERY;
+      Serial.println("[BOOT] No LS - driving OPEN");
+      setRelays(true, false);
+    }
+    updateFaultTimer(openLS, closeLS);
+  #else
+    // 24V: LS not readable at idle, always start with recovery
+    valveState = STATE_RECOVERY;
+    Serial.println("[BOOT] 24V - driving OPEN for position");
+    setRelays(true, false);
+  #endif
+
+  // WiFi AP
+  WiFi.mode(WIFI_AP_STA);
+  WiFi.softAP(apName.c_str(), AP_PASSWORD);
+  Serial.println("AP started: " + apName);
+
+  // MvsConnect
+  mvs.setCustomHTML([](){ return buildCustomHTML(); });
+  mvs.onWiFiCredentialsReceived([](const String& ssid) {
+    Serial.println("WiFi credentials received: " + ssid);
+    WiFi.disconnect(false);
+    delay(200);
+  });
+  mvs.begin();
+
+  // Endpoints
+  mvs.addEndpoint("/setwifi", []() {
+    WebServer* srv = mvs.getServer();
+    String ssid = srv->arg("ssid");
+    String pass = srv->arg("pass");
+    if (ssid.length() == 0) {
+      srv->send(400, "text/html", "<html><body style='background:#1a1a2e;color:#fff;text-align:center;padding:40px'><h2>SSID required</h2></body></html>");
+      return;
+    }
+    srv->send(200, "text/html", "<html><body style='background:#1a1a2e;color:#fff;text-align:center;padding:40px'><h2>Connecting to " + ssid + "...</h2><script>setTimeout(()=>location.href='/',15000)</script></body></html>");
+    manualWiFiInProgress = true;
+    manualWiFiStart = millis();
+    WiFi.disconnect(true);
+    delay(1000);
+    Preferences wifiPrefs;
+    wifiPrefs.begin("mvsconnect", false);
+    wifiPrefs.putString("ssid", ssid);
+    wifiPrefs.putString("password", pass);
+    wifiPrefs.putBool("valid", true);
+    wifiPrefs.end();
+    WiFi.begin(ssid.c_str(), pass.c_str());
+  });
+
+  mvs.addEndpoint("/restart", []() {
+    WebServer* srv = mvs.getServer();
+    srv->send(200, "text/html", "<html><body style='background:#1a1a2e;color:#fff;text-align:center;padding:40px'><h2>Restarting...</h2></body></html>");
+    delay(1000); ESP.restart();
+  });
+
+  mvs.addEndpoint("/api/valve", []() {
+    WebServer* srv = mvs.getServer();
+    String cmd = srv->arg("cmd");
+    if (cmd == "open") executeValveCommand('O');
+    else if (cmd == "close") executeValveCommand('C');
+    srv->sendHeader("Location", "/"); srv->send(302);
+  });
+
+  mvs.addEndpoint("/api/setconfig", []() {
+    WebServer* srv = mvs.getServer();
+    if (srv->hasArg("auto")) {
+      autoMode = (srv->arg("auto").toInt() != 0);
+      pendingSave = true;
+    }
+    srv->sendHeader("Location", "/"); srv->send(302);
+  });
+
+  mvs.addEndpoint("/api/force-push", []() {
+    WebServer* srv = mvs.getServer();
+    if (firebaseReady) { pushLiveData(); updateDeviceInfo(true); }
+    srv->sendHeader("Location", "/"); srv->send(302);
+  });
+
+  mvs.addEndpoint("/api/status", []() {
+    WebServer* srv = mvs.getServer();
+    buildFlags();
+    String json = "{";
+    json += "\"code\":\"" + deviceCode + "\",";
+    json += "\"valve\":\"" + stateName(valveState) + "\",";
+    json += "\"pct\":" + String(confirmedPct) + ",";
+    json += "\"bits\":" + String(sensorBits) + ",";
+    json += "\"flags\":" + String(flags) + ",";
+    json += "\"auto\":" + String(autoMode ? "true" : "false") + ",";
+    json += "\"min\":" + String(minPercent) + ",";
+    json += "\"max\":" + String(maxPercent) + ",";
+    json += "\"firebase\":" + String(firebaseReady ? "true" : "false");
+    json += "}";
+    srv->send(200, "application/json", json);
+  });
+
+  // Try saved WiFi
+  if (mvs.hasSavedWiFi()) {
+    setLED(0, 0, 255);
+    if (mvs.connectToSavedWiFi(30)) {
+      Serial.println("WiFi connected! IP: " + WiFi.localIP().toString());
+      setGoogleDNS();
+      setLED(0, 255, 0);
+      initFirebase();
+    } else {
+      setLED(255, 255, 255);
+    }
+  } else {
+    setLED(255, 255, 255);
+  }
+
+  // MvsOTA
+  mvsota.begin(DEVICE_NAME, FIRMWARE_VERSION, FIRMWARE_CODE);
+  mvsota.onStart([]() {
+    Serial.println("[OTA] Starting - relays OFF");
+    setRelays(false, false);
+  });
+
+#if ENABLE_LOCAL_MQTT
+  mqttClient.setBufferSize(512);
+  mqttClient.setCallback(mqttCommandCallback);
+#endif
+
+  ledCycleStart = millis();
+}
+
+// ══════════════════════════════════════════════════
+//  LOOP
+// ══════════════════════════════════════════════════
+
+void loop() {
+  unsigned long now = millis();
+
+  // Feed watchdog — proves main loop is alive
+  esp_task_wdt_reset();
+
+  // Heap monitor — restart cleanly before crashing on fragmentation
+  static unsigned long lastHeapCheck = 0;
+  if (now - lastHeapCheck >= 300000) {   // 5 min
+    lastHeapCheck = now;
+    uint32_t freeHeap = ESP.getFreeHeap();
+    Serial.printf("[HEAP] free=%u bytes\n", freeHeap);
+    if (freeHeap < 30000) {
+      Serial.println("[HEAP] Below 30 KB — restarting cleanly");
+      delay(500);
+      ESP.restart();
+    }
+  }
+
+  // Layered network state: WiFi → internet (DNS chain) → firebase
+  bool wifiUp = (WiFi.status() == WL_CONNECTED);
+  if (!wifiUp) {
+    internetAvailable = false;
+    firebaseHealthy   = false;
+  } else if (now - lastInternetCheck > 30000) {
+    lastInternetCheck = now;
+    bool prevInternet = internetAvailable;
+    internetAvailable = checkInternet();
+    if (internetAvailable && !prevInternet) {
+      Serial.println("[NET] Internet restored");
+      if (!firebaseHealthy) {
+        Serial.println("[FB] Internet back — attempting recovery");
+        if (!firebaseReady) {
+          initFirebase();
+        } else {
+          firebaseHealthy = true;
+          consecutiveFailCount = 0;
+        }
+      }
+    } else if (!internetAvailable && prevInternet) {
+      Serial.println("[NET] Internet lost — gating Firebase");
+      firebaseHealthy = false;
+    }
+  }
+
+  mvs.handle();
+  if (!mvsota.isUpdating()) mvsota.handle();
+
+#if ENABLE_LOCAL_MQTT
+  mqttLoop();
+#endif
+
+  // Deferred NVS save
+  if (pendingSave) {
+    pendingSave = false;
+    saveConfig();
+    if (firebaseReady) pushConfigToFirebase();
+  }
+
+  // Debounce limit switches
+  bool rawOpen  = digitalRead(FB_FORWARD);
+  bool rawClose = digitalRead(FB_REVERSE);
+  bool rawBtn  = digitalRead(BTN_TOGGLE);
+
+  bool openLS  = updateDebounce(dbOpen,   rawOpen,   DEBOUNCE_MS);
+  bool closeLS = updateDebounce(dbClose,  rawClose,  DEBOUNCE_MS);
+  bool btn     = updateDebounce(dbBtnFwd, rawBtn,    DEBOUNCE_BTN_MS);
+
+  // DIP sensors — OCSIL pulsed read + asymmetric debounce (replaces legacy per-pin debounce)
+  #if SENSOR_COUNT > 0
+    readDipWithAsymDebounce();
+  #endif
+
+  validateSensors();
+  handleLED();         // LED1 (tank + system status)
+  handleValveLED();    // LED2 (valve status)
+  evaluateAutoMode();
+
+  // ── Single-button: short = toggle valve, long ≥3s = clear FAULT/LS_ERROR ──
+  bool btnDown = (btn == LOW);
+  bool btnJustPressed  = (btnDown && lastBtnFwd == HIGH);
+  bool btnJustReleased = (!btnDown && lastBtnFwd == LOW);
+  lastBtnFwd = btn;
+  bool fwdJustPressed = false;   // legacy var, kept false (state machine looks at it below)
+  bool revJustPressed = false;
+
+  // Track press start for long-press detection
+  static unsigned long btnPressStart = 0;
+  static bool          btnLongFired  = false;
+
+  if (btnJustPressed) {
+    btnPressStart = millis();
+    btnLongFired  = false;
+  }
+
+  if (btnDown && !btnLongFired && (millis() - btnPressStart) >= BOTH_BTN_HOLD_MS) {
+    // Long-press fired
+    btnLongFired = true;
+    if (valveState == STATE_FAULT || valveState == STATE_LS_ERROR || valveState == STATE_RECOVERY) {
+      Serial.println("[BTN] Long-press - clearing error state -> CLOSED");
+      valveState = STATE_CLOSED;
+      faultRetrying = false; faultRetryCount = 0;
+      setRelays(false, false);
+    } else if (autoMode) {
+      autoMode = false;
+      pendingSave = true;
+      Serial.println("[BTN] Long-press - AUTO MODE OFF");
+      flashAutoExitConfirm();
+    }
+  }
+
+  if (btnJustReleased && !btnLongFired) {
+    // Short press = toggle
+    if (valveState == STATE_CLOSED)      executeValveCommand('O');
+    else if (valveState == STATE_OPEN)   executeValveCommand('C');
+    // ignore in-motion / error states
+  }
+
+  // ── Valve state machine (230V) ────────────────
+  #if VALVE_TYPE == 230
+    // Both LS HIGH = wiring fault
+    if (openLS && closeLS) {
+      if (valveState != STATE_LS_ERROR) {
+        Serial.println("[ERROR] Both LS HIGH - wiring fault");
+        valveState = STATE_LS_ERROR;
+        setRelays(false, false);
+        if (firebaseReady) { pushLiveData(); handleLED(); }  // Report LS error
+      }
+      updateValveLEDs();
+      return;
+    }
+    if (valveState == STATE_LS_ERROR) {
+      Serial.println("[RECOVERY] LS error cleared");
+      valveState = STATE_RECOVERY;
+      setRelays(true, false);
+    }
+    if (valveState == STATE_FAULT) {
+      handleFaultState(openLS, closeLS);
+      updateValveLEDs();
+      // Push fault state to Firebase (since return skips normal push)
+      if (firebaseReady && hasDataChanged()) { pushLiveData(); handleLED(); }
+      return;
+    }
+    // Fault timer — only watch the LS we're traveling toward
+    if (valveState == STATE_OPENING || valveState == STATE_RECOVERY) {
+      updateFaultTimer(openLS, false);   // only care about open LS
+    } else if (valveState == STATE_CLOSING) {
+      updateFaultTimer(false, closeLS);  // only care about close LS
+    } else {
+      updateFaultTimer(openLS, closeLS); // idle — either LS resets timer
+    }
+    if (faultTimerExpired()) {
+      faultDirection = (valveState == STATE_CLOSING) ? 'C' : 'O';
+      Serial.printf("[FAULT] No LS 3min - VALVE FAULTY (direction=%c)\n", faultDirection);
+      valveState = STATE_FAULT;
+      faultRetrying = false; faultRetryCount = 0;
+      faultRetryTimerStart = millis();
+      setRelays(false, false);
+      updateValveLEDs();
+      if (firebaseReady) { pushLiveData(); handleLED(); }  // Immediately report fault
+      return;
+    }
+    if (valveState == STATE_RECOVERY) {
+      if (openLS) { setRelays(false, false); valveState = STATE_OPEN; Serial.println("[RECOVERY] OPEN"); }
+      else setRelays(true, false);
+      updateValveLEDs();
+      return;
+    }
+    if (valveState == STATE_OPENING) {
+      if (openLS) { setRelays(false, false); valveState = STATE_OPEN; Serial.println("[OPENING] OPEN"); }
+      else setRelays(true, false);
+      updateValveLEDs();
+      return;
+    }
+    if (valveState == STATE_CLOSING) {
+      if (closeLS) { setRelays(false, false); valveState = STATE_CLOSED; Serial.println("[CLOSING] CLOSED"); }
+      else setRelays(false, true);
+      updateValveLEDs();
+      return;
+    }
+  #else
+    // ── 24V valve state machine ─────────────────
+    // LS only readable when relay ON
+    if (valveState == STATE_FAULT) {
+      handleFaultState(openLS, closeLS);
+      updateValveLEDs();
+      if (firebaseReady && hasDataChanged()) { pushLiveData(); handleLED(); }
+      return;
+    }
+    if (faultTimerExpired()) {
+      faultDirection = (valveState == STATE_CLOSING) ? 'C' : 'O';
+      Serial.printf("[FAULT] No LS confirm - VALVE FAULTY (direction=%c)\n", faultDirection);
+      valveState = STATE_FAULT;
+      faultRetrying = false; faultRetryCount = 0;
+      faultRetryTimerStart = millis();
+      setRelays(false, false);
+      updateValveLEDs();
+      if (firebaseReady) { pushLiveData(); handleLED(); }
+      return;
+    }
+    if (valveState == STATE_RECOVERY || valveState == STATE_OPENING) {
+      setRelays(true, false);
+      updateFaultTimer(openLS, false);
+      if (openLS) {
+        setRelays(false, false);
+        valveState = STATE_OPEN;
+        faultTimerActive = false;
+        Serial.println(valveState == STATE_RECOVERY ? "[RECOVERY] OPEN" : "[OPENING] OPEN");
+      }
+      updateValveLEDs();
+      return;
+    }
+    if (valveState == STATE_CLOSING) {
+      setRelays(false, true);
+      updateFaultTimer(false, closeLS);
+      if (closeLS) {
+        setRelays(false, false);
+        valveState = STATE_CLOSED;
+        faultTimerActive = false;
+        Serial.println("[CLOSING] CLOSED");
+      }
+      updateValveLEDs();
+      return;
+    }
+  #endif
+
+  // IDLE state
+  updateValveLEDs();
+
+  // Single button: ignored in auto mode
+  if (!autoMode) {
+    if (fwdJustPressed && valveState != STATE_OPEN) {
+      Serial.println("[BTN] OPENING");
+      valveState = STATE_OPENING;
+      setRelays(true, false);
+    }
+    if (revJustPressed && valveState != STATE_CLOSED) {
+      Serial.println("[BTN] CLOSING");
+      valveState = STATE_CLOSING;
+      setRelays(false, true);
+    }
+  }
+
+  // mDNS handled by MvsConnect library (<deviceName>-mvstech.local)
+
+  // Internet check
+  if (firebaseReady) {
+    internetAvailable = true;
+  } else if (WiFi.status() == WL_CONNECTED && (now - lastInternetCheck > 30000)) {
+    lastInternetCheck = now;
+    internetAvailable = checkInternet();
+    if (internetAvailable) {
+      Serial.println("Internet OK, retrying Firebase...");
+      initFirebase();
+    }
+  } else if (WiFi.status() != WL_CONNECTED) {
+    internetAvailable = false;
+  }
+
+  // Firebase operations
+  if (WiFi.status() == WL_CONNECTED) {
+    checkFirebaseReady();
+    if (firebaseReady) {
+      if (hasDataChanged()) {
+        if (pushLiveData()) {
+          updateDeviceInfo(true);
+          writeHistory();
+        }
+        handleLED();
+      }
+      if (now - lastHeartbeat >= HEARTBEAT_INTERVAL) {
+        lastHeartbeat = now;
+        pushLiveData();
+        handleLED();
+        updateDeviceInfo(true);
+        handleLED();
+      }
+      if (now - lastCommandCheck >= COMMAND_CHECK_INTERVAL) {
+        lastCommandCheck = now;
+        checkCommands();
+        handleLED();
+      }
+      if (now - lastConfigCheck >= CONFIG_CHECK_INTERVAL) {
+        lastConfigCheck = now;
+        checkConfig();
+        handleLED();
+      }
+    }
+  } else {
+    if (manualWiFiInProgress && (now - manualWiFiStart > 30000)) {
+      manualWiFiInProgress = false;
+    }
+    static unsigned long lastReconnect = 0;
+    if (!manualWiFiInProgress && (now - lastReconnect > 30000)) {
+      lastReconnect = now;
+      if (mvs.hasSavedWiFi()) {
+        if (mvs.connectToSavedWiFi(10)) {
+          setGoogleDNS();
+          if (!firebaseReady) initFirebase();
+        }
+      }
+    }
+  }
+
+  // Serial commands
+  if (Serial.available()) {
+    String line = Serial.readStringUntil('\n');
+    line.trim();
+    if (line.length() == 0) return;
+    String upper = line; upper.toUpperCase();
+
+    if (upper.startsWith("WIFI ")) {
+      String params = line.substring(5);
+      int sp = params.indexOf(' ');
+      String ssid = sp > 0 ? params.substring(0, sp) : params;
+      String pass = sp > 0 ? params.substring(sp + 1) : "";
+      ssid.trim(); pass.trim();
+      if (ssid.length() == 0) { Serial.println("Usage: WIFI <ssid> <password>"); return; }
+      Serial.println("Setting WiFi: " + ssid);
+      Preferences wp; wp.begin("mvsconnect", false);
+      wp.putString("ssid", ssid); wp.putString("password", pass); wp.putBool("valid", true); wp.end();
+      Serial.println("Saved. Restarting...");
+      delay(500); ESP.restart();
+    }
+    else if (upper == "ADMIN") { printRegistrationInfo(); }
+    else if (upper == "RESET_WIFI") { mvs.clearSavedWiFi(); delay(500); ESP.restart(); }
+    else {
+      char cmd = line.charAt(0);
+      switch (cmd) {
+        case 'O': case 'o': executeValveCommand('O'); Serial.println("Opening..."); break;
+        case 'C': case 'c': executeValveCommand('C'); Serial.println("Closing..."); break;
+        case 'S': case 's':
+          Serial.println("\n--- Valve Status ---");
+          Serial.println("Code:       " + deviceCode);
+          Serial.println("Valve:      " + stateName(valveState));
+          Serial.printf("Level:      %d%% bits=%d error=%s\n", confirmedPct, sensorBits, sensorError ? "YES" : "No");
+          Serial.printf("Auto:       %s  min=%d%% max=%d%%\n", autoMode ? "ON" : "OFF", minPercent, maxPercent);
+          Serial.printf("Relays:     fwd=%s rev=%s\n", currentRelayFwd ? "ON" : "OFF", currentRelayRev ? "ON" : "OFF");
+          Serial.println("Firebase:   " + String(firebaseReady ? "Ready" : "Not ready"));
+          Serial.println("WiFi:       " + mvs.getWiFiStatus());
+          Serial.println("IP:         " + WiFi.localIP().toString());
+          Serial.println("Uptime:     " + String(millis() / 1000) + "s");
+          Serial.println("--------------------\n");
+          break;
+        case 'R': case 'r':
+          if (valveState == STATE_FAULT || valveState == STATE_LS_ERROR) {
+            faultRetrying = false; faultRetryCount = 0; faultTimerActive = false;
+            valveState = STATE_RECOVERY;
+            setRelays(true, false);
+            Serial.println("Manual reset - recovery");
+          }
+          break;
+        default: Serial.println("O=open C=close S=status R=reset WIFI ADMIN RESET_WIFI"); break;
+      }
+    }
+  }
+}

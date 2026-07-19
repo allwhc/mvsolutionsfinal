@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { useDebugMode } from "../context/DebugModeContext";
 import { useDevices } from "../hooks/useDevices";
@@ -58,6 +58,15 @@ function applySavedOrder(devices, savedOrder) {
 export default function Dashboard() {
   const { user, userData, isOrgAdmin, isOrgMember } = useAuth();
   const { devices, loading } = useDevices();
+  const navigate = useNavigate();
+
+  // Kiosk entry — confirmation prompt then hand off to /kiosk (which
+  // handles browser-native fullscreen on mount).
+  const handleKioskLaunch = () => {
+    if (window.confirm("Enter kiosk mode?\n\nThe browser will go fullscreen. Press Esc or the Exit button to leave.")) {
+      navigate("/kiosk");
+    }
+  };
   // Edge-triggered audible alert when any device crosses a user-configured
   // alertLowPct / alertHighPct threshold. Silent for devices where the
   // user never set thresholds — only fires for alerts they activated.
@@ -297,6 +306,20 @@ export default function Dashboard() {
                 </svg>
               </button>
             )}
+            {/* Kiosk / fullscreen wall-display mode. Confirms first,
+                then navigates to /kiosk (which triggers native
+                fullscreen on mount). */}
+            <button
+              onClick={handleKioskLaunch}
+              className="p-2 rounded-lg bg-gray-100 text-gray-500 hover:bg-gray-200"
+              title="Kiosk view (fullscreen)"
+              aria-label="Enter kiosk view"
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V6a2 2 0 012-2h2M4 16v2a2 2 0 002 2h2m8-16h2a2 2 0 012 2v2m-4 12h2a2 2 0 002-2v-2" />
+              </svg>
+            </button>
+
             {/* Hidden probe-diagnostic toggle. Session-only (no localStorage)
                 so accidentally-turned-on state clears on refresh. Deliberately
                 unobtrusive: no icon change, no colour indication when off.

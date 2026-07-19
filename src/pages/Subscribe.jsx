@@ -253,26 +253,21 @@ export default function Subscribe() {
               </div>
             )}
 
-            {/* Personal vs Org choice */}
+            {/* Org accounts: device always goes to the org's shared pool
+                (no personal-vs-org choice). Just show which org, and
+                optionally let admin pick a wing to attach it to. */}
             {isOrg && !needsInvite && (
               <div className="mb-4">
-                <p className="text-xs text-gray-500 font-medium mb-2">Subscribe as</p>
-                <div className="flex gap-2">
-                  <button onClick={() => { setSubType("personal"); setSelectedGroup(""); }}
-                    className={`flex-1 py-2 rounded-lg text-xs font-medium border transition-colors ${
-                      subType === "personal" ? "bg-green-50 border-green-300 text-green-700" : "bg-white border-gray-200 text-gray-500 hover:bg-gray-50"
-                    }`}>My Device</button>
-                  <button onClick={() => setSubType("org")}
-                    className={`flex-1 py-2 rounded-lg text-xs font-medium border transition-colors ${
-                      subType === "org" ? "bg-blue-50 border-blue-300 text-blue-700" : "bg-white border-gray-200 text-gray-500 hover:bg-gray-50"
-                    }`}>{userData?.orgName || orgId}</button>
+                <div className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 mb-3">
+                  <p className="text-[10px] uppercase tracking-wider text-blue-600 font-semibold">Adding to organisation</p>
+                  <p className="text-sm text-blue-900 font-medium">{userData?.orgName || orgId}</p>
                 </div>
-                {subType === "org" && groups.length > 0 && (
-                  <div className="mt-3">
-                    <p className="text-xs text-gray-500 mb-1">Assign to group (optional)</p>
+                {groups.length > 0 && (
+                  <div>
+                    <p className="text-xs text-gray-500 mb-1">Assign to wing / group (optional)</p>
                     <select value={selectedGroup} onChange={(e) => setSelectedGroup(e.target.value)}
                       className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
-                      <option value="">No group</option>
+                      <option value="">— None —</option>
                       {groups.map((g) => <option key={g.groupId} value={g.groupId}>{g.name}</option>)}
                     </select>
                   </div>
@@ -280,11 +275,16 @@ export default function Subscribe() {
               </div>
             )}
 
-            {/* Subscribe button */}
+            {/* Submit — label differs per account type. Org = add to
+                shared pool; individual = personal subscribe. */}
             {!needsInvite && (
               <button onClick={handleSubscribe} disabled={loading}
                 className="w-full bg-green-600 text-white py-2.5 rounded-lg text-sm font-medium hover:bg-green-700 disabled:opacity-50">
-                {loading ? "Subscribing..." : subscribers.length === 0 ? "Subscribe as Owner" : "Subscribe"}
+                {loading
+                  ? (isOrg ? "Adding..." : "Subscribing...")
+                  : isOrg
+                    ? "Add to Organisation"
+                    : subscribers.length === 0 ? "Subscribe as Owner" : "Subscribe"}
               </button>
             )}
           </div>

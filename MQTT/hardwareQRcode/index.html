@@ -1,0 +1,3359 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GST Billing System - Vishal Electric & Hardware Stores</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: Arial, sans-serif;
+            background: #f5f5f5;
+            padding: 10px;
+        }
+
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: white;
+            border: 2px solid #333;
+            box-shadow: 0 0 10px rgba(0,0,0,0.1);
+        }
+
+        .header {
+            background: white;
+            padding: 10px;
+            border-bottom: 1px solid #333;
+        }
+
+        .tax-invoice-header {
+            text-align: center;
+            font-weight: bold;
+            margin-bottom: 5px;
+            font-size: 14px;
+        }
+
+        /* Bill type dropdown styled to look like header */
+        #billTypeSelect {
+            font-weight: bold;
+            font-size: 14px;
+            text-align: center;
+            border: 1px solid #999;
+            border-radius: 3px;
+            padding: 2px 8px;
+            background: #f9f9f9;
+            cursor: pointer;
+            text-align-last: center;
+        }
+
+        #billTypeSelect:hover {
+            background: #e8e8e8;
+        }
+
+        /* Hide tax columns in non-GST mode */
+        .hide-tax-columns .tax-rate-col,
+        .hide-tax-columns .tax-amount-col,
+        .hide-tax-columns th.tax-rate-col,
+        .hide-tax-columns th.tax-amount-col {
+            display: none !important;
+        }
+
+        .hide-tax-columns tbody td:nth-child(7),
+        .hide-tax-columns tbody td:nth-child(8) {
+            display: none !important;
+        }
+
+        /* Hide toggle label styling */
+        .hide-toggle-label {
+            font-size: 11px;
+            color: #666;
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .hide-toggle-label input[type="checkbox"] {
+            cursor: pointer;
+        }
+
+        /* Complete vanish when toggled to hide */
+        .gstin-row-hidden {
+            display: none !important;
+        }
+
+        .bank-details-hidden {
+            display: none !important;
+        }
+
+        /* Keep UPI logo and QR on the right when bank info is hidden */
+        .bank-details-hidden ~ .upi-logo-section {
+            margin-left: auto;
+            border-left: none;
+        }
+
+        .jurisdiction {
+            text-align: center;
+            font-size: 12px;
+            margin-bottom: 10px;
+        }
+
+        .company-header {
+            text-align: center;
+            margin-bottom: 10px;
+        }
+
+        .company-name {
+            font-size: 24px;
+            font-weight: bold;
+            color: #c41e3a;
+            margin-bottom: 5px;
+        }
+
+        .company-details {
+            font-size: 12px;
+            line-height: 1.4;
+        }
+
+        .mobile-number {
+            float: right;
+            font-weight: bold;
+            margin-top: -20px;
+        }
+
+        .invoice-details {
+            display: flex;
+            justify-content: space-between;
+            padding: 10px;
+            border-bottom: 1px solid #333;
+            background: #f9f9f9;
+        }
+
+        .invoice-left, .invoice-right {
+            flex: 1;
+        }
+
+        .invoice-right {
+            text-align: right;
+        }
+
+        .form-section {
+            padding: 15px;
+            background: #f0f8ff;
+            border-bottom: 2px solid #333;
+        }
+
+        .form-row {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 10px;
+            align-items: center;
+        }
+
+        .form-group {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+
+        .form-group label {
+            font-weight: bold;
+            min-width: 120px;
+        }
+
+        .form-group input {
+            padding: 5px;
+            border: 1px solid #ccc;
+            border-radius: 3px;
+            font-size: 14px;
+        }
+
+        /* Auto-capitalize styles */
+        .auto-capitalize {
+            text-transform: capitalize;
+        }
+
+        .items-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 0;
+        }
+
+        .items-table th, .items-table td {
+            border: 1px solid #333;
+            padding: 8px;
+            text-align: center;
+            font-size: 12px;
+        }
+
+        .items-table th {
+            background: #e6e6e6;
+            font-weight: bold;
+        }
+
+        .items-table td input {
+            width: 100%;
+            border: none;
+            padding: 4px;
+            text-align: center;
+            background: transparent;
+        }
+
+        .items-table td input:focus {
+            background: #fffacd;
+            outline: 2px solid #4CAF50;
+        }
+
+        .description-col {
+            width: 35%;
+        }
+
+        .description-col textarea {
+            width: 100%;
+            min-height: 40px;
+            max-height: 120px;
+            resize: vertical;
+            border: none;
+            background: transparent;
+            font-size: 12px;
+            font-family: Arial, sans-serif;
+            padding: 4px;
+            word-wrap: break-word;
+            overflow-wrap: break-word;
+            line-height: 1.2;
+            text-transform: capitalize;
+        }
+
+        .description-col .print-value {
+            display: none;
+            white-space: normal;
+            word-wrap: break-word;
+            overflow-wrap: break-word;
+            line-height: 1.2;
+            padding: 4px;
+        }
+
+        .items-table td {
+            border: 1px solid #333;
+            padding: 8px;
+            text-align: center;
+            font-size: 12px;
+            vertical-align: top;
+        }
+
+        .date-display {
+            display: inline-block;
+            margin-left: 10px;
+            font-weight: bold;
+            font-size: 16px;
+            color: #2c3e50;
+            padding: 4px 8px;
+            background: #f8f9fa;
+            border-radius: 4px;
+            border: 1px solid #dee2e6;
+        }
+
+        .calendar-icon {
+            display: inline-block;
+            margin-left:8px;
+            font-size: 12px;
+            color: #4CAF50;
+            cursor: pointer;
+            padding: 4px 8px;
+            border-radius: 4px;
+            background: #e8f5e8;
+            border: 2px solid #4CAF50;
+            transition: all 0.2s ease;
+        }
+
+        .calendar-icon:hover {
+            background: #4CAF50;
+            color: white;
+            transform: scale(1.1);
+        }
+
+        /* Hide date input during normal view, show formatted date instead */
+        #invoiceDate {
+            display: none;
+            position: absolute;
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        .invoice-details .invoice-right span.print-value,
+        .invoice-details .invoice-right input {
+            font-weight: bold;
+            font-size: 16px;
+        }
+
+        .hsn-col {
+            width: 12%;
+        }
+
+        .qty-col, .rate-col {
+            width: 12%;
+        }
+
+        .amount-col {
+            width: 12%;
+        }
+
+        .tax-rate-col {
+            width: 8%;
+        }
+
+        .tax-amount-col {
+            width: 12%;
+        }
+
+        .total-amount-col {
+            width: 15%;
+        }
+
+        /* Challan number column styling */
+        .challan-col {
+            width: 8%;
+            min-width: 60px;
+        }
+
+        /* Row total styling - increased font size for better visibility */
+        .row-total {
+            font-size: 14px !important;
+            font-weight: bold;
+        }
+
+        .totals-section {
+            display: flex;
+            border-bottom: 1px solid #333;
+            margin-top: 15px;
+        }
+
+        .amount-words {
+            flex: 1;
+            margin-right: 10px;
+            border-right: 1px solid #333;
+            padding: 10px;
+        }
+
+        .tax-calculations {
+            width: 250px !important;
+            min-width: 250px !important;
+            max-width: 250px !important;
+            float: right;
+            flex-shrink: 0;
+        }
+
+        .tax-row {
+            display: flex;
+            border-bottom: 1px solid #333;
+            height: 30px;
+        }
+
+        .tax-label {
+            flex: 1;
+            padding: 3px 6px;
+            font-weight: bold;
+            background: #f0f0f0;
+            border-right: 1px solid #333;
+            display: flex;
+            align-items: center;
+            font-size: 13px;
+            height: 24px;
+        }
+
+        .tax-value {
+            width: 90px;
+            padding: 3px;
+            border-right: 1px solid #333;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: white;
+            font-size: 12px;
+            height: 28px;
+            white-space: nowrap;
+            overflow: hidden;
+        }
+
+        /* Style for zero amount rows - red text and yellow cell background */
+        .row-total.zero-amount {
+            color: red !important;
+            font-weight: bold;
+        }
+
+        .zero-amount-cell {
+            background-color: #ffeb3b !important;
+        }
+
+        .tax-value input {
+            width: 100%;
+            border: none;
+            text-align: center;
+            background: transparent;
+            font-size: 12px;
+        }
+
+        .grand-total {
+            background: #f0f8ff;
+            font-weight: bold;
+            font-size: 16px;
+        }
+
+        .bank-details {
+            display: flex;
+            padding: 10px;
+            font-size: 13px;
+            line-height: 1.4;
+            border-bottom: 1px solid #333;
+        }
+
+        .bank-info {
+            flex: 2;
+            padding-right: 15px;
+        }
+
+        .upi-logo-section {
+            width: 80px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-left: 1px solid #333;
+            padding: 0 10px;
+        }
+
+        .upi-logo {
+            width: 60px;
+            height: auto;
+        }
+
+        .qr-section {
+            width: 140px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 5px 10px;
+        }
+
+        .qr-code {
+            width: 100px;
+            height: 100px;
+            border: 1px solid #ccc;
+            margin: 5px 0;
+        }
+
+        .qr-label {
+            font-size: 10px;
+            text-align: center;
+            font-weight: bold;
+            color: #333;
+        }
+
+        .upi-header {
+            font-size: 11px;
+            font-weight: bold;
+            color: #2e7d32;
+            text-align: center;
+            margin-bottom: 3px;
+        }
+
+        .terms-section {
+            padding: 10px;
+            font-size: 11px;
+            border-bottom: 1px solid #333;
+        }
+
+        .signature-section {
+            padding: 20px;
+            text-align: right;
+            font-size: 12px;
+            min-height: 60px;
+            display: flex;
+            flex-direction: column;   
+            align-items: flex-end;    
+            justify-content: flex-end;
+        }
+
+        .controls {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            width: 180px;
+            background: white;
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+            z-index: 1000;
+            max-height: 90vh;
+            overflow-y: auto;
+        }
+
+        .controls .btn {
+            width: 100%;
+            margin: 3px 0;
+            text-align: left;
+            padding: 10px 12px;
+            display: block;
+            font-size: 13px;
+        }
+
+        .main-content {
+            margin-right: 220px;
+            padding: 10px;
+        }
+
+        .btn {
+            background: #4CAF50;
+            color: white;
+            border: none;
+            padding: 8px 15px;
+            margin: 2px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+        }
+
+        .btn:hover {
+            background: #45a049;
+        }
+
+        .btn-secondary {
+            background: #2196F3;
+        }
+
+        .btn-secondary:hover {
+            background: #1976D2;
+        }
+
+        .btn-danger {
+            background: #f44336;
+        }
+
+        .btn-danger:hover {
+            background: #d32f2f;
+        }
+
+        .settings-modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.5);
+            z-index: 2000;
+            overflow-y: auto;
+            padding: 20px;
+        }
+
+        .modal-content {
+            background: white;
+            padding: 20px;
+            border-radius: 5px;
+            width: 90%;
+            max-width: 500px;
+            margin: 0 auto;
+            position: relative;
+            max-height: 90vh;
+            overflow-y: auto;
+        }
+
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid #eee;
+        }
+
+        .modal-close {
+            background: #f44336;
+            color: white;
+            border: none;
+            width: 30px;
+            height: 30px;
+            border-radius: 50%;
+            cursor: pointer;
+            font-size: 16px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .modal-close:hover {
+            background: #d32f2f;
+        }
+
+        .modal-content input, .modal-content textarea {
+            width: 100%;
+            padding: 8px;
+            margin: 5px 0;
+            border: 1px solid #ccc;
+            border-radius: 3px;
+        }
+
+        /* Page numbering styles - hidden in normal view */
+        .page-number-bottom {
+            display: none;
+        }
+
+        /* GSTIN, Email and HSN validation styles */
+        .gstin-invalid, .email-invalid, .hsn-invalid {
+            border: 2px solid #f44336 !important;
+            background-color: #fff5f5 !important;
+        }
+
+        .gstin-error-msg, .email-error-msg, .hsn-error-msg {
+            color: #f44336;
+            font-size: 11px;
+            display: none;
+            margin-top: 2px;
+        }
+
+        .gstin-invalid + .gstin-error-msg,
+        .email-invalid + .email-error-msg,
+        .hsn-invalid + .hsn-error-msg {
+            display: block !important;
+        }
+
+        /* Items database styles */
+        .item-suggestion {
+            background: #f8f9fa;
+            border: 1px solid #dee2e6;
+            padding: 5px;
+            cursor: pointer;
+            font-size: 11px;
+        }
+
+        .item-suggestion:hover {
+            background: #e9ecef;
+        }
+
+        .item-suggestion strong {
+            color: #007bff;
+        }
+
+        .suggestions-container {
+            position: absolute;
+            background: white;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            z-index: 1000;
+            max-height: 200px;
+            overflow-y: auto;
+            width: 100%;
+        }
+
+        @media print {
+            /* Page setup with margins for page numbers */
+            @page {
+                margin: 0.5in 0.5in 0.8in 0.5in;
+                @bottom-center {
+                    content: "Page " counter(page) " of " counter(pages);
+                    font-size: 11px;
+                    font-weight: bold;
+                    color: #666;
+                }
+            }
+
+            /* Alternative page numbering that works in more browsers */
+            .page-number-bottom {
+                display: block !important;
+                position: fixed;
+                bottom: 0.2in;
+                right: 0.5in;
+                font-size: 10px;
+                font-weight: bold;
+                color: #666;
+                z-index: 9999;
+            }
+
+            .controls, .form-section, .add-row-btn {
+                display: none !important;
+            }
+
+            /* Bill type: hide dropdown, show print text */
+            #billTypeSelect {
+                display: none !important;
+            }
+
+            .tax-invoice-header .print-value {
+                display: inline !important;
+            }
+
+            /* Hide tax columns in print when non-GST */
+            .hide-tax-columns th.tax-rate-col,
+            .hide-tax-columns th.tax-amount-col {
+                display: none !important;
+            }
+
+            .hide-tax-columns tbody td:nth-child(7),
+            .hide-tax-columns tbody td:nth-child(8) {
+                display: none !important;
+            }
+
+            /* Hide GSTIN row in print when toggled */
+            .gstin-row-hidden {
+                display: none !important;
+            }
+
+            /* Hide bank details in print when toggled */
+            .bank-details-hidden {
+                display: none !important;
+            }
+
+            .bank-details-hidden ~ .upi-logo-section {
+                margin-left: auto;
+                border-left: none;
+            }
+
+            /* Hide all toggle checkboxes/labels in print */
+            #gstinToggle, #bankDetailsToggle {
+                display: none !important;
+            }
+            
+            body {
+                background: white;
+                padding: 0;
+                margin: 0;
+            }
+            
+            .main-content {
+                margin-right: 0 !important;
+            }
+            
+            .container {
+                box-shadow: none;
+                border: 2px solid #333;
+                max-width: none;
+                width: 100%;
+                margin: 0;
+            }
+            
+            .items-table td input, .items-table td textarea {
+                display: none !important;
+            }
+            
+            .items-table td .print-value {
+                display: inline !important;
+            }
+            
+            .tax-value input {
+                display: none !important;
+            }
+            
+            .input-suffix {
+                display: none !important;
+            }
+            
+            .tax-value .print-value {
+                display: inline !important;
+            }
+            
+            .invoice-details input {
+                display: none !important;
+            }
+            
+            .invoice-details .print-value {
+                display: inline !important;
+            }
+            
+            .date-display {
+                display: none !important;
+            }
+            
+            .delete-btn {
+                display: none !important;
+            }
+            
+            .totals-section {
+                page-break-inside: avoid;
+                display: flex !important;
+                border-bottom: 1px solid #333;
+                margin-top: 15px;
+            }
+
+            /* Keep footer sections together - stronger CSS rules */
+            .footer-sections {
+                page-break-inside: avoid !important;
+                break-inside: avoid !important;
+                display: block !important;
+                overflow: visible !important;
+            }
+
+            .bank-details {
+                page-break-inside: avoid !important;
+                break-inside: avoid !important;
+            }
+
+            .terms-section {
+                page-break-inside: avoid !important;
+                break-inside: avoid !important;
+            }
+
+            .signature-section {
+                page-break-inside: avoid !important;
+                break-inside: avoid !important;
+            }
+
+            /* Fix table border issues */
+            .items-table {
+                border-collapse: collapse !important;
+                table-layout: fixed !important;
+            }
+
+            /* Fix challan number column width in print mode */
+            .items-table th:first-child,
+            .items-table td:first-child {
+                width: 8% !important;
+                min-width: 60px !important;
+                max-width: 60px !important;
+                text-align: center !important;
+                white-space: nowrap !important;
+                overflow: hidden !important;
+            }
+
+            .items-table th, 
+            .items-table td {
+                border: 1px solid #333 !important;
+                border-collapse: collapse !important;
+                padding: 6px !important;
+                vertical-align: top !important;
+                word-wrap: break-word !important;
+                overflow-wrap: break-word !important;
+            }
+
+            /* Ensure proper date display */
+            .invoice-details .print-value {
+                display: inline !important;
+                font-weight: bold;
+                font-size: 16px;
+            }
+
+            /* Hide calendar icon in print */
+            .calendar-icon {
+                display: none !important;
+            }
+            
+            .tax-calculations {
+                width: 250px !important;
+                min-width: 250px !important;
+                max-width: 250px !important;
+                float: right;
+                flex-shrink: 0;
+            }
+
+            .amount-words {
+                flex: 1;
+                margin-right: 10px;
+                border-right: 1px solid #333;
+                padding: 10px;
+            }
+            
+            /* Multi-page support */
+            .page-break {
+                page-break-before: always;
+            }
+            
+            .continuation-header {
+                display: block !important;
+            }
+            
+            .first-page-only {
+                display: block !important;
+            }
+            
+            .last-page-only {
+                display: block !important;
+            }
+            
+            .page-header {
+                margin-bottom: 10px;
+                font-weight: bold;
+                text-align: center;
+            }
+            
+            .subtotal-carried {
+                font-weight: bold;
+                background: #f0f0f0;
+                padding: 5px;
+                border: 1px solid #333;
+                margin: 5px 0;
+            }
+
+            /* Hide history panel and overlay during print */
+            .history-panel, .history-overlay {
+                display: none !important;
+            }
+
+            /* Hide rows with empty descriptions during print */
+            .items-table tbody tr:has(.description-col .print-value:empty) {
+                display: none !important;
+            }
+
+            /* Remove yellow highlighting and red text for zero amounts in print */
+            .row-total.zero-amount {
+                color: black !important;
+                font-weight: normal !important;
+            }
+
+            .zero-amount-cell {
+                background-color: white !important;
+            }
+
+            .suggestions-container {
+                display: none !important;
+            }
+        }
+
+        .history-panel {
+            position: fixed !important;
+            top: 0 !important;
+            right: -100% !important;
+            width: 400px !important;
+            height: 100vh !important;
+            background: white !important;
+            border-left: 2px solid #ccc !important;
+            transition: right 0.3s ease !important;
+            z-index: 9999 !important;
+            overflow-y: auto !important;
+            padding: 20px !important;
+            box-shadow: -5px 0 15px rgba(0,0,0,0.3) !important;
+            visibility: hidden !important;
+            opacity: 0 !important;
+        }
+
+        .history-panel.show {
+            right: 0 !important;
+            visibility: visible !important;
+            opacity: 1 !important;
+        }
+
+        .history-overlay {
+            position: fixed !important;
+            top: 0 !important;
+            left: 0 !important;
+            width: 100% !important;
+            height: 100% !important;
+            background: rgba(0,0,0,0.5) !important;
+            z-index: 9998 !important;
+            visibility: hidden !important;
+            opacity: 0 !important;
+            transition: opacity 0.3s ease !important;
+            display: none !important;
+        }
+
+        .history-overlay.show {
+            visibility: visible !important;
+            opacity: 1 !important;
+            display: block !important;
+        }
+
+        /* Ensure no interference with main content */
+        .history-panel, .history-overlay {
+            pointer-events: none;
+        }
+        
+        .history-panel.show, .history-overlay.show {
+            pointer-events: auto;
+        }
+
+        .history-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid #eee;
+        }
+
+        .history-close {
+            background: #f44336;
+            color: white;
+            border: none;
+            width: 25px;
+            height: 25px;
+            border-radius: 50%;
+            cursor: pointer;
+            font-size: 14px;
+        }
+
+        .history-item {
+            border: 1px solid #ddd;
+            margin-bottom: 10px;
+            padding: 10px;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+
+        .history-item:hover {
+            background: #f0f0f0;
+        }
+
+        .history-item button {
+            margin: 2px;
+            padding: 4px 8px;
+            font-size: 11px;
+            border-radius: 3px;
+        }
+
+        .customer-form {
+            background: #f0f8ff;
+            padding: 15px;
+            border-radius: 5px;
+            margin-bottom: 20px;
+        }
+
+        .customer-form h4 {
+            margin-bottom: 10px;
+            color: #333;
+        }
+
+        .customer-form input {
+            width: 100%;
+            padding: 8px;
+            margin: 5px 0;
+            border: 1px solid #ccc;
+            border-radius: 3px;
+            font-size: 14px;
+        }
+
+        .modal-content label {
+            display: block;
+            margin-top: 10px;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+
+        .btn-group {
+            display: flex;
+            gap: 5px;
+            margin-top: 8px;
+        }
+
+        .add-row-btn {
+            background: #4CAF50;
+            color: white;
+            border: none;
+            padding: 5px 10px;
+            margin: 5px;
+            cursor: pointer;
+            border-radius: 3px;
+        }
+    </style>
+</head>
+<body>
+    <!-- Page number element (hidden in normal view, shown in print) -->
+    <div class="page-number-bottom"></div>
+
+    <div class="controls">
+        <button class="btn" onclick="generatePDF()">Save as PDF</button>
+        <button class="btn btn-secondary" onclick="printBill()">Print</button>
+        <button class="btn btn-secondary" onclick="toggleHistory()">History</button>
+        <button class="btn btn-secondary" onclick="showTrash()">Trash</button>
+        <button class="btn btn-secondary" onclick="showCustomers()">Customers</button>
+        <button class="btn btn-secondary" onclick="showItems()">Items Database</button>
+        <button class="btn btn-secondary" onclick="newBill()">New Bill</button>
+        <button class="btn btn-secondary" onclick="exportData()">Export Backup</button>
+        <button class="btn btn-secondary" onclick="importData()">Import Backup</button>
+        <button class="btn btn-danger" onclick="clearAllDataWithPassword()">Clear All Data</button>
+        <button class="btn btn-danger" onclick="showSettings()">Settings</button>
+        <button class="btn btn-secondary" onclick="openMobileView()" style="font-size: 10px;">Mobile View</button>
+    </div>
+
+    <!-- Hidden file input for import -->
+    <input type="file" id="importFile" accept=".json" style="display: none;" onchange="handleFileImport(event)">
+
+    <!-- History overlay (hidden by default) -->
+    <div class="history-overlay" id="historyOverlay" onclick="toggleHistory()"></div>
+
+    <!-- History panel (hidden by default) -->
+    <div class="history-panel" id="historyPanel">
+        <div class="history-header">
+            <h3>Bill History</h3>
+            <button class="history-close" onclick="toggleHistory()">×</button>
+        </div>
+        <div id="historyList"></div>
+    </div>
+
+    <div class="main-content">
+        <div class="container" id="billContainer">
+        <!-- Header -->
+        <div class="header">
+            <div class="tax-invoice-header">
+                <select id="billTypeSelect" onchange="handleBillTypeChange()">
+                    <option value="tax_invoice">TAX INVOICE</option>
+                    <option value="bill_of_supply">BILL OF SUPPLY</option>
+                    <option value="estimate">ESTIMATE</option>
+                </select>
+                <span class="print-value" id="billTypePrint" style="display:none;">TAX INVOICE</span>
+            </div>
+            <div class="jurisdiction">Subject to Mumbai Jurisdiction</div>
+            <div class="mobile-number">Mob : <span id="companyMobile">98206 67768</span></div>
+            
+            <div class="company-header">
+                <div class="company-name" id="companyName">VISHAL ELECTRIC & HARDWARE STORES</div>
+                <div class="company-details">
+                    <div>Dealers In : <span id="companyDealing">Hardware, Electric, Paints, Nusts, Bolts, V. Belts</span></div>
+                    <div id="companyAddress">Shop No 5, Pearl Orchid Bldg,Near Ajit Glass Signal, Swami Vivekananda Rd, Jogeshwari West, Mumbai, Maharashtra 400102</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Invoice Details -->
+        <div class="invoice-details">
+            <div class="invoice-left">
+                <div>M/s. 
+                    <input type="text" id="customerName" placeholder="Customer Name" class="auto-capitalize" style="border: none; background: transparent; font-size: inherit;" list="customerList" onchange="loadCustomerDetails(this.value)" oninput="updatePrintValue(this); capitalizeInput(this)">
+                    <span class="print-value" id="customerNamePrint" style="display: none;"></span>
+                </div>
+                <datalist id="customerList"></datalist>
+                
+                <div style="margin-top: 5px;">
+                    <input type="text" id="customerAddress" placeholder="Customer Address" class="auto-capitalize" style="border: none; background: transparent; font-size: inherit; width: 100%;" oninput="updatePrintValue(this); capitalizeInput(this)">
+                    <span class="print-value" id="customerAddressPrint" style="display: none;"></span>
+                </div>
+                
+                <div style="margin-top: 5px;">Contact: 
+                    <input type="text" id="customerContact" placeholder="Phone/Mobile" style="border: none; background: transparent; font-size: inherit;" oninput="updatePrintValue(this)">
+                    <span class="print-value" id="customerContactPrint" style="display: none;"></span>
+                </div>
+                
+                <div style="margin-top: 5px;">Email: 
+                    <input type="email" id="customerEmail" placeholder="customer@example.com" style="border: none; background: transparent; font-size: inherit;" oninput="updatePrintValue(this); validateEmail(this)">
+                    <span class="print-value" id="customerEmailPrint" style="display: none;"></span>
+                    <div class="email-error-msg" id="customerEmailError">Invalid email format. Please enter a valid email address.</div>
+                </div>
+                
+                <div style="margin-top: 5px;" id="customerGSTINRow">Party's GSTIN No.
+                    <input type="text" id="customerGSTIN" placeholder="GSTIN (15 chars)" style="border: none; background: transparent; font-size: inherit;" oninput="updatePrintValue(this); validateGSTIN(this)" maxlength="15">
+                    <span class="print-value" id="customerGSTINPrint" style="display: none;"></span>
+                    <div class="gstin-error-msg" id="customerGSTINError">Invalid GSTIN format. Should be 15 characters (e.g., 27ABCDE1234F1Z5)</div>
+                </div>
+                <div id="gstinToggle" style="display:none; margin-top:5px;">
+                    <label class="hide-toggle-label"><input type="checkbox" id="hideGSTIN" onchange="toggleGSTINVisibility()"> Hide Party GSTIN</label>
+                </div>
+            </div>
+            <div class="invoice-right">
+                <div>Invoice No. 
+                    <input type="text" id="invoiceNo" placeholder="1454" style="border: none; background: transparent; font-size: inherit; text-align: right;" oninput="updatePrintValue(this)">
+                    <span class="print-value" id="invoiceNoPrint" style="display: none;"></span>
+                </div>
+                <div style="margin-top: 10px;">Date : 
+                    <input type="date" id="invoiceDate" style="border: none; background: transparent; font-size: inherit;">
+                    <span class="date-display" id="dateLiveDisplay"></span>
+                    <span class="calendar-icon" onclick="openCalendar()" title="Click to select date">📅</span>
+                    <span class="print-value" id="invoiceDatePrint" style="display: none;"></span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Items Table -->
+        <table class="items-table" id="itemsTable">
+            <thead>
+                <tr>
+                    <th rowspan="2" class="challan-col">Challan<br>No.</th>
+                    <th rowspan="2" class="description-col">DESCRIPTION OF GOODS</th>
+                    <th rowspan="2" class="hsn-col">HSN/SAC<br>Code</th>
+                    <th rowspan="2" class="qty-col">QTY.</th>
+                    <th rowspan="2" class="rate-col">RATE</th>
+                    <th rowspan="2" class="amount-col">Base Amount<br>Rs.</th>
+                    <th rowspan="2" class="tax-rate-col">Tax Rate<br>%</th>
+                    <th rowspan="2" class="tax-amount-col">Tax Amount<br>Rs.</th>
+                    <th rowspan="2" class="total-amount-col">Total Amount<br>Rs.</th>
+                </tr>
+            </thead>
+            <tbody id="itemsTableBody">
+                <!-- Items will be added dynamically -->
+            </tbody>
+        </table>
+
+        <button class="add-row-btn" onclick="addNewRow()">+ Add Row</button>
+
+        <!-- Totals Section -->
+        <div class="totals-section">
+            <div class="amount-words">
+                <strong>Amount (in words)</strong><br>
+                <span id="amountInWords">Zero Rupees Only</span>
+            </div>
+            <div class="tax-calculations">
+                <div class="tax-row">
+                    <div class="tax-label">Subtotal (Base Amount)</div>
+                    <div class="tax-value"><span id="subtotal">₹0.00</span></div>
+                </div>
+                <div class="tax-row" id="totalTaxRow">
+                    <div class="tax-label">Total Tax Amount</div>
+                    <div class="tax-value"><span id="totalTaxAmount">₹0.00</span></div>
+                </div>
+                <div class="tax-row">
+                    <div class="tax-label">Rounded Off.</div>
+                    <div class="tax-value"><span id="roundOff">₹0.00</span></div>
+                </div>
+                <div class="tax-row grand-total">
+                    <div class="tax-label">GRAND TOTAL</div>
+                    <div class="tax-value"><span id="grandTotal">₹0.00</span></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Footer sections grouped for page break control -->
+        <div class="footer-sections">
+            <!-- Bank Details Toggle (only visible in non-GST mode) -->
+            <div id="bankDetailsToggle" style="display:none; padding:5px 10px; background:#fff3cd; border-bottom:1px solid #333;">
+                <label class="hide-toggle-label"><input type="checkbox" id="hideBankDetails" onchange="toggleBankDetailsVisibility()"> Hide Bank & GSTIN Details</label>
+            </div>
+            <!-- Bank Details with UPI Logo and QR Code -->
+            <div class="bank-details" id="bankDetailsSection">
+                <div class="bank-info" id="bankInfoHideable">
+                    <strong>Bank Name :</strong> <span id="bankName">DCB Bank Ltd.</span><br>
+                    <strong>A/c. No.</strong> <span id="accountNo">01020100038623</span><br>
+                    <strong>Bank Branch :</strong> <span id="bankBranch">Jogeshwari (010)</span><br>
+                    <strong>IFSC Code :</strong> <span id="ifscCode">DCBL0000010</span><br>
+                    <strong style="color:red;">GSTIN No. :</strong> <span id="gstinNo" style="color:red;">27ACWPJ6204A1ZT</span><br>
+                    <strong style="color:red;">State Code :</strong> <span id="stateCode" style="color:red;">27 (Maharashtra)</span>
+                </div>
+                <div class="upi-logo-section">
+                    <img src="upi.png" alt="UPI" class="upi-logo">
+                </div>
+                <div class="qr-section">
+                    <div class="upi-header">UPI Payment</div>
+                    <div id="qrCode" class="qr-code"></div>
+                    <div class="qr-label" id="qrLabel">Scan & Pay</div>
+                </div>
+            </div>
+
+            <!-- Terms -->
+            <div class="terms-section">
+                <strong>TERMS OF SALE :</strong><br>
+                1) Goods once Sold will not be taken back.<br>
+                2) Seller is not responsible for any loss or damaged of goods in transit.<br>
+                3) Dispute if any will be subject to "Maharashtra Jurisdiction" Only.
+            </div>
+
+            <!-- Signature -->
+            <div class="signature-section">
+                <span style="color:red; font-weight:bold;">
+                    For Vishal Electric &amp; Hardware Stores
+                </span>
+                <br><br>
+                Authorised Signature / Proprietor
+            </div>
+        </div>
+    </div>
+    </div>
+
+    <!-- Items Database Modal -->
+    <div class="settings-modal" id="itemsModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Items Database Management</h3>
+                <button class="modal-close" onclick="closeItems()">×</button>
+            </div>
+            
+            <div style="margin-bottom: 20px; padding: 15px; background: #f0f8ff; border-radius: 5px;">
+                <h4>Add New Item</h4>
+                
+                <label style="display: block; font-weight: bold; margin-top: 10px; margin-bottom: 3px;">Item Description:</label>
+                <input type="text" id="newItemName" placeholder="e.g. PVC Wire 2.5mm, MCB 32A Single Pole, LED Bulb 9W Cool White" class="auto-capitalize" style="width: 100%; margin-bottom: 10px; padding: 8px; border: 1px solid #ccc;" oninput="capitalizeInput(this)">
+                
+                <label style="display: block; font-weight: bold; margin-top: 10px; margin-bottom: 3px;">HSN/SAC Code:</label>
+                <input type="text" id="newItemHSN" placeholder="e.g. 85442000, 85362000, 94054000" style="width: 100%; margin-bottom: 10px; padding: 8px; border: 1px solid #ccc;" oninput="validateHSN(this)">
+                <div class="hsn-error-msg" id="newItemHSNError">Invalid HSN code. Must be 4, 6, or 8 digits (e.g. 8544, 853620, 85442000)</div>
+                
+                <label style="display: block; font-weight: bold; margin-top: 10px; margin-bottom: 3px;">Unit Rate (₹):</label>
+                <input type="number" id="newItemPrice" placeholder="0.00" step="0.01" min="0" style="width: 100%; margin-bottom: 10px; padding: 8px; border: 1px solid #ccc;">
+
+                <label style="display: block; font-weight: bold; margin-top: 10px; margin-bottom: 3px;">Tax Rate (%):</label>
+                <input type="number" id="newItemTaxRate" placeholder="18" value="18" min="0" max="28" step="0.5" style="width: 100%; margin-bottom: 10px; padding: 8px; border: 1px solid #ccc;" title="Tax rate (0-28%)">
+
+                <button class="btn" onclick="addNewItem()">Add Item to Database</button>
+            </div>
+            
+            <div style="margin-bottom: 15px;">
+                <input type="text" id="itemSearch" placeholder="Search items..." style="width: 100%; padding: 8px;" oninput="filterItems()">
+            </div>
+            
+            <div style="margin-bottom: 10px; padding: 8px; background: #e8f5e8; border-radius: 4px; font-size: 12px;">
+                <strong>Database Info:</strong> 
+                <span id="dbStats">Loading...</span> | 
+                <strong>Storage Limit:</strong> ~10,000 items max
+            </div>
+            
+            <div id="itemsList" style="max-height: 400px; overflow-y: auto;"></div>
+        </div>
+    </div>
+
+    <!-- Trash Modal -->
+    <div class="settings-modal" id="trashModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Deleted Bills (Trash)</h3>
+                <button class="modal-close" onclick="closeTrash()">×</button>
+            </div>
+            <div id="trashList"></div>
+            <button class="btn btn-danger" onclick="emptyTrash()" style="margin-top: 10px;">Empty Trash Permanently</button>
+        </div>
+    </div>
+
+    <!-- Customer Management Modal -->
+    <div class="settings-modal" id="customerModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Customer Management</h3>
+                <button class="modal-close" onclick="closeCustomers()">×</button>
+            </div>
+            
+            <div style="margin-bottom: 20px; padding: 15px; background: #f0f8ff; border-radius: 5px;">
+                <h4>Add New Customer</h4>
+                <input type="text" id="newCustomerName" placeholder="Customer Name" class="auto-capitalize" style="width: 100%; margin: 5px 0;" oninput="capitalizeInput(this)">
+                <input type="text" id="newCustomerAddress" placeholder="Address" class="auto-capitalize" style="width: 100%; margin: 5px 0;" oninput="capitalizeInput(this)">
+                <input type="text" id="newCustomerContact" placeholder="Phone/Mobile" style="width: 100%; margin: 5px 0;">
+                <input type="email" id="newCustomerEmail" placeholder="Email Address" style="width: 100%; margin: 5px 0;" oninput="validateEmail(this)">
+                <div class="email-error-msg" id="newCustomerEmailError">Invalid email format. Please enter a valid email address.</div>
+                <input type="text" id="newCustomerGSTIN" placeholder="GSTIN Number (15 chars)" style="width: 100%; margin: 5px 0;" maxlength="15" oninput="validateGSTIN(this)">
+                <div class="gstin-error-msg" id="newCustomerGSTINError">Invalid GSTIN format. Should be 15 characters (e.g., 27ABCDE1234F1Z5)</div>
+                <button class="btn" onclick="addNewCustomer()">Add Customer</button>
+            </div>
+            
+            <div id="customersList"></div>
+        </div>
+    </div>
+
+    <!-- Settings Modal -->
+    <div class="settings-modal" id="settingsModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Company Settings</h3>
+                <button class="modal-close" onclick="closeSettings()">×</button>
+            </div>
+            
+            <label>Password:</label>
+            <input type="password" id="settingsPassword" placeholder="Enter password">
+            
+            <div id="settingsForm" style="display: none;">
+                <label>Company Name:</label>
+                <input type="text" id="settingsCompanyName">
+                
+                <label>Mobile Number:</label>
+                <input type="text" id="settingsMobile">
+                
+                <label>Dealing In:</label>
+                <input type="text" id="settingsDealing">
+                
+                <label>Address:</label>
+                <textarea id="settingsAddress" rows="3"></textarea>
+                
+                <label>Bank Name:</label>
+                <input type="text" id="settingsBankName">
+                
+                <label>Account Number:</label>
+                <input type="text" id="settingsAccountNo">
+                
+                <label>Bank Branch:</label>
+                <input type="text" id="settingsBankBranch">
+                
+                <label>IFSC Code:</label>
+                <input type="text" id="settingsIFSC">
+                
+                <label>GSTIN Number:</label>
+                <input type="text" id="settingsGSTIN">
+                
+                <label>State Code:</label>
+                <input type="text" id="settingsStateCode">
+                
+                <label>UPI ID for Payments:</label>
+                <input type="text" id="settingsUPIID" placeholder="Q185070092@ybl">
+                
+                <label>UPI Name:</label>
+                <input type="text" id="settingsUPIName" placeholder="PhonePeMerchant">
+                
+                <button class="btn" onclick="saveSettings()">Save Settings</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script>
+        // Global variable for items database
+        let itemsDatabase = [];
+        let currentSuggestionIndex = -1;
+
+        // Initialize app
+        document.addEventListener('DOMContentLoaded', function() {
+            loadSettings();
+            loadCustomerList();
+            loadItemsDatabase();
+            addNewRow();
+            addNewRow();
+            addNewRow();
+            document.getElementById('invoiceDate').value = new Date().toISOString().split('T')[0];
+            updateLiveDateDisplay();
+            
+            // Add event listeners for main form inputs
+            document.getElementById('customerName').addEventListener('input', function() {
+                updatePrintValue(this);
+            });
+            
+            document.getElementById('customerGSTIN').addEventListener('input', function() {
+                updatePrintValue(this);
+                validateGSTIN(this);
+            });
+
+            document.getElementById('customerEmail').addEventListener('input', function() {
+                updatePrintValue(this);
+                validateEmail(this);
+            });
+            
+            document.getElementById('invoiceNo').addEventListener('input', function() {
+                updatePrintValue(this);
+            });
+            
+            document.getElementById('invoiceDate').addEventListener('input', function() {
+                updatePrintValue(this);
+                updateLiveDateDisplay();
+            });
+
+            document.getElementById('invoiceDate').addEventListener('change', function() {
+                updatePrintValue(this);
+                updateLiveDateDisplay();
+                this.style.display = 'none';
+            });
+
+            document.getElementById('invoiceDate').addEventListener('blur', function() {
+                if (this.value) {
+                    this.style.display = 'none';
+                    document.getElementById('dateLiveDisplay').style.display = 'inline-block';
+                }
+            });
+            
+            updateAllPrintValues();
+            
+            // Initialize QR code
+            updatePaymentQR();
+        });
+
+        // Auto-capitalize function
+        function capitalizeInput(inputElement) {
+            const cursorPosition = inputElement.selectionStart;
+            const value = inputElement.value;
+            
+            // Capitalize first letter of each word
+            const capitalizedValue = value.split(' ').map(word => {
+                if (word.length > 0) {
+                    return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+                }
+                return word;
+            }).join(' ');
+            
+            inputElement.value = capitalizedValue;
+            inputElement.setSelectionRange(cursorPosition, cursorPosition);
+        }
+
+        // Bill Type Management
+        function isNonGSTBill() {
+            const billType = document.getElementById('billTypeSelect').value;
+            return billType === 'bill_of_supply' || billType === 'estimate';
+        }
+
+        function handleBillTypeChange() {
+            const billType = document.getElementById('billTypeSelect').value;
+            const selectedText = document.getElementById('billTypeSelect').options[document.getElementById('billTypeSelect').selectedIndex].text;
+            const itemsTable = document.getElementById('itemsTable');
+            const totalTaxRow = document.getElementById('totalTaxRow');
+            const gstinToggle = document.getElementById('gstinToggle');
+            const bankDetailsToggle = document.getElementById('bankDetailsToggle');
+
+            // Update print value
+            document.getElementById('billTypePrint').textContent = selectedText;
+
+            if (billType === 'tax_invoice') {
+                // GST mode - show tax columns
+                itemsTable.classList.remove('hide-tax-columns');
+                totalTaxRow.style.display = '';
+                gstinToggle.style.display = 'none';
+                bankDetailsToggle.style.display = 'none';
+                // Uncheck and show GSTIN if it was hidden
+                document.getElementById('hideGSTIN').checked = false;
+                document.getElementById('customerGSTINRow').classList.remove('gstin-row-hidden');
+                // Uncheck and show bank details if it was hidden
+                document.getElementById('hideBankDetails').checked = false;
+                document.getElementById('bankInfoHideable').classList.remove('bank-details-hidden');
+            } else {
+                // Non-GST mode - hide tax columns
+                itemsTable.classList.add('hide-tax-columns');
+                totalTaxRow.style.display = 'none';
+                gstinToggle.style.display = '';
+                bankDetailsToggle.style.display = '';
+            }
+
+            // Recalculate all rows and totals
+            document.querySelectorAll('#itemsTableBody tr').forEach(row => {
+                const inputs = row.querySelectorAll('input');
+                if (inputs.length > 2) {
+                    calculateRowTotal(inputs[2]);
+                }
+            });
+        }
+
+        function toggleGSTINVisibility() {
+            const hideGSTIN = document.getElementById('hideGSTIN').checked;
+            const gstinRow = document.getElementById('customerGSTINRow');
+            if (hideGSTIN) {
+                gstinRow.classList.add('gstin-row-hidden');
+            } else {
+                gstinRow.classList.remove('gstin-row-hidden');
+            }
+        }
+
+        function toggleBankDetailsVisibility() {
+            const hide = document.getElementById('hideBankDetails').checked;
+            const bankInfo = document.getElementById('bankInfoHideable');
+            if (hide) {
+                bankInfo.classList.add('bank-details-hidden');
+            } else {
+                bankInfo.classList.remove('bank-details-hidden');
+            }
+        }
+
+        // Password-protected Clear All Data function
+        function clearAllDataWithPassword() {
+            const password = prompt('Enter admin password to clear all data:');
+            
+            if (password === 'admin123') {
+                const confirmMsg = 'WARNING: This will permanently delete ALL data:\n\n' +
+                    '• All items in database (' + itemsDatabase.length + ' items)\n' +
+                    '• All customers\n' +
+                    '• All bill history\n' +
+                    '• All deleted bills (trash)\n' +
+                    '• Company settings\n' +
+                    '• QR settings\n\n' +
+                    'This action cannot be undone!\n\n' +
+                    'Type "DELETE ALL" to confirm:';
+                
+                const userInput = prompt(confirmMsg);
+                
+                if (userInput === 'DELETE ALL') {
+                    // Clear all localStorage data
+                    localStorage.removeItem('itemsDatabase');
+                    localStorage.removeItem('customersDB');
+                    localStorage.removeItem('billHistory');
+                    localStorage.removeItem('billTrash');
+                    localStorage.removeItem('companySettings');
+                    localStorage.removeItem('qrSettings');
+                    
+                    // Reset to defaults
+                    itemsDatabase = [];
+                    loadItemsDatabase(); // This will load default items
+                    loadCustomerList();
+                    loadSettings();
+                    
+                    // Update display if items modal is open
+                    if (document.getElementById('itemsModal').style.display === 'block') {
+                        loadItemsList();
+                        updateDBStats();
+                    }
+                    
+                    // Clear current bill
+                    document.getElementById('invoiceNo').value = '';
+                    document.getElementById('customerName').value = '';
+                    document.getElementById('customerAddress').value = '';
+                    document.getElementById('customerContact').value = '';
+                    document.getElementById('customerEmail').value = '';
+                    document.getElementById('customerGSTIN').value = '';
+                    document.getElementById('invoiceDate').value = new Date().toISOString().split('T')[0];
+
+                    // Reset bill type
+                    document.getElementById('billTypeSelect').value = 'tax_invoice';
+                    handleBillTypeChange();
+
+                    // Clear items table
+                    document.getElementById('itemsTableBody').innerHTML = '';
+                    addNewRow();
+                    addNewRow();
+                    addNewRow();
+                    
+                    calculateTotals();
+                    updateAllPrintValues();
+                    
+                    alert('All data cleared successfully! System has been reset to default state.');
+                } else if (userInput !== null) {
+                    alert('Confirmation text incorrect. Data not cleared.');
+                }
+            } else if (password !== null) {
+                alert('Wrong password! Access denied.');
+            }
+        }
+
+        // Items Database Management
+        function loadItemsDatabase() {
+            const defaultItems = [
+                {id: 1, name: "PVC Wire 1.5mm", hsn: "85442000", price: 12.50, description: "PVC Insulated Copper Wire 1.5 SQ MM", taxRate: 18},
+                {id: 2, name: "PVC Wire 2.5mm", hsn: "85442000", price: 20.00, description: "PVC Insulated Copper Wire 2.5 SQ MM", taxRate: 18},
+                {id: 3, name: "PVC Wire 4mm", hsn: "85442000", price: 32.00, description: "PVC Insulated Copper Wire 4 SQ MM", taxRate: 18},
+                {id: 4, name: "PVC Wire 6mm", hsn: "85442000", price: 48.00, description: "PVC Insulated Copper Wire 6 SQ MM", taxRate: 18},
+                {id: 5, name: "MCB 16A Single Pole", hsn: "85362000", price: 85.00, description: "Miniature Circuit Breaker 16 AMP SP", taxRate: 18},
+                {id: 6, name: "MCB 32A Single Pole", hsn: "85362000", price: 95.00, description: "Miniature Circuit Breaker 32 AMP SP", taxRate: 18},
+                {id: 7, name: "Switch Socket 6A", hsn: "85362000", price: 45.00, description: "6 Amp Switch Socket White", taxRate: 18},
+                {id: 8, name: "LED Bulb 9W", hsn: "94054000", price: 125.00, description: "LED Bulb 9 Watt Cool White", taxRate: 12},
+                {id: 9, name: "LED Bulb 12W", hsn: "94054000", price: 185.00, description: "LED Bulb 12 Watt Cool White", taxRate: 12},
+                {id: 10, name: "Fan Regulator", hsn: "85362000", price: 75.00, description: "Electronic Fan Regulator 100W", taxRate: 18},
+                {id: 11, name: "PVC Conduit 19mm", hsn: "39172300", price: 28.00, description: "PVC Conduit Pipe 19MM Per Meter", taxRate: 18},
+                {id: 12, name: "PVC Conduit 25mm", hsn: "39172300", price: 42.00, description: "PVC Conduit Pipe 25MM Per Meter", taxRate: 18},
+                {id: 13, name: "Junction Box 4x4", hsn: "39269099", price: 15.00, description: "PVC Junction Box 4x4 Inch", taxRate: 18},
+                {id: 14, name: "Cable Tie 200mm", hsn: "39269099", price: 2.50, description: "Cable Tie 200MM White Pack of 100", taxRate: 18},
+                {id: 15, name: "Insulation Tape", hsn: "39191000", price: 18.00, description: "PVC Insulation Tape Black", taxRate: 18},
+                {id: 16, name: "Earth Wire 6mm", hsn: "74081100", price: 55.00, description: "Bare Copper Earth Wire 6 SQ MM", taxRate: 18},
+                {id: 17, name: "Distribution Box 4W", hsn: "85381000", price: 185.00, description: "MCB Distribution Box 4 Way", taxRate: 18},
+                {id: 18, name: "Distribution Box 8W", hsn: "85381000", price: 285.00, description: "MCB Distribution Box 8 Way", taxRate: 18},
+                {id: 19, name: "ELCB 63A 30mA", hsn: "85362000", price: 1250.00, description: "Earth Leakage Circuit Breaker 63A 30mA", taxRate: 18},
+                {id: 20, name: "Ceiling Fan 48\"", hsn: "84143000", price: 1850.00, description: "Ceiling Fan 48 Inch 75 Watt", taxRate: 12},
+            ];
+            
+            const saved = localStorage.getItem('itemsDatabase');
+            if (saved) {
+                itemsDatabase = JSON.parse(saved);
+            } else {
+                itemsDatabase = defaultItems;
+                localStorage.setItem('itemsDatabase', JSON.stringify(itemsDatabase));
+            }
+        }
+
+        function showItems() {
+            document.getElementById('itemsModal').style.display = 'block';
+            loadItemsList();
+            updateDBStats();
+        }
+
+        function closeItems() {
+            document.getElementById('itemsModal').style.display = 'none';
+            document.getElementById('itemSearch').value = '';
+        }
+
+        // Database Statistics
+        function updateDBStats() {
+            const dbSize = JSON.stringify(itemsDatabase).length;
+            const dbSizeKB = (dbSize / 1024).toFixed(1);
+            const itemCount = itemsDatabase.length;
+            
+            document.getElementById('dbStats').textContent = `${itemCount} items, ${dbSizeKB} KB used`;
+        }
+
+        // Export/Import Functions
+        function exportData() {
+            const exportData = {
+                items: itemsDatabase,
+                customers: JSON.parse(localStorage.getItem('customersDB')) || [],
+                billHistory: JSON.parse(localStorage.getItem('billHistory')) || [],
+                billTrash: JSON.parse(localStorage.getItem('billTrash')) || [],
+                settings: JSON.parse(localStorage.getItem('companySettings')) || {},
+                qrSettings: JSON.parse(localStorage.getItem('qrSettings')) || {},
+                exportDate: new Date().toISOString(),
+                version: "1.0"
+            };
+            
+            const dataStr = JSON.stringify(exportData, null, 2);
+            const dataBlob = new Blob([dataStr], {type: 'application/json'});
+            
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(dataBlob);
+            link.download = `billing_system_complete_backup_${new Date().toISOString().split('T')[0]}.json`;
+            link.click();
+            
+            alert(`Complete backup exported successfully!\n\nIncludes:\n• ${exportData.items.length} items\n• ${exportData.customers.length} customers\n• ${exportData.billHistory.length} invoices\n• ${exportData.billTrash.length} deleted bills\n• Company settings\n• QR settings`);
+        }
+
+        function importData() {
+            document.getElementById('importFile').click();
+        }
+
+        function handleFileImport(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            
+            if (!file.name.endsWith('.json')) {
+                alert('Please select a valid JSON file');
+                return;
+            }
+            
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                try {
+                    const importData = JSON.parse(e.target.result);
+                    
+                    if (!importData.items || !Array.isArray(importData.items)) {
+                        alert('Invalid backup file format');
+                        return;
+                    }
+                    
+                    const confirmMsg = `Import complete backup?\n\n` +
+                        `This will add:\n` +
+                        `• ${importData.items.length} items\n` +
+                        `• ${importData.customers ? importData.customers.length : 0} customers\n` +
+                        `• ${importData.billHistory ? importData.billHistory.length : 0} invoices\n` +
+                        `• ${importData.billTrash ? importData.billTrash.length : 0} deleted bills\n` +
+                        `• Company settings (if available)\n\n` +
+                        `Current data will be merged (not replaced).\n` +
+                        `Click OK to proceed.`;
+                    
+                    if (!confirm(confirmMsg)) return;
+                    
+                    // Import items (merge with existing)
+                    const existingIds = itemsDatabase.map(item => item.id);
+                    const newItems = importData.items.filter(item => !existingIds.includes(item.id));
+                    itemsDatabase.push(...newItems);
+                    localStorage.setItem('itemsDatabase', JSON.stringify(itemsDatabase));
+                    
+                    // Import customers (merge with existing)
+                    if (importData.customers) {
+                        const existingCustomers = JSON.parse(localStorage.getItem('customersDB')) || [];
+                        const existingCustomerIds = existingCustomers.map(c => c.id);
+                        const newCustomers = importData.customers.filter(c => !existingCustomerIds.includes(c.id));
+                        const mergedCustomers = [...existingCustomers, ...newCustomers];
+                        localStorage.setItem('customersDB', JSON.stringify(mergedCustomers));
+                        loadCustomerList();
+                    }
+                    
+                    // Import bill history (merge with existing)
+                    if (importData.billHistory) {
+                        const existingBills = JSON.parse(localStorage.getItem('billHistory')) || [];
+                        const existingBillNos = existingBills.map(b => b.invoiceNo);
+                        const newBills = importData.billHistory.filter(b => !existingBillNos.includes(b.invoiceNo));
+                        const mergedBills = [...existingBills, ...newBills];
+                        localStorage.setItem('billHistory', JSON.stringify(mergedBills));
+                    }
+                    
+                    // Import deleted bills (merge with existing)
+                    if (importData.billTrash) {
+                        const existingTrash = JSON.parse(localStorage.getItem('billTrash')) || [];
+                        const mergedTrash = [...existingTrash, ...importData.billTrash];
+                        localStorage.setItem('billTrash', JSON.stringify(mergedTrash));
+                    }
+                    
+                    // Import settings (optional)
+                    if (importData.settings && Object.keys(importData.settings).length > 0) {
+                        if (confirm('Import company settings as well?')) {
+                            localStorage.setItem('companySettings', JSON.stringify(importData.settings));
+                            loadSettings();
+                        }
+                    }
+                    
+                    // Import QR settings (optional)
+                    if (importData.qrSettings && Object.keys(importData.qrSettings).length > 0) {
+                        localStorage.setItem('qrSettings', JSON.stringify(importData.qrSettings));
+                    }
+                    
+                    loadItemsList();
+                    updateDBStats();
+                    
+                    const importSummary = `Import successful!\n\n` +
+                        `• ${newItems.length} new items added\n` +
+                        `• ${importData.customers ? importData.customers.filter(c => !JSON.parse(localStorage.getItem('customersDB') || '[]').map(x => x.id).includes(c.id)).length : 0} customers added\n` +
+                        `• ${importData.billHistory ? importData.billHistory.filter(b => !JSON.parse(localStorage.getItem('billHistory') || '[]').map(x => x.invoiceNo).includes(b.invoiceNo)).length : 0} invoices added\n` +
+                        `• All data merged successfully`;
+                    
+                    alert(importSummary);
+                    
+                } catch (error) {
+                    alert('Error reading backup file. Please check the file format.');
+                    console.error('Import error:', error);
+                }
+            };
+            
+            reader.readAsText(file);
+            event.target.value = ''; // Reset file input
+        }
+
+        function addNewItem() {
+            const name = document.getElementById('newItemName').value.trim();
+            const hsn = document.getElementById('newItemHSN').value.trim();
+            const price = parseFloat(document.getElementById('newItemPrice').value) || 0;
+            const taxRate = parseFloat(document.getElementById('newItemTaxRate').value) || 18;
+
+            if (!name) {
+                alert('Please enter item description');
+                return;
+            }
+
+            if (!hsn) {
+                alert('Please enter HSN/SAC code');
+                return;
+            }
+
+            // Validate HSN code
+            if (!validateHSN(document.getElementById('newItemHSN'))) {
+                alert('Please enter a valid HSN/SAC code (4, 6, or 8 digits)');
+                return;
+            }
+
+            if (price <= 0) {
+                alert('Please enter a valid price');
+                return;
+            }
+
+            if (taxRate < 0 || taxRate > 28) {
+                alert('Tax rate must be between 0% and 28%');
+                return;
+            }
+
+            const newItem = {
+                id: Date.now(),
+                name: name,
+                hsn: hsn,
+                price: price,
+                description: name, // Using name as description for consistency
+                taxRate: taxRate,
+                createdAt: new Date().toISOString()
+            };
+
+            itemsDatabase.push(newItem);
+            localStorage.setItem('itemsDatabase', JSON.stringify(itemsDatabase));
+
+            // Clear form
+            document.getElementById('newItemName').value = '';
+            document.getElementById('newItemHSN').value = '';
+            document.getElementById('newItemPrice').value = '';
+            document.getElementById('newItemTaxRate').value = '18';
+            
+            // Reset validation state
+            document.getElementById('newItemHSN').classList.remove('hsn-invalid');
+
+            loadItemsList();
+            updateDBStats();
+            alert('Item added successfully!');
+        }
+
+        function loadItemsList() {
+            const searchTerm = document.getElementById('itemSearch').value.toLowerCase();
+            const filteredItems = itemsDatabase.filter(item => 
+                item.name.toLowerCase().includes(searchTerm) ||
+                item.hsn.toLowerCase().includes(searchTerm) ||
+                item.description.toLowerCase().includes(searchTerm)
+            );
+
+            const itemsList = document.getElementById('itemsList');
+            itemsList.innerHTML = '';
+
+            if (filteredItems.length === 0) {
+                itemsList.innerHTML = '<p>No items found.</p>';
+                return;
+            }
+
+            filteredItems.forEach(item => {
+                const div = document.createElement('div');
+                div.className = 'history-item';
+                div.style.marginBottom = '10px';
+                div.innerHTML = `
+                    <strong>${item.name}</strong><br>
+                    HSN: ${item.hsn} | Price: ₹${item.price.toFixed(2)} | Tax: ${item.taxRate || 18}%<br>
+                    ${item.description ? `Description: ${item.description}<br>` : ''}
+                    <small>ID: ${item.id}</small><br>
+                    <button class="btn btn-secondary" onclick="editItem(${item.id})" style="margin-top: 5px;">Edit</button>
+                    <button class="btn btn-danger" onclick="deleteItem(${item.id})" style="margin-top: 5px;">Delete</button>
+                `;
+                itemsList.appendChild(div);
+            });
+        }
+
+        function filterItems() {
+            loadItemsList();
+        }
+
+        function editItem(itemId) {
+            const item = itemsDatabase.find(i => i.id === itemId);
+            if (!item) return;
+
+            document.getElementById('newItemName').value = item.name;
+            document.getElementById('newItemHSN').value = item.hsn;
+            document.getElementById('newItemPrice').value = item.price;
+            document.getElementById('newItemTaxRate').value = item.taxRate || 18;
+
+            deleteItem(itemId, false);
+        }
+
+        function deleteItem(itemId, showAlert = true) {
+            if (showAlert && !confirm('Delete this item?')) return;
+
+            itemsDatabase = itemsDatabase.filter(i => i.id !== itemId);
+            localStorage.setItem('itemsDatabase', JSON.stringify(itemsDatabase));
+
+            loadItemsList();
+            if (showAlert) alert('Item deleted successfully!');
+        }
+
+        // Item suggestion system
+        function showItemSuggestions(textarea) {
+            const searchTerm = textarea.value.toLowerCase().trim();
+            if (searchTerm.length < 2) {
+                hideItemSuggestions();
+                return;
+            }
+
+            const matches = itemsDatabase.filter(item => 
+                item.name.toLowerCase().includes(searchTerm) ||
+                item.description.toLowerCase().includes(searchTerm)
+            ).slice(0, 5);
+
+            if (matches.length === 0) {
+                hideItemSuggestions();
+                return;
+            }
+
+            let suggestionsContainer = document.getElementById('itemSuggestions');
+            if (!suggestionsContainer) {
+                suggestionsContainer = document.createElement('div');
+                suggestionsContainer.id = 'itemSuggestions';
+                suggestionsContainer.className = 'suggestions-container';
+                document.body.appendChild(suggestionsContainer);
+            }
+
+            const rect = textarea.getBoundingClientRect();
+            suggestionsContainer.style.position = 'absolute';
+            suggestionsContainer.style.top = (rect.bottom + window.scrollY) + 'px';
+            suggestionsContainer.style.left = rect.left + 'px';
+            suggestionsContainer.style.width = rect.width + 'px';
+            suggestionsContainer.style.display = 'block';
+
+            suggestionsContainer.innerHTML = '';
+            matches.forEach((item, index) => {
+                const div = document.createElement('div');
+                div.className = 'item-suggestion';
+                if (index === currentSuggestionIndex) {
+                    div.style.backgroundColor = '#007bff';
+                    div.style.color = 'white';
+                }
+                div.innerHTML = `<strong>${item.name}</strong> - HSN: ${item.hsn} - ₹${item.price.toFixed(2)} - Tax: ${item.taxRate || 18}%`;
+                div.onclick = () => selectItem(textarea, item);
+                suggestionsContainer.appendChild(div);
+            });
+        }
+
+        function selectItem(textarea, item) {
+            const row = textarea.closest('tr');
+            const inputs = row.querySelectorAll('input');
+
+            // Fill in item details
+            textarea.value = item.description || item.name;
+            inputs[1].value = item.hsn; // HSN code
+            inputs[3].value = item.price.toFixed(2); // Rate
+            inputs[4].value = item.taxRate || 18; // Tax Rate
+
+            // Update print values
+            updatePrintValue(textarea);
+            updatePrintValue(inputs[1]);
+            updatePrintValue(inputs[3]);
+            updatePrintValue(inputs[4]);
+
+            // If quantity is empty, set to 1
+            if (!inputs[2].value) {
+                inputs[2].value = '1';
+                updatePrintValue(inputs[2]);
+            }
+            
+            // Calculate total
+            calculateRowTotal(inputs[2]);
+            
+            hideItemSuggestions();
+            
+            // Auto-add new row if this is the last row
+            const tbody = document.getElementById('itemsTableBody');
+            const allRows = tbody.querySelectorAll('tr');
+            const currentRowIndex = Array.from(allRows).indexOf(row);
+            if (currentRowIndex === allRows.length - 1) {
+                addNewRow();
+            }
+        }
+
+        function hideItemSuggestions() {
+            const suggestionsContainer = document.getElementById('itemSuggestions');
+            if (suggestionsContainer) {
+                suggestionsContainer.style.display = 'none';
+            }
+            currentSuggestionIndex = -1;
+        }
+
+        // HSN Validation Functions
+        function validateHSN(inputElement) {
+            const hsn = inputElement.value.trim();
+            
+            // If empty, remove validation classes (normal appearance)
+            if (hsn === '') {
+                inputElement.classList.remove('hsn-invalid');
+                return true;
+            }
+            
+            const isValid = isValidHSN(hsn);
+            
+            if (isValid) {
+                // Remove invalid styling to show normal appearance
+                inputElement.classList.remove('hsn-invalid');
+            } else {
+                // Add invalid styling (red border and background)
+                inputElement.classList.add('hsn-invalid');
+            }
+            
+            return isValid;
+        }
+
+        function isValidHSN(hsn) {
+            // Remove any spaces and keep only digits
+            hsn = hsn.replace(/\s/g, '');
+            
+            // Check if it contains only digits
+            if (!/^\d+$/.test(hsn)) {
+                return false;
+            }
+            
+            // Check length - HSN codes are typically 4, 6, or 8 digits
+            if (![4, 6, 8].includes(hsn.length)) {
+                return false;
+            }
+            
+            // Basic range validation for common HSN prefixes
+            const hsnCode = parseInt(hsn.substring(0, 2));
+            
+            // HSN codes range from 01 to 99 for different categories
+            if (hsnCode < 1 || hsnCode > 99) {
+                return false;
+            }
+            
+            return true;
+        }
+
+        // Email Validation Functions
+        function validateEmail(inputElement) {
+            const email = inputElement.value.trim().toLowerCase();
+            inputElement.value = email;
+            
+            if (email === '') {
+                inputElement.classList.remove('email-invalid');
+                return true;
+            }
+            
+            const isValid = isValidEmail(email);
+            
+            if (isValid) {
+                inputElement.classList.remove('email-invalid');
+            } else {
+                inputElement.classList.add('email-invalid');
+            }
+            
+            return isValid;
+        }
+
+        function isValidEmail(email) {
+            // Standard email regex pattern
+            const emailPattern = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
+            return emailPattern.test(email);
+        }
+
+        // GSTIN Validation Functions
+        function validateGSTIN(inputElement) {
+            const gstin = inputElement.value.toUpperCase().trim();
+            const errorElement = document.getElementById(inputElement.id + 'Error');
+            
+            // Convert input to uppercase automatically
+            inputElement.value = gstin;
+            
+            // If empty, remove validation classes (normal appearance)
+            if (gstin === '') {
+                inputElement.classList.remove('gstin-invalid');
+                return true;
+            }
+            
+            const isValid = isValidGSTIN(gstin);
+            
+            if (isValid) {
+                // Remove invalid styling to show normal appearance
+                inputElement.classList.remove('gstin-invalid');
+            } else {
+                // Add invalid styling (red border and background)
+                inputElement.classList.add('gstin-invalid');
+            }
+            
+            return isValid;
+        }
+
+        function isValidGSTIN(gstin) {
+            // Remove any spaces and convert to uppercase
+            gstin = gstin.replace(/\s/g, '').toUpperCase();
+            
+            // Check length
+            if (gstin.length !== 15) {
+                return false;
+            }
+            
+            // Check if it contains only alphanumeric characters
+            if (!/^[0-9A-Z]{15}$/.test(gstin)) {
+                return false;
+            }
+            
+            // Validate state code (first 2 digits should be 01-37)
+            const stateCode = parseInt(gstin.substring(0, 2));
+            if (stateCode < 1 || stateCode > 37) {
+                return false;
+            }
+            
+            // Validate PAN format (positions 2-11 should follow PAN pattern)
+            const panPart = gstin.substring(2, 12);
+            // PAN pattern: 5 letters, 4 digits, 1 letter
+            if (!/^[A-Z]{5}[0-9]{4}[A-Z]$/.test(panPart)) {
+                return false;
+            }
+            
+            // 13th character should be 1-9 or A-Z (registration number)
+            const registrationChar = gstin.charAt(12);
+            if (!/^[1-9A-Z]$/.test(registrationChar)) {
+                return false;
+            }
+            
+            // 14th character should be 'Z' (mostly, but allow other letters for flexibility)
+            const entityChar = gstin.charAt(13);
+            if (!/^[A-Z]$/.test(entityChar)) {
+                return false;
+            }
+            
+            // 15th character is check digit - can be any alphanumeric
+            const checkDigit = gstin.charAt(14);
+            if (!/^[0-9A-Z]$/.test(checkDigit)) {
+                return false;
+            }
+            
+            return true;
+        }
+
+        // Settings Management
+        function showSettings() {
+            document.getElementById('settingsModal').style.display = 'block';
+        }
+
+        function closeSettings() {
+            document.getElementById('settingsModal').style.display = 'none';
+            document.getElementById('settingsPassword').value = '';
+            document.getElementById('settingsForm').style.display = 'none';
+        }
+
+        document.getElementById('settingsPassword').addEventListener('keyup', function(e) {
+            if (e.key === 'Enter') {
+                if (this.value === 'admin123') {
+                    document.getElementById('settingsForm').style.display = 'block';
+                    loadCurrentSettings();
+                } else {
+                    alert('Wrong password!');
+                }
+            }
+        });
+
+        function loadCurrentSettings() {
+            document.getElementById('settingsCompanyName').value = document.getElementById('companyName').textContent;
+            document.getElementById('settingsMobile').value = document.getElementById('companyMobile').textContent;
+            document.getElementById('settingsDealing').value = document.getElementById('companyDealing').textContent;
+            document.getElementById('settingsAddress').value = document.getElementById('companyAddress').textContent;
+            document.getElementById('settingsBankName').value = document.getElementById('bankName').textContent;
+            document.getElementById('settingsAccountNo').value = document.getElementById('accountNo').textContent;
+            document.getElementById('settingsBankBranch').value = document.getElementById('bankBranch').textContent;
+            document.getElementById('settingsIFSC').value = document.getElementById('ifscCode').textContent;
+            document.getElementById('settingsGSTIN').value = document.getElementById('gstinNo').textContent;
+            document.getElementById('settingsStateCode').value = document.getElementById('stateCode').textContent;
+            
+            // Load QR settings
+            const qrSettings = JSON.parse(localStorage.getItem('qrSettings')) || {};
+            document.getElementById('settingsUPIID').value = qrSettings.upiID || 'Q185070092@ybl';
+            document.getElementById('settingsUPIName').value = qrSettings.upiName || 'PhonePeMerchant';
+        }
+
+        function saveSettings() {
+            const settings = {
+                companyName: document.getElementById('settingsCompanyName').value,
+                mobile: document.getElementById('settingsMobile').value,
+                dealing: document.getElementById('settingsDealing').value,
+                address: document.getElementById('settingsAddress').value,
+                bankName: document.getElementById('settingsBankName').value,
+                accountNo: document.getElementById('settingsAccountNo').value,
+                bankBranch: document.getElementById('settingsBankBranch').value,
+                ifsc: document.getElementById('settingsIFSC').value,
+                gstin: document.getElementById('settingsGSTIN').value,
+                stateCode: document.getElementById('settingsStateCode').value
+            };
+            
+            // Save QR settings separately
+            const qrSettings = {
+                upiID: document.getElementById('settingsUPIID').value,
+                upiName: document.getElementById('settingsUPIName').value
+            };
+            
+            localStorage.setItem('companySettings', JSON.stringify(settings));
+            localStorage.setItem('qrSettings', JSON.stringify(qrSettings));
+            
+            loadSettings();
+            closeSettings();
+            alert('Settings saved successfully!');
+        }
+
+        function loadSettings() {
+            const settings = JSON.parse(localStorage.getItem('companySettings')) || {};
+            
+            if (settings.companyName) document.getElementById('companyName').textContent = settings.companyName;
+            if (settings.mobile) document.getElementById('companyMobile').textContent = settings.mobile;
+            if (settings.dealing) document.getElementById('companyDealing').textContent = settings.dealing;
+            if (settings.address) document.getElementById('companyAddress').textContent = settings.address;
+            if (settings.bankName) document.getElementById('bankName').textContent = settings.bankName;
+            if (settings.accountNo) document.getElementById('accountNo').textContent = settings.accountNo;
+            if (settings.bankBranch) document.getElementById('bankBranch').textContent = settings.bankBranch;
+            if (settings.ifsc) document.getElementById('ifscCode').textContent = settings.ifsc;
+            if (settings.gstin) document.getElementById('gstinNo').textContent = settings.gstin;
+            if (settings.stateCode) document.getElementById('stateCode').textContent = settings.stateCode;
+            if (settings.companyName) document.getElementById('signatureCompany').innerHTML = settings.companyName.replace(' ', '<br>');
+        }
+
+        // Items Management - Updated with auto-increment challan and default quantity
+        function addNewRow() {
+            const tbody = document.getElementById('itemsTableBody');
+            const row = document.createElement('tr');
+            
+            // Calculate next challan number
+            const existingRows = tbody.querySelectorAll('tr');
+            let nextChallan = existingRows.length + 1;
+            
+            row.innerHTML = `
+                <td>
+                    <input type="text" placeholder="${nextChallan}" value="${nextChallan}" oninput="updatePrintValue(this)">
+                    <span class="print-value" style="display: none;">${nextChallan}</span>
+                </td>
+                <td class="description-col" style="position: relative;">
+                    <textarea placeholder="Start typing item name..."
+                              oninput="updatePrintValue(this); autoResize(this); handleDescriptionChange(this); showItemSuggestions(this)"
+                              rows="2"
+                              onkeydown="handleSuggestionNavigation(event, this)"
+                              onblur="setTimeout(hideItemSuggestions, 200)"></textarea>
+                    <span class="print-value" style="display: none;"></span>
+                </td>
+                <td>
+                    <input type="text" placeholder="HSN Code" oninput="updatePrintValue(this); validateHSN(this)">
+                    <span class="print-value" style="display: none;"></span>
+                    <div class="hsn-error-msg" style="position: absolute; font-size: 10px; margin-top: 2px;">Invalid HSN code format</div>
+                </td>
+                <td>
+                    <input type="number" placeholder="1" oninput="calculateRowTotal(this); updatePrintValue(this)">
+                    <span class="print-value" style="display: none;"></span>
+                </td>
+                <td>
+                    <input type="number" placeholder="0.00" step="0.01" oninput="calculateRowTotal(this); updatePrintValue(this)">
+                    <span class="print-value" style="display: none;"></span>
+                </td>
+                <td>
+                    <span class="base-amount">₹0.00</span>
+                </td>
+                <td>
+                    <input type="number" placeholder="18" value="18" min="0" max="28" step="0.5" oninput="calculateRowTotal(this); updatePrintValue(this)" title="Tax rate (0-28%)">
+                    <span class="print-value" style="display: none;">18</span>
+                </td>
+                <td>
+                    <span class="tax-amount">₹0.00</span>
+                </td>
+                <td>
+                    <span class="row-total">₹0.00</span>
+                    <button class="delete-btn" onclick="deleteRow(this)" style="background: red; color: white; border: none; padding: 2px 5px; margin-left: 5px;">×</button>
+                </td>
+            `;
+            
+            tbody.appendChild(row);
+        }
+
+        function handleSuggestionNavigation(event, textarea) {
+            const suggestionsContainer = document.getElementById('itemSuggestions');
+            if (!suggestionsContainer || suggestionsContainer.style.display === 'none') return;
+            
+            const suggestions = suggestionsContainer.querySelectorAll('.item-suggestion');
+            
+            switch(event.key) {
+                case 'ArrowDown':
+                    event.preventDefault();
+                    currentSuggestionIndex = Math.min(currentSuggestionIndex + 1, suggestions.length - 1);
+                    updateSuggestionHighlight(suggestions);
+                    break;
+                case 'ArrowUp':
+                    event.preventDefault();
+                    currentSuggestionIndex = Math.max(currentSuggestionIndex - 1, -1);
+                    updateSuggestionHighlight(suggestions);
+                    break;
+                case 'Enter':
+                    event.preventDefault();
+                    if (currentSuggestionIndex >= 0 && suggestions[currentSuggestionIndex]) {
+                        suggestions[currentSuggestionIndex].click();
+                    }
+                    break;
+                case 'Escape':
+                    hideItemSuggestions();
+                    break;
+            }
+        }
+
+        function updateSuggestionHighlight(suggestions) {
+            suggestions.forEach((suggestion, index) => {
+                if (index === currentSuggestionIndex) {
+                    suggestion.style.backgroundColor = '#007bff';
+                    suggestion.style.color = 'white';
+                } else {
+                    suggestion.style.backgroundColor = '#f8f9fa';
+                    suggestion.style.color = 'black';
+                }
+            });
+        }
+
+        // New function to handle description changes
+        function handleDescriptionChange(textarea) {
+            const row = textarea.closest('tr');
+            const qtyInput = row.cells[3].querySelector('input');
+
+            // If description is not empty and quantity is empty, set quantity to 1
+            if (textarea.value.trim() !== '' && qtyInput.value === '') {
+                qtyInput.value = '1';
+                updatePrintValue(qtyInput);
+                calculateRowTotal(qtyInput);
+            }
+
+            // Check for zero amount highlighting after description change
+            const rowTotalElement = row.cells[8].querySelector('.row-total'); // Changed from cell 5 to cell 8
+            const rowTotalCell = row.cells[8]; // Changed from cell 5 to cell 8
+            const amount = parseFloat(rowTotalElement.textContent.replace(/₹|,/g, '')) || 0;
+
+            if (amount === 0 && textarea.value.trim() !== '') {
+                rowTotalElement.classList.add('zero-amount');
+                rowTotalCell.classList.add('zero-amount-cell');
+            } else {
+                rowTotalElement.classList.remove('zero-amount');
+                rowTotalCell.classList.remove('zero-amount-cell');
+            }
+            
+            // Auto-add new row if this is the last row and has content
+            const tbody = document.getElementById('itemsTableBody');
+            const allRows = tbody.querySelectorAll('tr');
+            const currentRowIndex = Array.from(allRows).indexOf(row);
+            
+            if (currentRowIndex === allRows.length - 1 && textarea.value.trim() !== '') {
+                addNewRow();
+            }
+        }
+
+        function autoResize(textarea) {
+            textarea.style.height = 'auto';
+            textarea.style.height = Math.min(textarea.scrollHeight, 120) + 'px';
+        }
+
+        function deleteRow(btn) {
+            btn.closest('tr').remove();
+            calculateTotals();
+            
+            // Renumber challan numbers after deletion
+            const tbody = document.getElementById('itemsTableBody');
+            const rows = tbody.querySelectorAll('tr');
+            rows.forEach((row, index) => {
+                const challanInput = row.cells[0].querySelector('input');
+                const challanPrint = row.cells[0].querySelector('.print-value');
+                challanInput.value = index + 1;
+                challanPrint.textContent = index + 1;
+            });
+        }
+
+        function updatePrintValue(input) {
+            const printSpan = input.nextElementSibling;
+            if (printSpan && printSpan.classList.contains('print-value')) {
+                printSpan.textContent = input.value;
+            }
+        }
+
+        function updateAllPrintValues() {
+            document.getElementById('customerNamePrint').textContent = document.getElementById('customerName').value;
+            document.getElementById('customerAddressPrint').textContent = document.getElementById('customerAddress').value;
+            document.getElementById('customerContactPrint').textContent = document.getElementById('customerContact').value;
+            document.getElementById('customerEmailPrint').textContent = document.getElementById('customerEmail').value;
+            document.getElementById('customerGSTINPrint').textContent = document.getElementById('customerGSTIN').value;
+            document.getElementById('invoiceNoPrint').textContent = document.getElementById('invoiceNo').value;
+
+            // Update bill type print value
+            const billTypeSelect = document.getElementById('billTypeSelect');
+            document.getElementById('billTypePrint').textContent = billTypeSelect.options[billTypeSelect.selectedIndex].text;
+
+            // Fix date display - no emoji, clean format
+            const dateValue = document.getElementById('invoiceDate').value;
+            document.getElementById('invoiceDatePrint').textContent = formatDateForDisplay(dateValue);
+            
+            updateLiveDateDisplay();
+            
+            // Tax rates are now handled per-item, no global tax rate elements
+            
+            document.querySelectorAll('.items-table input, .items-table textarea').forEach(input => {
+                updatePrintValue(input);
+            });
+        }
+
+        function updateLiveDateDisplay() {
+            const dateValue = document.getElementById('invoiceDate').value;
+            const liveDisplay = document.getElementById('dateLiveDisplay');
+            
+            if (dateValue) {
+                liveDisplay.textContent = formatDateForDisplay(dateValue);
+                liveDisplay.style.display = 'inline-block';
+                document.getElementById('invoiceDate').style.display = 'none';
+            } else {
+                liveDisplay.textContent = 'Click to set date';
+                liveDisplay.style.display = 'inline-block';
+                document.getElementById('invoiceDate').style.display = 'none';
+            }
+        }
+
+        function formatDateForDisplay(dateString) {
+            if (!dateString) return '';
+            const date = new Date(dateString);
+            const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+            const day = date.getDate().toString().padStart(2, '0');
+            const month = months[date.getMonth()];
+            const year = date.getFullYear();
+            return `${day}-${month}-${year}`;
+        }
+
+        function calculateRowTotal(input) {
+            const row = input.closest('tr');
+            const inputs = row.querySelectorAll('input');
+            const qty = parseFloat(inputs[2].value) || 0;
+            const rate = parseFloat(inputs[3].value) || 0;
+            const taxRate = parseFloat(inputs[4].value) || 0;
+
+            // Calculate base amount (without tax)
+            const baseAmount = qty * rate;
+
+            // Calculate tax amount (zero if non-GST bill)
+            const taxAmount = isNonGSTBill() ? 0 : (baseAmount * taxRate) / 100;
+
+            // Calculate total amount (base + tax, or just base if non-GST)
+            const totalAmount = baseAmount + taxAmount;
+
+            // Update base amount display
+            const baseAmountElement = row.cells[5].querySelector('.base-amount');
+            baseAmountElement.textContent = formatIndianCurrency(baseAmount);
+
+            // Update tax amount display
+            const taxAmountElement = row.cells[7].querySelector('.tax-amount');
+            taxAmountElement.textContent = formatIndianCurrency(taxAmount);
+
+            // Update total amount display
+            const rowTotalElement = row.cells[8].querySelector('.row-total');
+            const rowTotalCell = row.cells[8];
+            rowTotalElement.textContent = formatIndianCurrency(totalAmount);
+
+            // Add red text and yellow cell background if amount is zero and description is not empty
+            const description = row.querySelector('textarea').value.trim();
+            if (totalAmount === 0 && description !== '') {
+                rowTotalElement.classList.add('zero-amount');
+                rowTotalCell.classList.add('zero-amount-cell');
+            } else {
+                rowTotalElement.classList.remove('zero-amount');
+                rowTotalCell.classList.remove('zero-amount-cell');
+            }
+
+            calculateTotals();
+        }
+
+        // FIXED: Added missing saveItemsFromBill function with price update capability
+        function saveItemsFromBill() {
+            console.log('Saving items from current bill to database...');
+            
+            let newItemsAdded = 0;
+            let itemsUpdated = 0;
+            
+            document.querySelectorAll('#itemsTableBody tr').forEach(row => {
+                const textarea = row.querySelector('textarea');
+                const hsnInput = row.cells[2].querySelector('input');
+                const rateInput = row.cells[4].querySelector('input');
+                const taxRateInput = row.cells[6].querySelector('input');
+
+                if (textarea && hsnInput && rateInput && taxRateInput) {
+                    const description = textarea.value.trim();
+                    const hsn = hsnInput.value.trim();
+                    const rate = parseFloat(rateInput.value) || 0;
+                    const taxRate = parseFloat(taxRateInput.value) || 18;
+                    
+                    if (description && hsn && rate > 0) {
+                        // Check if item already exists
+                        const existingItemIndex = itemsDatabase.findIndex(item => 
+                            item.name.toLowerCase() === description.toLowerCase() ||
+                            item.description.toLowerCase() === description.toLowerCase()
+                        );
+                        
+                        if (existingItemIndex !== -1) {
+                            // Update existing item if price, HSN, or tax rate has changed
+                            const existingItem = itemsDatabase[existingItemIndex];
+                            let updated = false;
+
+                            if (existingItem.price !== rate) {
+                                existingItem.price = rate;
+                                updated = true;
+                            }
+
+                            if (existingItem.hsn !== hsn) {
+                                existingItem.hsn = hsn;
+                                updated = true;
+                            }
+
+                            if ((existingItem.taxRate || 18) !== taxRate) {
+                                existingItem.taxRate = taxRate;
+                                updated = true;
+                            }
+                            
+                            if (updated) {
+                                existingItem.updatedAt = new Date().toISOString();
+                                existingItem.lastUsedRate = rate;
+                                itemsUpdated++;
+                            }
+                        } else {
+                            // Add new item
+                            const newItem = {
+                                id: Date.now() + Math.random(),
+                                name: description,
+                                hsn: hsn,
+                                price: rate,
+                                description: description,
+                                taxRate: taxRate,
+                                createdAt: new Date().toISOString(),
+                                autoAdded: true
+                            };
+                            
+                            itemsDatabase.push(newItem);
+                            newItemsAdded++;
+                        }
+                    }
+                }
+            });
+            
+            if (newItemsAdded > 0 || itemsUpdated > 0) {
+                localStorage.setItem('itemsDatabase', JSON.stringify(itemsDatabase));
+                console.log(`${newItemsAdded} new items added, ${itemsUpdated} items updated in database`);
+            }
+        }
+
+        // Revert to original validation logic that was working
+        function validateBeforePrint() {
+            const issues = [];
+            
+            // Check for rows with description but zero amount
+            document.querySelectorAll('#itemsTableBody tr').forEach((row, index) => {
+                const description = row.querySelector('textarea');
+                const rowTotal = row.querySelector('.row-total');
+                
+                if (description && rowTotal) {
+                    const descText = description.value.trim();
+                    const amount = parseFloat(rowTotal.textContent.replace(/₹|,/g, '')) || 0;
+                    
+                    if (descText !== '' && amount === 0) {
+                        issues.push(`Row ${index + 1}: "${descText}" has zero amount`);
+                    }
+                }
+            });
+            
+            // Check for missing customer name
+            const customerName = document.getElementById('customerName').value.trim();
+            if (!customerName) {
+                issues.push('Customer name is missing');
+            }
+            
+            // Check for missing invoice number
+            const invoiceNo = document.getElementById('invoiceNo').value.trim();
+            if (!invoiceNo) {
+                issues.push('Invoice number is missing');
+            }
+            
+            return issues;
+        }
+
+        function formatIndianCurrency(amount) {
+            const num = parseFloat(amount);
+            if (isNaN(num)) return '₹0.00';
+            
+            const [integerPart, decimalPart] = num.toFixed(2).split('.');
+            const reversed = integerPart.split('').reverse();
+            let formatted = '';
+            
+            for (let i = 0; i < reversed.length; i++) {
+                if (i === 3) {
+                    formatted = ',' + formatted;
+                } else if (i > 3 && (i - 3) % 2 === 0) {
+                    formatted = ',' + formatted;
+                }
+                formatted = reversed[i] + formatted;
+            }
+            
+            return '₹' + formatted + '.' + decimalPart;
+        }
+
+        // Updated calculateTotals function with Indian currency formatting and QR code update
+        function calculateTotals() {
+            let subtotalBaseAmount = 0;
+            let totalTaxAmount = 0;
+            let grandTotalAmount = 0;
+
+            // Calculate subtotal from base amounts
+            document.querySelectorAll('.base-amount').forEach(span => {
+                const amount = parseFloat(span.textContent.replace(/₹|,/g, '')) || 0;
+                subtotalBaseAmount += amount;
+            });
+
+            // Calculate total tax amount
+            document.querySelectorAll('.tax-amount').forEach(span => {
+                const amount = parseFloat(span.textContent.replace(/₹|,/g, '')) || 0;
+                totalTaxAmount += amount;
+            });
+
+            // Calculate grand total from row totals
+            document.querySelectorAll('.row-total').forEach(span => {
+                const amount = parseFloat(span.textContent.replace(/₹|,/g, '')) || 0;
+                grandTotalAmount += amount;
+            });
+
+            // Update display elements
+            document.getElementById('subtotal').textContent = formatIndianCurrency(subtotalBaseAmount);
+            document.getElementById('totalTaxAmount').textContent = formatIndianCurrency(totalTaxAmount);
+
+            // Calculate rounding
+            const totalBeforeRounding = grandTotalAmount;
+            const grandTotal = Math.round(totalBeforeRounding);
+            const roundOff = grandTotal - totalBeforeRounding;
+
+            document.getElementById('roundOff').textContent = formatIndianCurrency(roundOff);
+            document.getElementById('grandTotal').textContent = formatIndianCurrency(grandTotal);
+
+            document.getElementById('amountInWords').textContent = numberToWords(grandTotal) + ' Rupees Only';
+
+            // Update QR code after calculating totals
+            updatePaymentQR();
+        }
+
+        // QR Code generation function
+        function generateQRCode(text, elementId) {
+            const qrDiv = document.getElementById(elementId);
+            qrDiv.innerHTML = ''; // Clear existing QR code
+            
+            // Simple QR code generation using external service
+            const qrImage = document.createElement('img');
+            qrImage.src = `https://api.qrserver.com/v1/create-qr-code/?size=120x120&data=${encodeURIComponent(text)}`;
+            qrImage.style.width = '100%';
+            qrImage.style.height = '100%';
+            qrImage.alt = 'Payment QR Code';
+            qrDiv.appendChild(qrImage);
+        }
+
+        // Generate payment QR code based on amount using PhonePe UPI format
+        function updatePaymentQR() {
+            const settings = JSON.parse(localStorage.getItem('qrSettings')) || {
+                upiID: 'Q185070092@ybl',
+                upiName: 'PhonePeMerchant'
+            };
+            
+            const grandTotalText = document.getElementById('grandTotal').textContent;
+            const grandTotal = parseFloat(grandTotalText.replace(/₹|,/g, '')) || 0;
+            
+            let upiString;
+            let qrLabel;
+            
+            if (grandTotal > 0 && grandTotal <= 90000) {
+                // PhonePe UPI with fixed amount for amounts <= 90,000
+                upiString = `upi://pay?pa=${settings.upiID}&pn=${encodeURIComponent(settings.upiName)}&mc=0000&mode=02&purpose=00&am=${grandTotal.toFixed(2)}&cu=INR`;
+                qrLabel = `Pay ₹${formatIndianCurrency(grandTotal).replace('₹', '')}`;
+            } else {
+                // PhonePe general UPI for amounts > 90,000 or zero amount
+                upiString = `upi://pay?pa=${settings.upiID}&pn=${encodeURIComponent(settings.upiName)}&mc=0000&mode=02&purpose=00`;
+                qrLabel = grandTotal > 90000 ? 'Scan & Pay (Enter Amount)' : 'Scan & Pay';
+            }
+            
+            generateQRCode(upiString, 'qrCode');
+            document.getElementById('qrLabel').textContent = qrLabel;
+        }
+
+        // Number to words conversion
+        function numberToWords(num) {
+            if (num === 0) return 'Zero';
+            
+            const ones = ['', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine'];
+            const teens = ['Ten', 'Eleven', 'Twelve', 'Thirteen', 'Fourteen', 'Fifteen', 'Sixteen', 'Seventeen', 'Eighteen', 'Nineteen'];
+            const tens = ['', '', 'Twenty', 'Thirty', 'Forty', 'Fifty', 'Sixty', 'Seventy', 'Eighty', 'Ninety'];
+            
+            function convertHundreds(n) {
+                let result = '';
+                
+                if (n >= 100) {
+                    result += ones[Math.floor(n / 100)] + ' Hundred ';
+                    n %= 100;
+                }
+                
+                if (n >= 20) {
+                    result += tens[Math.floor(n / 10)] + ' ';
+                    n %= 10;
+                }
+                
+                if (n >= 10) {
+                    result += teens[n - 10] + ' ';
+                } else if (n > 0) {
+                    result += ones[n] + ' ';
+                }
+                
+                return result;
+            }
+            
+            let result = '';
+            
+            if (num >= 10000000) {
+                result += convertHundreds(Math.floor(num / 10000000)) + 'Crore ';
+                num %= 10000000;
+            }
+            
+            if (num >= 100000) {
+                result += convertHundreds(Math.floor(num / 100000)) + 'Lakh ';
+                num %= 100000;
+            }
+            
+            if (num >= 1000) {
+                result += convertHundreds(Math.floor(num / 1000)) + 'Thousand ';
+                num %= 1000;
+            }
+            
+            if (num > 0) {
+                result += convertHundreds(num);
+            }
+            
+            return result.trim();
+        }
+
+        // Customer Management
+        function showCustomers() {
+            document.getElementById('customerModal').style.display = 'block';
+            loadCustomersList();
+        }
+
+        function closeCustomers() {
+            document.getElementById('customerModal').style.display = 'none';
+        }
+
+        function addNewCustomer() {
+            const name = document.getElementById('newCustomerName').value.trim();
+            const address = document.getElementById('newCustomerAddress').value.trim();
+            const contact = document.getElementById('newCustomerContact').value.trim();
+            const email = document.getElementById('newCustomerEmail').value.trim();
+            const gstin = document.getElementById('newCustomerGSTIN').value.trim();
+
+            if (!name) {
+                alert('Please enter customer name');
+                return;
+            }
+
+            // Validate email if provided
+            if (email && !validateEmail(document.getElementById('newCustomerEmail'))) {
+                alert('Please enter a valid email address or leave it empty');
+                return;
+            }
+
+            // Validate GSTIN if provided
+            if (gstin && !validateGSTIN(document.getElementById('newCustomerGSTIN'))) {
+                alert('Please enter a valid GSTIN number or leave it empty');
+                return;
+            }
+
+            const customer = {
+                id: Date.now().toString(),
+                name: name,
+                address: address,
+                contact: contact,
+                email: email.toLowerCase(),
+                gstin: gstin.toUpperCase(),
+                createdAt: new Date().toISOString()
+            };
+
+            let customers = JSON.parse(localStorage.getItem('customersDB')) || [];
+            
+            if (customers.find(c => c.name.toLowerCase() === name.toLowerCase())) {
+                alert('Customer with this name already exists');
+                return;
+            }
+
+            customers.push(customer);
+            localStorage.setItem('customersDB', JSON.stringify(customers));
+
+            document.getElementById('newCustomerName').value = '';
+            document.getElementById('newCustomerAddress').value = '';
+            document.getElementById('newCustomerContact').value = '';
+            document.getElementById('newCustomerEmail').value = '';
+            document.getElementById('newCustomerGSTIN').value = '';
+            
+            // Reset validation state
+            const emailInput = document.getElementById('newCustomerEmail');
+            const gstinInput = document.getElementById('newCustomerGSTIN');
+            emailInput.classList.remove('email-invalid');
+            gstinInput.classList.remove('gstin-invalid');
+
+            loadCustomersList();
+            loadCustomerList();
+            alert('Customer added successfully!');
+        }
+
+        function loadCustomersList() {
+            const customers = JSON.parse(localStorage.getItem('customersDB')) || [];
+            const customersList = document.getElementById('customersList');
+            
+            customersList.innerHTML = '';
+
+            if (customers.length === 0) {
+                customersList.innerHTML = '<p>No customers added yet.</p>';
+                return;
+            }
+
+            customers.forEach(customer => {
+                const div = document.createElement('div');
+                div.className = 'history-item';
+                div.style.marginBottom = '10px';
+                div.innerHTML = `
+                    <strong>${customer.name}</strong><br>
+                    ${customer.address ? `Address: ${customer.address}<br>` : ''}
+                    ${customer.contact ? `Contact: ${customer.contact}<br>` : ''}
+                    ${customer.email ? `Email: ${customer.email}<br>` : ''}
+                    ${customer.gstin ? `GSTIN: ${customer.gstin}<br>` : ''}
+                    <small>Added: ${new Date(customer.createdAt).toLocaleDateString()}</small><br>
+                    <button class="btn btn-secondary" onclick="editCustomer('${customer.id}')" style="margin-top: 5px;">Edit</button>
+                    <button class="btn btn-danger" onclick="deleteCustomer('${customer.id}')" style="margin-top: 5px;">Delete</button>
+                `;
+                customersList.appendChild(div);
+            });
+        }
+
+        function editCustomer(customerId) {
+            const customers = JSON.parse(localStorage.getItem('customersDB')) || [];
+            const customer = customers.find(c => c.id === customerId);
+            
+            if (!customer) return;
+
+            document.getElementById('newCustomerName').value = customer.name;
+            document.getElementById('newCustomerAddress').value = customer.address || '';
+            document.getElementById('newCustomerContact').value = customer.contact || '';
+            document.getElementById('newCustomerEmail').value = customer.email || '';
+            document.getElementById('newCustomerGSTIN').value = customer.gstin || '';
+
+            deleteCustomer(customerId, false);
+        }
+
+        function deleteCustomer(customerId, showAlert = true) {
+            if (showAlert && !confirm('Delete this customer?')) return;
+
+            let customers = JSON.parse(localStorage.getItem('customersDB')) || [];
+            customers = customers.filter(c => c.id !== customerId);
+            localStorage.setItem('customersDB', JSON.stringify(customers));
+
+            loadCustomersList();
+            loadCustomerList();
+            
+            if (showAlert) alert('Customer deleted successfully!');
+        }
+
+        function loadCustomerDetails(customerName) {
+            if (!customerName || customerName.trim() === '') return;
+
+            const customers = JSON.parse(localStorage.getItem('customersDB')) || [];
+            const customer = customers.find(c => c.name.toLowerCase() === customerName.toLowerCase());
+            
+            if (customer) {
+                const addressField = document.getElementById('customerAddress');
+                const contactField = document.getElementById('customerContact');
+                const emailField = document.getElementById('customerEmail');
+                const gstinField = document.getElementById('customerGSTIN');
+                
+                addressField.value = customer.address || '';
+                contactField.value = customer.contact || '';
+                emailField.value = customer.email || '';
+                gstinField.value = customer.gstin || '';
+                
+                updatePrintValue(addressField);
+                updatePrintValue(contactField);
+                updatePrintValue(emailField);
+                updatePrintValue(gstinField);
+                
+                // Validate loaded email and GSTIN
+                if (customer.email) {
+                    validateEmail(emailField);
+                }
+                if (customer.gstin) {
+                    validateGSTIN(gstinField);
+                }
+            } else {
+                document.getElementById('customerAddress').value = '';
+                document.getElementById('customerContact').value = '';
+                document.getElementById('customerEmail').value = '';
+                document.getElementById('customerGSTIN').value = '';
+                
+                updatePrintValue(document.getElementById('customerAddress'));
+                updatePrintValue(document.getElementById('customerContact'));
+                updatePrintValue(document.getElementById('customerEmail'));
+                updatePrintValue(document.getElementById('customerGSTIN'));
+                
+                // Clear validation state
+                const emailField = document.getElementById('customerEmail');
+                const gstinField = document.getElementById('customerGSTIN');
+                emailField.classList.remove('email-invalid');
+                gstinField.classList.remove('gstin-invalid');
+            }
+        }
+
+        function openCalendar() {
+            const dateInput = document.getElementById('invoiceDate');
+            
+            if (!dateInput.value) {
+                dateInput.value = new Date().toISOString().split('T')[0];
+                updatePrintValue(dateInput);
+                updateLiveDateDisplay();
+            }
+            
+            dateInput.style.display = 'inline-block';
+            dateInput.focus();
+            dateInput.showPicker();
+            
+            setTimeout(() => {
+                dateInput.addEventListener('blur', function onBlur() {
+                    dateInput.style.display = 'none';
+                    dateInput.removeEventListener('blur', onBlur);
+                });
+            }, 100);
+        }
+
+        function saveToCustomers() {
+            const customerName = document.getElementById('customerName').value.trim();
+            const customerAddress = document.getElementById('customerAddress').value.trim();
+            const customerContact = document.getElementById('customerContact').value.trim();
+            const customerEmail = document.getElementById('customerEmail').value.trim();
+            const customerGSTIN = document.getElementById('customerGSTIN').value.trim();
+            
+            if (customerName.length > 2) {
+                let customers = JSON.parse(localStorage.getItem('customersDB')) || [];
+                
+                const existingIndex = customers.findIndex(c => c.name.toLowerCase() === customerName.toLowerCase());
+                
+                const customerData = {
+                    id: existingIndex >= 0 ? customers[existingIndex].id : Date.now().toString(),
+                    name: customerName,
+                    address: customerAddress,
+                    contact: customerContact,
+                    email: customerEmail.toLowerCase(),
+                    gstin: customerGSTIN,
+                    createdAt: existingIndex >= 0 ? customers[existingIndex].createdAt : new Date().toISOString(),
+                    updatedAt: new Date().toISOString()
+                };
+
+                if (existingIndex >= 0) {
+                    customers[existingIndex] = customerData;
+                } else {
+                    customers.push(customerData);
+                }
+
+                localStorage.setItem('customersDB', JSON.stringify(customers));
+                loadCustomerList();
+            }
+        }
+
+        function loadCustomerList() {
+            const customers = JSON.parse(localStorage.getItem('customersDB')) || [];
+            const datalist = document.getElementById('customerList');
+            datalist.innerHTML = '';
+            
+            customers.forEach(customer => {
+                const option = document.createElement('option');
+                option.value = customer.name;
+                datalist.appendChild(option);
+            });
+        }
+
+        // Bill History Management
+        function saveBillToHistory() {
+            const items = [];
+            document.querySelectorAll('#itemsTableBody tr').forEach(row => {
+                const inputs = row.querySelectorAll('input');
+                const textarea = row.querySelector('textarea');
+                if (inputs.length > 0) {
+                    items.push({
+                        challan: inputs[0].value,
+                        description: textarea ? textarea.value : '',
+                        hsn: inputs[1].value,
+                        qty: inputs[2].value,
+                        rate: inputs[3].value,
+                        taxRate: inputs[4].value
+                    });
+                }
+            });
+
+            const billData = {
+                invoiceNo: document.getElementById('invoiceNo').value,
+                date: document.getElementById('invoiceDate').value,
+                customerName: document.getElementById('customerName').value,
+                customerAddress: document.getElementById('customerAddress').value,
+                customerContact: document.getElementById('customerContact').value,
+                customerEmail: document.getElementById('customerEmail').value,
+                customerGSTIN: document.getElementById('customerGSTIN').value,
+                grandTotal: document.getElementById('grandTotal').textContent,
+                subtotal: document.getElementById('subtotal').textContent,
+                totalTaxAmount: document.getElementById('totalTaxAmount').textContent,
+                items: items,
+                billType: document.getElementById('billTypeSelect').value,
+                amountInWords: document.getElementById('amountInWords').textContent,
+                timestamp: new Date().toISOString()
+            };
+            
+            let history = JSON.parse(localStorage.getItem('billHistory')) || [];
+            
+            const existingIndex = history.findIndex(bill => bill.invoiceNo === billData.invoiceNo);
+            if (existingIndex >= 0) {
+                history[existingIndex] = billData;
+            } else {
+                history.unshift(billData);
+            }
+            
+            if (history.length > 100) {
+                history = history.slice(0, 100);
+            }
+            
+            localStorage.setItem('billHistory', JSON.stringify(history));
+            saveToCustomers();
+        }
+
+        function loadBillHistory() {
+            console.log('loadBillHistory called - redirecting to sidebar function');
+            loadBillHistoryToSidebar();
+        }
+
+        function deleteBillFromHistory(index) {
+            if (!confirm('Delete this bill from history? It will be moved to trash.')) return;
+
+            let history = JSON.parse(localStorage.getItem('billHistory')) || [];
+            const bill = history[index];
+            
+            moveBillToTrash(bill);
+            
+            history.splice(index, 1);
+            localStorage.setItem('billHistory', JSON.stringify(history));
+            
+            const historyPanel = document.getElementById('historyPanel');
+            if (historyPanel && historyPanel.classList.contains('show')) {
+                loadBillHistoryToSidebar();
+            }
+            
+            alert('Bill moved to trash.');
+        }
+
+        function loadBillFromHistory(index) {
+            const history = JSON.parse(localStorage.getItem('billHistory')) || [];
+            const bill = history[index];
+            
+            if (!bill) {
+                alert('Bill not found!');
+                return;
+            }
+
+            if (!confirm('Load this bill? Current data will be replaced.')) {
+                return;
+            }
+            
+            document.getElementById('invoiceNo').value = bill.invoiceNo || '';
+            document.getElementById('invoiceDate').value = bill.date || '';
+            document.getElementById('customerName').value = bill.customerName || '';
+            document.getElementById('customerAddress').value = bill.customerAddress || '';
+            document.getElementById('customerContact').value = bill.customerContact || '';
+            document.getElementById('customerEmail').value = bill.customerEmail || '';
+            document.getElementById('customerGSTIN').value = bill.customerGSTIN || '';
+
+            // Restore bill type
+            document.getElementById('billTypeSelect').value = bill.billType || 'tax_invoice';
+            handleBillTypeChange();
+
+            // Tax rates are now per-item, no global tax rates to load
+            
+            document.getElementById('itemsTableBody').innerHTML = '';
+            
+            if (bill.items && bill.items.length > 0) {
+                bill.items.forEach(item => {
+                    if (item.challan || item.description || item.hsn || item.qty || item.rate) {
+                        addNewRow();
+                        const lastRow = document.querySelector('#itemsTableBody tr:last-child');
+                        const inputs = lastRow.querySelectorAll('input');
+                        const textarea = lastRow.querySelector('textarea');
+                        
+                        inputs[0].value = item.challan || '';
+                        if (textarea) {
+                            textarea.value = item.description || '';
+                            autoResize(textarea);
+                        }
+                        inputs[1].value = item.hsn || '';
+                        inputs[2].value = item.qty || '';
+                        inputs[3].value = item.rate || '';
+                        inputs[4].value = item.taxRate || 18; // Tax rate field
+                        
+                        inputs.forEach(input => {
+                            updatePrintValue(input);
+                            if (input.type === 'number') {
+                                calculateRowTotal(input);
+                            }
+                        });
+                        
+                        if (textarea) {
+                            updatePrintValue(textarea);
+                        }
+                    }
+                });
+            }
+            
+            addNewRow();
+            addNewRow();
+            
+            calculateTotals();
+            updateAllPrintValues();
+            
+            toggleHistory();
+            alert('Bill loaded successfully!');
+        }
+
+        function toggleHistory() {
+            const panel = document.getElementById('historyPanel');
+            const overlay = document.getElementById('historyOverlay');
+            const isOpen = panel.classList.contains('show');
+            
+            if (isOpen) {
+                panel.classList.remove('show');
+                overlay.classList.remove('show');
+                document.getElementById('historyList').innerHTML = '';
+            } else {
+                panel.classList.add('show');
+                overlay.classList.add('show');
+                loadBillHistoryToSidebar();
+            }
+        }
+
+        function loadBillHistoryToSidebar() {
+            const history = JSON.parse(localStorage.getItem('billHistory')) || [];
+            const historyList = document.getElementById('historyList');
+            
+            if (!historyList || historyList.id !== 'historyList') {
+                console.error('History list element not found or incorrect');
+                return;
+            }
+            
+            historyList.innerHTML = '';
+            
+            if (history.length === 0) {
+                historyList.innerHTML = '<p>No bills saved yet.</p>';
+                return;
+            }
+            
+            history.forEach((bill, index) => {
+                const div = document.createElement('div');
+                div.className = 'history-item';
+                div.innerHTML = `
+                    <strong>Invoice: ${bill.invoiceNo || 'No Number'}</strong>${bill.billType && bill.billType !== 'tax_invoice' ? ` <span style="color:#e67e22; font-size:10px; font-weight:bold;">[${bill.billType === 'estimate' ? 'ESTIMATE' : 'BILL OF SUPPLY'}]</span>` : ''}<br>
+                    Date: ${bill.date || 'No Date'}<br>
+                    Customer: ${bill.customerName || 'No Customer'}<br>
+                    ${bill.customerAddress ? `Address: ${bill.customerAddress}<br>` : ''}
+                    ${bill.customerContact ? `Contact: ${bill.customerContact}<br>` : ''}
+                    ${bill.customerEmail ? `Email: ${bill.customerEmail}<br>` : ''}
+                    ${bill.customerGSTIN ? `GSTIN: ${bill.customerGSTIN}<br>` : ''}
+                    Amount: ${bill.grandTotal} | Items: ${bill.items ? bill.items.filter(item => item.description).length : 0}<br>
+                    <small>Saved: ${new Date(bill.timestamp).toLocaleString()}</small><br>
+                    <button class="btn btn-secondary" onclick="loadBillFromHistory(${index})" style="margin-top: 5px;">Load Bill</button>
+                    <button class="btn btn-danger" onclick="deleteBillFromHistory(${index})" style="margin-top: 5px;">Delete</button>
+                `;
+                historyList.appendChild(div);
+            });
+            
+            console.log('History loaded successfully into sidebar with', history.length, 'items');
+        }
+
+        // Trash Management
+        function showTrash() {
+            document.getElementById('trashModal').style.display = 'block';
+            loadTrashList();
+        }
+
+        function closeTrash() {
+            document.getElementById('trashModal').style.display = 'none';
+        }
+
+        function loadTrashList() {
+            const trash = JSON.parse(localStorage.getItem('billTrash')) || [];
+            const trashList = document.getElementById('trashList');
+            
+            trashList.innerHTML = '';
+
+            if (trash.length === 0) {
+                trashList.innerHTML = '<p>Trash is empty.</p>';
+                return;
+            }
+
+            trash.forEach((bill, index) => {
+                const div = document.createElement('div');
+                div.className = 'history-item';
+                div.style.backgroundColor = '#ffe6e6';
+                div.innerHTML = `
+                    <strong>Invoice: ${bill.invoiceNo || 'No Number'}</strong><br>
+                    Date: ${bill.date || 'No Date'}<br>
+                    Customer: ${bill.customerName || 'No Customer'}<br>
+                    ${bill.customerAddress ? `Address: ${bill.customerAddress}<br>` : ''}
+                    ${bill.customerContact ? `Contact: ${bill.customerContact}<br>` : ''}
+                    ${bill.customerEmail ? `Email: ${bill.customerEmail}<br>` : ''}
+                    Amount: ${bill.grandTotal}<br>
+                    <small>Deleted: ${new Date(bill.deletedAt).toLocaleString()}</small><br>
+                    <button class="btn btn-secondary" onclick="restoreFromTrash(${index})" style="margin-top: 5px;">Restore</button>
+                    <button class="btn btn-danger" onclick="permanentDelete(${index})" style="margin-top: 5px;">Delete Forever</button>
+                `;
+                trashList.appendChild(div);
+            });
+        }
+
+        function restoreFromTrash(index) {
+            if (!confirm('Restore this bill to history?')) return;
+
+            let trash = JSON.parse(localStorage.getItem('billTrash')) || [];
+            let history = JSON.parse(localStorage.getItem('billHistory')) || [];
+            
+            const bill = trash[index];
+            delete bill.deletedAt;
+            
+            history.unshift(bill);
+            trash.splice(index, 1);
+            
+            localStorage.setItem('billTrash', JSON.stringify(trash));
+            localStorage.setItem('billHistory', JSON.stringify(history));
+            
+            loadTrashList();
+            alert('Bill restored successfully!');
+        }
+
+        function permanentDelete(index) {
+            if (!confirm('Permanently delete this bill? This cannot be undone!')) return;
+
+            let trash = JSON.parse(localStorage.getItem('billTrash')) || [];
+            trash.splice(index, 1);
+            localStorage.setItem('billTrash', JSON.stringify(trash));
+            
+            loadTrashList();
+            alert('Bill permanently deleted.');
+        }
+
+        function emptyTrash() {
+            if (!confirm('Permanently delete ALL bills in trash? This cannot be undone!')) return;
+            
+            localStorage.removeItem('billTrash');
+            loadTrashList();
+            alert('Trash emptied permanently.');
+        }
+
+        function moveBillToTrash(bill) {
+            let trash = JSON.parse(localStorage.getItem('billTrash')) || [];
+            bill.deletedAt = new Date().toISOString();
+            trash.unshift(bill);
+            
+            if (trash.length > 20) {
+                trash = trash.slice(0, 20);
+            }
+            
+            localStorage.setItem('billTrash', JSON.stringify(trash));
+        }
+
+        // FIXED PDF GENERATION AND PRINT FUNCTIONS
+        function generatePDF() {
+            console.log('=== PDF GENERATION STARTING ===');
+            
+            // Save items from current bill to database before printing
+            saveItemsFromBill();
+            
+            // Update all print values first
+            updateAllPrintValues();
+            
+            // Check for validation issues - show warning but allow proceeding
+            const issues = validateBeforePrint();
+            if (issues.length > 0) {
+                const warningMessage = `WARNING - ISSUES DETECTED:\n\n${issues.join('\n')}\n\nClick OK to generate PDF anyway\nClick Cancel to fix issues first`;
+                if (!confirm(warningMessage)) {
+                    return;
+                }
+            }
+            
+            // Save to history
+            saveBillToHistory();
+            
+            // Set document title for better PDF filename
+            const originalTitle = document.title;
+            const invoiceNo = document.getElementById('invoiceNo').value || 'NOINV';
+            const date = new Date();
+            const ddmmyy = String(date.getDate()).padStart(2, '0') + 
+                          String(date.getMonth() + 1).padStart(2, '0') + 
+                          String(date.getFullYear()).slice(-2);
+            const hhss = String(date.getHours()).padStart(2, '0') + 
+                         String(date.getMinutes()).padStart(2, '0');
+            
+            const billTypePrefix = document.getElementById('billTypeSelect').value === 'estimate' ? 'estimate' : 'invoice';
+            document.title = `${billTypePrefix}_${invoiceNo}_${ddmmyy}_${hhss}`;
+            
+            // Use native window.print() - no more blank windows!
+            window.print();
+            
+            // Restore original title after printing
+            setTimeout(() => {
+                document.title = originalTitle;
+            }, 1000);
+        }
+
+        function printBill() {
+            // Same as PDF generation now - unified approach
+            generatePDF();
+        }
+
+        function newBill() {
+            if (confirm('Start a new bill? Current data will be lost if not saved.')) {
+                document.getElementById('invoiceNo').value = '';
+                document.getElementById('customerName').value = '';
+                document.getElementById('customerAddress').value = '';
+                document.getElementById('customerContact').value = '';
+                document.getElementById('customerEmail').value = '';
+                document.getElementById('customerGSTIN').value = '';
+                document.getElementById('invoiceDate').value = new Date().toISOString().split('T')[0];
+                
+                // Reset bill type to TAX INVOICE
+                document.getElementById('billTypeSelect').value = 'tax_invoice';
+                handleBillTypeChange();
+
+                // Clear validation states
+                document.getElementById('customerEmail').classList.remove('email-invalid');
+                document.getElementById('customerGSTIN').classList.remove('gstin-invalid');
+                
+                document.getElementById('itemsTableBody').innerHTML = '';
+                
+                addNewRow();
+                addNewRow();
+                addNewRow();
+                
+                calculateTotals();
+                updateAllPrintValues();
+            }
+        }
+
+        // Open mobile view function
+        function openMobileView() {
+            // Create a mobile-friendly URL or open mobile version
+            const mobileUrl = 'index_mobile.html';
+            window.location.href = mobileUrl;
+        }
+
+        // Click outside to close suggestions
+        document.addEventListener('click', function(event) {
+            if (!event.target.closest('.description-col')) {
+                hideItemSuggestions();
+            }
+        });
+    </script>
+</body>
+</html>

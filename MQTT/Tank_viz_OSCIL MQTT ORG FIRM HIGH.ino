@@ -70,8 +70,8 @@
 
 // Device info
 #define DEVICE_NAME       "SenseFlow-Node-DIP"
-#define FIRMWARE_VERSION  "17.0.17"
-#define FIRMWARE_CODE     "SF-OSC-2026"
+#define FIRMWARE_VERSION  "18.0.1"
+#define FIRMWARE_CODE     "SF-HGH-2026"
 #define AP_PASSWORD       "mvstech9867"
 
 // ── MQTT broker config (LAN or cloud — selected by USE_CLOUD_MQTT above) ──
@@ -165,7 +165,7 @@ const int DIP_PINS[] = {34, 35, 32, 33};
 //       replaceable or the system is short-lived.
 //   1 = OCSIL PULSED — common pulsed only during read bursts, synchronous
 //       sampling rejects leakage/stuck pins, probe life 2-10 yr.
-#define EXCITATION_MODE      1
+#define EXCITATION_MODE      0
 
 // How often the firmware re-reads the probes (applies to both modes).
 #define DIP_READ_INTERVAL_MS_DEFAULT 2000

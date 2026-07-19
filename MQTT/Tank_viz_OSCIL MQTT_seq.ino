@@ -20,12 +20,12 @@
 
 // Channel toggles must come before includes so the right libraries are pulled in.
 #define ENABLE_CLOUD                 1
-#define ENABLE_LOCAL_MQTT            0
+#define ENABLE_LOCAL_MQTT            1
 // MQTT broker location: 0 = LAN Pi gateway, 1 = cloud broker (HiveMQ/EMQX/VPS).
 // Detailed config block lives further down — these top-level defines exist
 // here only so the WiFiClientSecure include can be conditionally pulled in.
 #define USE_CLOUD_MQTT               0
-#define CLOUD_MQTT_USE_TLS           0
+#define CLOUD_MQTT_USE_TLS           1
 #if ENABLE_CLOUD == 0 && ENABLE_LOCAL_MQTT == 0
   #warning "Both cloud and MQTT disabled — device will be local-AP-only"
 #endif
@@ -35,9 +35,6 @@
 #include <Preferences.h>
 #include "esp_task_wdt.h"
 #include "esp_system.h"
-#include <HTTPUpdate.h>
-#include <WiFiClientSecure.h>
-#include <time.h>
 #if ENABLE_CLOUD
   #include <Firebase_ESP_Client.h>
   #include <addons/TokenHelper.h>
@@ -70,7 +67,7 @@
 
 // Device info
 #define DEVICE_NAME       "SenseFlow-Node-DIP"
-#define FIRMWARE_VERSION  "17.0.17"
+#define FIRMWARE_VERSION  "16.0.0"
 #define FIRMWARE_CODE     "SF-OSC-2026"
 #define AP_PASSWORD       "mvstech9867"
 
@@ -84,7 +81,7 @@
   #define MQTT_DISCOVERY_MSG         "SENSEFLOW_DISCOVER"
   #define MQTT_DISCOVERY_REPLY       "SENSEFLOW_HERE"
   #define MQTT_DISCOVERY_INTERVAL_MS 60000
-  // Rotate MQTT_SECRET by re??flashing all devices + updating pi_gateway.py.
+  // Rotate MQTT_SECRET by reflashing all devices + updating pi_gateway.py.
   #define MQTT_SECRET             "mvs_kalp_2026_xY9k_rotate_me"
 #else
   // Cloud mode — direct connect to HiveMQ / EMQX / VPS Mosquitto via TLS.
@@ -128,36 +125,6 @@ const int DIP_PINS[] = {34, 35, 32, 33};
 // Common rod pin — driven by ESP32 GPIO regardless of mode.
 #define DIP_COMMON_PIN       12   // EXCITE on PCB. Strapping pin — external pull-down ensures LOW at boot.
 
-// Set to 1 when GPIO12 drives an NPN common-emitter transistor (BC547 or
-// similar) that switches the probe-common rod. Schematic on the PCB:
-//
-//   EXCITE (GPIO12) ── EX_B (base resistor) ── Base
-//                                              Collector ── EX_C (pull-up) ── 5V (or 3.3V via J2)
-//                                                                          ── EX (probe common rod)
-//                                              Emitter ── GND
-//   EX_G keeps the base pulled down to GND during boot.
-//
-// Output is taken at the collector (common-emitter config), so the logic
-// INVERTS:
-//   GPIO12 LOW  → transistor OFF → collector pulled HIGH via EX_C → common HIGH (excite ON)
-//   GPIO12 HIGH → transistor ON  → collector shorted to GND        → common LOW  (excite OFF)
-//
-// Boot is safe because EX_G holds the base LOW → transistor OFF → common
-// sits at 5V via EX_C. No current is being driven from GPIO12 at boot.
-//
-// Set to 0 for direct GPIO drive (short cables only, ESP32 sources 3.3V).
-#define DIP_COMMON_VIA_TRANSISTOR  1
-
-#if DIP_COMMON_VIA_TRANSISTOR
-  // NPN common-emitter inverts the GPIO sense (see schematic comment above).
-  #define DIP_COMMON_DRIVE_ACTIVE   LOW    // GPIO LOW  → transistor OFF → common HIGH (excite)
-  #define DIP_COMMON_DRIVE_IDLE     HIGH   // GPIO HIGH → transistor ON  → common LOW  (idle)
-#else
-  // Direct drive — GPIO IS the common rod.
-  #define DIP_COMMON_DRIVE_ACTIVE   HIGH
-  #define DIP_COMMON_DRIVE_IDLE     LOW
-#endif
-
 // Excitation mode for the common rod:
 //   0 = CONSTANT DC — common held HIGH always; probes read with plain
 //       digitalRead(). Simpler but causes electrolytic corrosion of probes
@@ -185,11 +152,11 @@ const int DIP_PINS[] = {34, 35, 32, 33};
     #define DIP_READ_INTERVAL_MS 2000
   #elif PROBE_LIFE_PROFILE == 2
     // Tightened for EMI noise rejection on top-of-water probe:
-    //   - 600 µs settle (was 300) — long probe cables (~100m) have higher
-    //     capacitance; need ~2x time for the line to fully charge before sampling
-    //   - 15 samples = more statistical confidence
-    //   - 15/15 agreement (strict) — any noise-aligned glitch fails
-    #define DIP_SETTLE_US         600
+    //   - 2000 µs settle handles 95 m wire capacitance load
+    //   - Sequential per-probe sampling (one probe at a time, others floated)
+    //   - 15/15 strict agreement
+    //   - Read burst: 4 probes × 15 cycles × 2 phases × 2 ms ≈ 240 ms total
+    #define DIP_SETTLE_US        2000
     #define DIP_SAMPLES_PER_READ   15
     #define DIP_AGREE_THRESHOLD    15
     #define DIP_READ_INTERVAL_MS 3000
@@ -223,16 +190,7 @@ const int DIP_PINS[] = {34, 35, 32, 33};
 
 // Timing
 #define HEARTBEAT_INTERVAL    300000   // 5 minutes
-#define COMMAND_CHECK_INTERVAL 30000   // 30 seconds — bumped from 5s to cut
-                                        // RTDB command polling by 6x. Cost
-                                        // driver: 5 boolean reads every 5s
-                                        // per device ≈ 26 MB/day/device of
-                                        // download bandwidth. At 30s that
-                                        // drops to ~4 MB/day. Trade-off: a
-                                        // Restart / Refresh / Test command
-                                        // from cloud takes up to 30s to
-                                        // fire instead of 5s. Acceptable
-                                        // for admin-triggered actions.
+#define COMMAND_CHECK_INTERVAL 5000    // 5 seconds
 #define DIP_DEBOUNCE_MS          0     // disabled — sync sampling + 2s read gap = natural filter
 #define US_READ_INTERVAL      5000     // Ultrasonic read interval
 #define LED_CYCLE_DURATION    30000    // 30 seconds level display
@@ -300,13 +258,6 @@ bool firebaseReady = false;   // stays false forever when ENABLE_CLOUD==0
 // Device identity
 String deviceCode = "";
 String apName = "";
-// User-assigned physical-identity label. Set by installer via the AP
-// page, persisted to NVS (senseflow namespace, key "userName"), and
-// mirrored to /devices/<code>/info/userAssignedName in Firebase so
-// dashboard + admin viewer can display it. NEVER pulled FROM Firebase —
-// NVS is the source of truth. If firmware is reflashed the label is
-// lost (by design — it's a physical property of THIS chip's install).
-String userAssignedName = "";
 
 // Sensor state
 uint8_t sensorBits = 0;
@@ -317,103 +268,17 @@ bool    sensorError = false;
 // Analytics — write history on data change
 bool analyticsOn = false;
 
-// Notifications — when ON, change-driven pushes are mirrored to
-// /devices/<code>/notify_trigger. A Cloud Function watches that path and
-// dispatches FCM. Free devices keep this OFF → zero Cloud Function
-// invocations for non-paying customers. Admin sets via /admin/notifications.
-bool notifyOn = false;
-
-// Diagnostics — when ON, firmware uploads boot log to RTDB on boot. Pure
-// data (no Cloud Function watching). Admin-set per device for debugging.
-// Independent of notifyOn — admin can troubleshoot a free customer's device
-// without granting them notifications.
-bool diagnosticsOn = false;
-
 // Last sent values (for change detection)
 uint8_t lastSentBits = 0xFF;
 uint8_t lastSentPct = 0xFF;
 uint8_t lastSentFlags = 0xFF;
 
-// Last value that passed the confirmation gate. Heartbeat + idle-history
-// fallback use these so cloud never sees a transient glitch.
+// Last value that passed the 5-confirm gate — used by heartbeat so cloud
+// always sees a stable value even if current reading is in mid-glitch.
 uint8_t lastConfirmedBits  = 0;
 uint8_t lastConfirmedPct   = 0;
 uint8_t lastConfirmedFlags = 0;
 bool    haveConfirmedValue = false;
-unsigned long lastHistoryWriteAt = 0;
-
-// Last values actually written to /history. Separate from lastSent* (which
-// gates /live pushes). Guarantees we never write a duplicate row even if
-// some other path (boot, reboot, NVS reset) would otherwise force one.
-// 0xFF sentinel = nothing written yet → first push always goes through.
-uint8_t lastHistoryBits  = 0xFF;
-uint8_t lastHistoryPct   = 0xFF;
-uint8_t lastHistoryFlags = 0xFF;
-
-// ── Diagnostics: boot log ──────────────────────────────────────────
-// 50-entry circular buffer in NVS records every restart with its reason
-// and how long the previous session ran. Retrievable via cloud (when
-// diagnosticsOn=true) or always via serial `BOOTLOG` command. Lets admin
-// diagnose flaky devices remotely — brownouts → bad PSU, repeated WDT
-// → firmware hang, etc.
-#define BOOTLOG_CAPACITY 50
-
-struct BootLogEntry {
-  uint32_t epoch;          // unix timestamp at boot (0 if NTP wasn't synced yet)
-  uint32_t uptimeBefore;   // seconds the previous session ran before dying
-  uint32_t freeHeapAtBoot; // bytes free heap right after setup()
-  uint8_t  reason;         // esp_reset_reason_t code (1=POWERON, 7=WDT, 15=BROWNOUT, etc.)
-  uint8_t  fwMajor;        // firmware version captured at this boot
-  uint8_t  fwMinor;
-  uint8_t  fwPatch;
-};   // 16 bytes per entry
-
-// In-RAM circular buffer; mirrors the NVS-persisted version. We don't
-// reload all 50 on boot — only the new entry is appended. On cloud upload
-// we read the latest from RAM (boot path) or all 50 from NVS (admin pull).
-uint8_t boot_logIdx = 0;     // next slot to write (0..49)
-uint32_t bootCount  = 0;     // total boots ever — survives NVS persistence
-
-// Most recent boot log entry (in RAM, written by checkConfig on first
-// diagnosticsOn=true read, then used by uploadLatestBootLog).
-BootLogEntry latestBootEntry = {0};
-bool hasLatestBootEntry = false;
-
-// RAM-only capture from setup() — held until checkConfig() learns whether
-// diagnosticsOn is true. If yes → materialised into NVS+RTDB. If no →
-// discarded (free customers never write to NVS for diagnostics). Once
-// materialised, pendingBootCaptured is cleared so we don't double-log
-// when admin flips the flag mid-session.
-uint8_t  pendingBootReason     = 0;
-uint32_t pendingBootPrevUptime = 0;
-bool     pendingBootCaptured   = false;
-
-// Set true once the current boot has been logged to NVS (either at first
-// diagnosticsOn=true read OR — if diagnosticsOn was already true at boot
-// and stayed true — at any later flip). Prevents duplicate writes.
-bool diagnosticsLoggedThisBoot = false;
-
-// While true, loop() persists current uptime to NVS adaptively. Mirrors
-// diagnosticsOn but only flips true after we've seen the flag at least
-// once (so the very first config read doesn't lose data).
-bool diagnosticsLoggingActive = false;
-
-// Forward decls — defined later, called by checkConfig (which lives in
-// the Firebase block above the boot log section in the file).
-void uploadLatestBootLog();
-void persistCurrentUptime();
-
-// ── OTA + NTP state ────────────────────────────────────────────────
-uint32_t firstBootAt    = 0;   // epoch seconds — set once, persisted in NVS
-uint32_t lastUpdatedAt  = 0;   // epoch seconds — last successful OTA (or firstBootAt if never)
-unsigned long lastNtpSyncAt = 0;  // millis()
-bool          ntpSynced     = false;
-unsigned long lastOtaCheckAt = 0;  // millis()
-const unsigned long OTA_CHECK_INTERVAL_MS = 30000;   // poll trigger every 30 s
-const unsigned long NTP_RESYNC_INTERVAL   = 24UL * 60UL * 60UL * 1000UL;  // 24 h
-#define OTA_MAX_RETRIES 3
-#define NTP_SERVER      "pool.ntp.org"
-#define NTP_TZ_OFFSET_S (5 * 3600 + 30 * 60)   // IST = UTC+5:30
 
 // DIP debounce
 uint8_t rawBits = 0;
@@ -499,11 +364,6 @@ void loadOrCreateDeviceCode() {
   // Load tank capacity in litres (0 = not configured → litres hidden in UI)
   tankCapacityLitres = prefs.getUInt("capL", 0);
 
-  // Load user-assigned name (installer-typed label like "3F West Flush").
-  // Empty string if never set. Kept in the same senseflow namespace as
-  // deviceCode + capL so all device-identity state lives together.
-  userAssignedName = prefs.getString("userName", "");
-
   // Load AP-always-on flag (default true)
   // Load AP mode. New key apMode (0=always-on, 1=10-min).
   // Migrate from old apOn bool if present (true=always-on, false=10-min).
@@ -516,31 +376,6 @@ void loadOrCreateDeviceCode() {
   } else {
     apMode = 1;   // default: 10-min auto-off
   }
-
-  // Load OTA timestamps (stored as epoch seconds)
-  firstBootAt   = prefs.getUInt("firstBoot", 0);
-  lastUpdatedAt = prefs.getUInt("lastUpd", 0);
-  Serial.printf("[BOOT] NVS firstBootAt=%u  lastUpdatedAt=%u\n",
-                firstBootAt, lastUpdatedAt);
-
-  // Last-sent values from previous boot — used to skip a redundant push if
-  // the new confirmed reading matches what cloud already has. Prevents
-  // double-history entries on reboot when sensor state hasn't changed.
-  // 0xFF sentinel = "nothing stored yet" → force first push.
-  lastSentBits  = prefs.getUChar("lsBits",  0xFF);
-  lastSentPct   = prefs.getUChar("lsPct",   0xFF);
-  lastSentFlags = prefs.getUChar("lsFlags", 0xFF);
-  Serial.printf("[BOOT] NVS lastSent bits=%u pct=%u flags=%u\n",
-                lastSentBits, lastSentPct, lastSentFlags);
-
-  // Last values pushed to /history — separate gate so we never write
-  // duplicate rows even when /live state changes are valid.
-  lastHistoryBits  = prefs.getUChar("lhBits",  0xFF);
-  lastHistoryPct   = prefs.getUChar("lhPct",   0xFF);
-  lastHistoryFlags = prefs.getUChar("lhFlags", 0xFF);
-  Serial.printf("[BOOT] NVS lastHistory bits=%u pct=%u flags=%u\n",
-                lastHistoryBits, lastHistoryPct, lastHistoryFlags);
-  // firstBootAt + lastUpdatedAt finalized later, after NTP sync
 
   prefs.end();
 
@@ -644,46 +479,12 @@ void initDipSensors() {
   }
   pinMode(DIP_COMMON_PIN, OUTPUT);
 #if EXCITATION_MODE == 0
-  // Constant DC mode — common held active permanently. Probes read with plain digitalRead.
-  digitalWrite(DIP_COMMON_PIN, DIP_COMMON_DRIVE_ACTIVE);
+  // Constant DC mode — common held HIGH permanently. Probes read with plain digitalRead.
+  digitalWrite(DIP_COMMON_PIN, HIGH);
 #else
-  // OCSIL pulsed — common parked idle between bursts (no current flow, no electrolysis).
-  digitalWrite(DIP_COMMON_PIN, DIP_COMMON_DRIVE_IDLE);
-#endif
-}
-
-// CRITICAL: GPIO12 is the MTDI strapping pin. On boot it MUST be LOW —
-// HIGH would force the ESP32 bootloader to set internal flash voltage to
-// 1.8V instead of 3.3V, soft-bricking the chip until power-cycle.
-//
-// In normal operation we may be parking GPIO12 HIGH (transistor mode idle).
-// Before any intentional reset we explicitly drive it LOW so the next boot
-// sees the correct strapping value. The external EX_G pulldown is the
-// fallback for unexpected power-loss resets.
-void safeRestart() {
-  // Graceful WiFi cleanup BEFORE restart. Send the deassociation frame so
-  // the router clears its DHCP lease state, then let the radio settle.
-  //
-  // CRITICAL: pass FALSE here, NOT true. WiFi.disconnect(true) erases the
-  // ESP-IDF WiFi config from internal flash — which on the very next boot
-  // causes mvs.connectToSavedWiFi() to fail forever (until someone enters
-  // creds manually through the AP page, which rewrites the config via a
-  // direct WiFi.begin call). This was the root cause of "cloud restart →
-  // device offline forever, only manual AP-page entry recovers" reported
-  // by Vishal: every code-triggered reboot was silently wiping the IDF
-  // WiFi config. NVS-stored credentials in 'mvswifi' namespace stay intact
-  // either way — but the IDF needs its own copy too for some library code
-  // paths. disconnect(false) sends the deassoc frame WITHOUT erasing.
-  if (WiFi.status() == WL_CONNECTED) {
-    WiFi.disconnect(false);
-    delay(200);
-  }
-
-  // GPIO12 strapping pin protection (see comment block above).
-  pinMode(DIP_COMMON_PIN, OUTPUT);
+  // OCSIL pulsed — common parked LOW between bursts.
   digitalWrite(DIP_COMMON_PIN, LOW);
-  delay(50);   // let the pin actually settle to LOW
-  ESP.restart();
+#endif
 }
 
 #if EXCITATION_MODE == 0
@@ -696,44 +497,53 @@ uint8_t readDipRaw() {
   return bits;
 }
 #else
-// Synchronous (unipolar square-wave) read on common pin.
-// Drives common HIGH then LOW for DIP_SAMPLES_PER_READ cycles. A probe is
-// counted as "wet" for a cycle only if it reads HIGH while common is HIGH
-// AND LOW while common is LOW — i.e. it tracks the excitation. Stuck-HIGH
-// pins (leakage, plating film, residual moisture) fail the LOW-phase check
-// and get rejected. Returns a bitmask where bit i = 1 if probe i was wet
-// for at least DIP_AGREE_THRESHOLD of DIP_SAMPLES_PER_READ cycles.
+// Synchronous OCSIL read — SEQUENTIAL per-probe variant.
+//
+// Why sequential: with all probes wet, common pin must drive 4 parallel
+// water-resistance paths simultaneously. 95 m wire capacitance × 4 paths
+// dominates the settle time → some probes lag behind, OCSIL agreement fails
+// on the laggy probes → false dry on the upper probe(s) → flicker through
+// 25/50/75/100.
+//
+// Fix: sample ONE probe at a time. While probe i is being read, the other
+// SENSOR_COUNT-1 probe pins are set to OUTPUT-LOW (driven low actively, so
+// they don't float and don't load the common pin via their wire capacitance).
+// Result: common only has to drive one wire's worth of capacitance per cycle.
+//
+// After each probe is sampled, restore all probes to INPUT_PULLDOWN.
 uint8_t readDipRaw() {
-  uint8_t agreeCount[6] = {0, 0, 0, 0, 0, 0};
-
-  for (int s = 0; s < DIP_SAMPLES_PER_READ; s++) {
-    digitalWrite(DIP_COMMON_PIN, DIP_COMMON_DRIVE_ACTIVE);
-    delayMicroseconds(DIP_SETTLE_US);
-    uint8_t highSample = 0;
-    for (int i = 0; i < SENSOR_COUNT; i++) {
-      if (digitalRead(DIP_PINS[i]) == HIGH) highSample |= (1 << i);
-    }
-
-    digitalWrite(DIP_COMMON_PIN, DIP_COMMON_DRIVE_IDLE);
-    delayMicroseconds(DIP_SETTLE_US);
-    uint8_t lowSample = 0;
-    for (int i = 0; i < SENSOR_COUNT; i++) {
-      if (digitalRead(DIP_PINS[i]) == LOW) lowSample |= (1 << i);
-    }
-
-    uint8_t agree = highSample & lowSample;
-    for (int i = 0; i < SENSOR_COUNT; i++) {
-      if (agree & (1 << i)) agreeCount[i]++;
-    }
-  }
-
-  // Park common idle between reads (minimises DC bias, slows electrolysis)
-  digitalWrite(DIP_COMMON_PIN, DIP_COMMON_DRIVE_IDLE);
-
   uint8_t bits = 0;
+
   for (int i = 0; i < SENSOR_COUNT; i++) {
-    if (agreeCount[i] >= DIP_AGREE_THRESHOLD) bits |= (1 << i);
+    // Park all OTHER probe pins as OUTPUT-LOW so they don't load common.
+    for (int j = 0; j < SENSOR_COUNT; j++) {
+      if (j == i) continue;
+      pinMode(DIP_PINS[j], OUTPUT);
+      digitalWrite(DIP_PINS[j], LOW);
+    }
+    // The probe we're reading stays as input
+    pinMode(DIP_PINS[i], INPUT_PULLDOWN);
+
+    uint8_t agree = 0;
+    for (int s = 0; s < DIP_SAMPLES_PER_READ; s++) {
+      digitalWrite(DIP_COMMON_PIN, HIGH);
+      delayMicroseconds(DIP_SETTLE_US);
+      bool hi = (digitalRead(DIP_PINS[i]) == HIGH);
+
+      digitalWrite(DIP_COMMON_PIN, LOW);
+      delayMicroseconds(DIP_SETTLE_US);
+      bool lo = (digitalRead(DIP_PINS[i]) == LOW);
+
+      if (hi && lo) agree++;
+    }
+    if (agree >= DIP_AGREE_THRESHOLD) bits |= (1 << i);
   }
+
+  // Restore ALL probe pins to inputs + park common LOW
+  for (int i = 0; i < SENSOR_COUNT; i++) {
+    pinMode(DIP_PINS[i], INPUT_PULLDOWN);
+  }
+  digitalWrite(DIP_COMMON_PIN, LOW);
   return bits;
 }
 #endif  // EXCITATION_MODE
@@ -772,173 +582,56 @@ uint8_t bitsToPercent(uint8_t bits, int count) {
   return 0;
 }
 
-// ── Majority-vote level stability algorithm ─────────────────────────
-// Field devices kept showing 25↔0 and 75↔100 flicker at probe boundaries
-// even after the earlier "time-dominant" attempt. Root cause: the
-// fallback "most recent stable run" rule let occasional transient runs
-// commit — so once a wave held one level for 15 sec, it committed, then
-// another wave held the other level for 15 sec, it committed again.
-//
-// New rule (per Vishal's clarification): ONLY commit when a level wins
-// a clean majority of the full window. If no clean majority exists,
-// don't commit anything — cloud dashboard keeps interpolating the last
-// committed value, so the analytics chart stays clean.
-//
-// Discrete-level physics: the 4-probe DIP produces exactly 5 possible
-// resolved levels (0/25/50/75/100). Majority voting fits naturally.
-//
-// Effects:
-//   - Wave train at boundary (samples ~50/50 split): no level wins
-//     majority → no push → cloud stays flat at previous value ✓
-//   - Genuine fill / drain: new level appears in ~90% of samples once
-//     water settles → majority triggers → single clean commit ✓
-//   - Fast pump-in that stays at 100%: takes ~1 min to reach majority
-//     but then commits cleanly, one event in history, not a burst ✓
-//   - Non-consecutive fault glitch: resolver still computes highest-wet
-//     level so brief faults count as their resolved value (75%) — same
-//     bucket as normal 75% reads, no dominance shift ✓
-
-// Tune here if boundary flicker on a specific site needs stricter
-// settings. Larger STABLE_SAMPLES = longer window = more delay before
-// real changes reach cloud, but stronger noise rejection. Higher
-// MAJORITY_PCT = stricter — needs cleaner consensus to commit.
-#define STABLE_SAMPLES    30         // full window = ~90 sec at 3-sec read interval
-#define MAJORITY_PCT      70         // level must win >60% of the votes to commit
-#define STABLE_WINDOW_MS  (uint32_t)((uint32_t)STABLE_SAMPLES * (uint32_t)DIP_READ_INTERVAL_MS)
-
-struct SampleRec {
-  uint32_t ts;    // millis() when this sample was taken
-  uint8_t  pct;   // resolved level from readDipRaw() at that moment
-};
-
-static SampleRec sampleBuf[STABLE_SAMPLES];
-static uint8_t   sampleHead = 0;   // next write slot
-static uint8_t   sampleCount = 0;  // how many valid samples are in the buffer
-
-// Instant (unfiltered) level derived from the latest raw read. Used for
-// LED + AP page live view so an installer sees real-time water motion.
-uint8_t instantPct = 0;
-uint8_t instantBits = 0;
-
-// One-shot flag: on very first Firebase-ready moment we push instantPct
-// so the cloud dashboard shows the device online immediately, then hand
-// off to the majority-vote gate for all subsequent pushes.
-bool committedOnce = false;
-
-// Resolve a raw bit pattern to a percentage using the highest-wet-probe
-// rule (physically correct: water above touching a probe means water
-// exists at all levels below it). This deliberately IGNORES non-
-// consecutive faults so a brief 0110 glitch resolves as 75%, not 0%,
-// matching the cloud resolver's behaviour and preventing false "empty"
-// reports from a bad lower probe.
-uint8_t highestWetPct(uint8_t bits, int count) {
-  for (int i = count - 1; i >= 0; i--) {
-    if (bits & (1 << i)) {
-      if (count >= 1 && count <= 6) return DIP_PCT_TABLE[count][i];
-      return 0;
-    }
-  }
-  return 0;
-}
-
-// Compute the committed level using majority voting over a FULL sample
-// window. Returns 0xFF ("no majority") if no level clears MAJORITY_PCT
-// or the buffer isn't full yet — caller must interpret that as "don't
-// push, keep old committed value in cloud."
-uint8_t computeMajorityLevel() {
-  // Wait for a full window before any commit. Prevents 3-sample early
-  // consensus from producing a false first commit.
-  if (sampleCount < STABLE_SAMPLES) return 0xFF;
-
-  // Discrete levels: 0/25/50/75/100 = 5 buckets. Any non-standard
-  // resolved value (shouldn't happen with the resolver) falls into
-  // bucket 4 (100%) via clamping.
-  uint16_t votes[5] = {0, 0, 0, 0, 0};
-  uint16_t total = 0;
-  for (uint8_t k = 0; k < sampleCount; k++) {
-    uint8_t idx = (sampleHead + STABLE_SAMPLES - sampleCount + k) % STABLE_SAMPLES;
-    uint8_t p = sampleBuf[idx].pct;
-    uint8_t bucket = p / 25;
-    if (bucket > 4) bucket = 4;
-    votes[bucket]++;
-    total++;
-  }
-  if (total == 0) return 0xFF;
-
-  // Winner: strictly more than MAJORITY_PCT of the window
-  for (uint8_t i = 0; i < 5; i++) {
-    if ((uint32_t)votes[i] * 100 > (uint32_t)total * MAJORITY_PCT) {
-      return (uint8_t)(i * 25);
-    }
-  }
-  return 0xFF;   // no majority — do not commit, cloud keeps old value
-}
+// ── Asymmetric per-bit debounce ────────────────────────────────────
+// Bit going dry→wet must be confirmed for DIP_WET_CONFIRM consecutive reads.
+// Bit going wet→dry commits immediately. This kills EMI flicker on the
+// top-of-water probe (false HIGH from antenna pickup), while still showing
+// real drain events instantly.
+#define DIP_WET_CONFIRM   3   // ~9 sec at 3-sec read interval
 
 void processDipSensors() {
   static unsigned long lastDipRead = 0;
+  static uint8_t wetConfirmCount[6] = {0, 0, 0, 0, 0, 0};
 
   if (millis() - lastDipRead < DIP_READ_INTERVAL_MS) return;
   lastDipRead = millis();
 
   uint8_t currentRaw = readDipRaw();
 
-  // Instant view — populated every read for LED + AP page live tank viz.
-  instantBits = currentRaw;
-  instantPct  = highestWetPct(currentRaw, SENSOR_COUNT);
+  // Asymmetric debounce per bit
+  uint8_t newBits = sensorBits;
+  for (int i = 0; i < SENSOR_COUNT; i++) {
+    bool rawWet = (currentRaw >> i) & 1;
+    bool committedWet = (sensorBits >> i) & 1;
 
-  // Append to rolling buffer
-  sampleBuf[sampleHead] = { millis(), instantPct };
-  sampleHead = (sampleHead + 1) % STABLE_SAMPLES;
-  if (sampleCount < STABLE_SAMPLES) sampleCount++;
-
-  // On the very first Firebase-ready reading, seed the committed value
-  // from the instant read so the cloud dashboard sees the device online
-  // with SOME value before the majority-vote gate kicks in ~90 sec later.
-  // Only fires once per boot; after that only majority-vote can change
-  // the committed value.
-  if (!committedOnce && firebaseReady) {
-    committedOnce = true;
-    if (confirmedPct != instantPct) {
-      confirmedPct = instantPct;
-      sensorBits   = 0;
-      if (SENSOR_COUNT >= 1 && SENSOR_COUNT <= 6) {
-        const uint8_t *tbl = DIP_PCT_TABLE[SENSOR_COUNT];
-        for (int i = 0; i < SENSOR_COUNT; i++) {
-          sensorBits |= (1 << i);
-          if (tbl[i] == confirmedPct) break;
-        }
-        if (confirmedPct == 0) sensorBits = 0;
+    if (rawWet && !committedWet) {
+      // Candidate dry→wet: require N consecutive confirms
+      if (wetConfirmCount[i] < 255) wetConfirmCount[i]++;
+      if (wetConfirmCount[i] >= DIP_WET_CONFIRM) {
+        newBits |= (1 << i);
+        wetConfirmCount[i] = 0;
       }
+    } else if (!rawWet && committedWet) {
+      // wet→dry: commit instantly
+      newBits &= ~(1 << i);
+      wetConfirmCount[i] = 0;
+    } else {
+      // Steady state — reset counter so noise needs N consecutive in a row
+      wetConfirmCount[i] = 0;
     }
   }
 
-  // Majority-vote decision. 0xFF = "no clear winner" → keep last
-  // committed value; cloud dashboard shows a flat line instead of flicker.
-  uint8_t majority = computeMajorityLevel();
-  if (majority != 0xFF && majority != confirmedPct) {
-    confirmedPct = majority;
-    // Canonical consecutive-from-bottom bits for the new level. Keeps
-    // /live's sensorBits internally consistent with confirmedPct for
-    // downstream code + the dashboard resolver.
-    sensorBits = 0;
-    if (SENSOR_COUNT >= 1 && SENSOR_COUNT <= 6) {
-      const uint8_t *tbl = DIP_PCT_TABLE[SENSOR_COUNT];
-      for (int i = 0; i < SENSOR_COUNT; i++) {
-        sensorBits |= (1 << i);
-        if (tbl[i] == confirmedPct) break;
-      }
-      if (confirmedPct == 0) sensorBits = 0;
-    }
-    Serial.printf("[LEVEL] Majority committed: %d%%\n", confirmedPct);
+  sensorBits = newBits;
+  pendingBits = currentRaw;   // kept for legacy state but unused now
+  sensorError = checkSensorError(sensorBits, SENSOR_COUNT);
+
+  if (sensorError) {
+    flags |= 0x01;
+  } else {
+    flags &= ~0x01;
   }
 
-  // sensor_error flag: only set if the INSTANT raw pattern is genuinely
-  // non-consecutive AND has been for the whole window (fault-persistent).
-  // Brief flickers are absorbed by the dominant-level algorithm above and
-  // never surface as ERR to the customer.
-  sensorError = checkSensorError(currentRaw, SENSOR_COUNT);
-  if (sensorError) flags |= 0x01; else flags &= ~0x01;
-  pendingBits = currentRaw;
+  confirmedPct = bitsToPercent(sensorBits, SENSOR_COUNT);
 }
 
 #endif
@@ -1137,18 +830,15 @@ bool checkFirebaseReady() {
   if (Firebase.ready()) {
     if (!firebaseReady) {
       firebaseReady = true;
-      firebaseHealthy = true;
+      firebaseHealthy = true;          // re-enable push gating
       consecutiveFailCount = 0;
       Serial.println("Firebase ready!");
       writePendingDevice();
       updateDeviceInfo(true);
-      reportFirmwareInfoIfChanged();   // push firmwareVersion + firstBootAt + lastUpdatedAt (only if changed)
-      // No initial pushLiveData() — wait for the 3-confirm gate to produce
-      // first stable reading. Avoids polluting /history with boot-default 0%.
-      // Boot log entry: NOT uploaded here. checkConfig() materialises it
-      // from the in-RAM pendingBoot* values once it reads diagnosticsOn,
-      // so free customers' devices stay quiet.
-      Serial.println("Waiting for first confirmed sensor read");
+      // No initial pushLiveData() here — wait for the 5-confirm gate to
+      // produce the first stable reading. Avoids pushing the boot-default
+      // 0% / 0xFF artifact to /history.
+      Serial.println("Initial registration sent — waiting for first confirmed sensor read");
     }
     return true;
   }
@@ -1181,8 +871,8 @@ void writePendingDevice() {
 // Push live sensor data to /devices/{deviceCode}/live/
 // Gated by firebaseHealthy — if we know cloud is down, skip silently without
 // hitting the 2-3s TLS timeout that would stall everything else.
-// Internal: actually push supplied values. Used by both change-driven path
-// (currents) and heartbeat (last-confirmed-stable values).
+// Internal: actually push the supplied values. Used by both the change-driven
+// path (currents) and the heartbeat (last-confirmed-stable values).
 bool pushLiveDataValues(uint8_t bits, uint8_t pct, uint8_t flg) {
   // Layered gate: WiFi → internet → firebase
   if (WiFi.status() != WL_CONNECTED) return false;
@@ -1199,24 +889,10 @@ bool pushLiveDataValues(uint8_t bits, uint8_t pct, uint8_t flg) {
   json.set("rssi", WiFi.RSSI());
   json.set("timestamp/.sv", "timestamp");
 
-  esp_task_wdt_reset();
   if (Firebase.RTDB.setJSON(&fbdo, path.c_str(), &json)) {
-    // Persist lastSent* to NVS ONLY when value actually changes vs RAM
-    // copy — otherwise heartbeat (288/day) would wear out NVS in ~1.8 yr.
-    bool valueChanged = (bits != lastSentBits) ||
-                        (pct  != lastSentPct)  ||
-                        (flg  != lastSentFlags);
     lastSentBits  = bits;
     lastSentPct   = pct;
     lastSentFlags = flg;
-    if (valueChanged) {
-      Preferences lp;
-      lp.begin("senseflow", false);
-      lp.putUChar("lsBits",  bits);
-      lp.putUChar("lsPct",   pct);
-      lp.putUChar("lsFlags", flg);
-      lp.end();
-    }
     lastDataPush = millis();
     consecutiveFailCount = 0;
     lastSuccessfulPush = millis();
@@ -1241,33 +917,14 @@ bool pushLiveData() {
   return pushLiveDataValues(sensorBits, confirmedPct, flags);
 }
 
-// Premium-tier mirror — writes a tiny snapshot to /notify_trigger so the
-// dispatcher Cloud Function fires. Only called when notifyOn=true, only
-// on change-driven pushes (NOT heartbeat — heartbeat would spam the
-// dispatcher with no real event behind it). Minimal payload: just pct,
-// flags, ts. The Cloud Function reads /live for full context if it needs
-// more. Path mirrors trigger pattern from project memory.
-void pushNotifyTrigger(uint8_t pct, uint8_t flg) {
-  if (!notifyOn)        return;
-  if (!firebaseHealthy) return;
-  String path = "devices/" + deviceCode + "/notify_trigger";
-  FirebaseJson json;
-  json.set("pct",       pct);
-  json.set("flags",     flg);
-  json.set("ts/.sv",    "timestamp");
-  esp_task_wdt_reset();
-  Firebase.RTDB.setJSON(&fbdo, path.c_str(), &json);
-  // No retry on fail — the Cloud Function dispatcher is best-effort
-  // anyway; missing a single ping for a free-paying customer is fine,
-  // the next change will fire it.
-}
-
-// Heartbeat push — always sends last-confirmed-stable value (or current
-// if no confirmed value yet). Cloud sees device online without absorbing glitch.
+// Heartbeat push — always sends the last-confirmed-stable value (or current
+// if no confirmed value yet). Cloud always sees a heartbeat → device stays
+// "online" — but the value is never the glitch.
 bool pushLiveDataHeartbeat() {
   if (haveConfirmedValue) {
     return pushLiveDataValues(lastConfirmedBits, lastConfirmedPct, lastConfirmedFlags);
   }
+  // No confirmed value yet (just booted) — fall back to current
   return pushLiveDataValues(sensorBits, confirmedPct, flags);
 }
 
@@ -1287,16 +944,8 @@ void updateDeviceInfo(bool online) {
     json.set("sensorType", SNS_DIP);
   #endif
   json.set("sensorCount", SENSOR_COUNT);
-  // Mirror the physical-identity label so admin/subscribers see it
-  // alongside firmware version + WiFi status. NVS is the source of
-  // truth — this write just keeps the /info mirror in sync.
-  json.set("userAssignedName", userAssignedName);
 
-  // updateNode merges into /info instead of overwriting — preserves
-  // firstBootAt, lastUpdatedAt, lastOtaStatus, otaRetryCount that other
-  // code paths wrote there.
-  esp_task_wdt_reset();
-  Firebase.RTDB.updateNode(&fbdo, path.c_str(), &json);
+  Firebase.RTDB.setJSON(&fbdo, path.c_str(), &json);
 }
 
 // Check commands node
@@ -1304,7 +953,6 @@ void checkCommands() {
   if (!firebaseHealthy) return;
   String basePath = "devices/" + deviceCode + "/commands/";
 
-  esp_task_wdt_reset();
   if (Firebase.RTDB.getBool(&fbdo, (basePath + "refreshRequested").c_str())) {
     if (fbdo.boolData()) {
       Serial.println("Refresh requested — force pushing data");
@@ -1312,7 +960,6 @@ void checkCommands() {
       Firebase.RTDB.setBool(&fbdo, (basePath + "refreshRequested").c_str(), false);
     }
   }
-  esp_task_wdt_reset();
   if (Firebase.RTDB.getBool(&fbdo, (basePath + "testRequested").c_str())) {
     if (fbdo.boolData()) {
       Serial.println("Test requested — blinking LED");
@@ -1321,161 +968,59 @@ void checkCommands() {
       Firebase.RTDB.setBool(&fbdo, (basePath + "testRequested").c_str(), false);
     }
   }
-  esp_task_wdt_reset();
   if (Firebase.RTDB.getBool(&fbdo, (basePath + "restartRequested").c_str())) {
     if (fbdo.boolData()) {
       Serial.println("Restart requested — rebooting...");
       Firebase.RTDB.setBool(&fbdo, (basePath + "restartRequested").c_str(), false);
-      // Intentionally NOT calling updateDeviceInfo(false) here. Old code
-      // pre-emptively marked the device offline in cloud BEFORE rebooting.
-      // If WiFi reconnect then failed (e.g. router stuck on old DHCP lease),
-      // nobody was around to flip online back to true, so the cloud showed
-      // the device permanently offline. Now we let the cloud detect offline
-      // through heartbeat staleness (15 min). When the device boots back
-      // up and reaches Firebase, IT writes online=true via updateDeviceInfo
-      // in checkFirebaseReady() and the cloud picks up immediately.
+      updateDeviceInfo(false);
       delay(500);
-      safeRestart();
-    }
-  }
-  // Diagnostics: admin wants a fresh /diagnostics/now snapshot.
-  esp_task_wdt_reset();
-  if (Firebase.RTDB.getBool(&fbdo, (basePath + "refreshDiagRequested").c_str())) {
-    if (fbdo.boolData()) {
-      Firebase.RTDB.setBool(&fbdo, (basePath + "refreshDiagRequested").c_str(), false);
-      uploadDiagnosticsNow();
-      Serial.println("[DIAG] On-demand snapshot uploaded");
-    }
-  }
-  // Diagnostics: admin wants the boot log wiped (both NVS and RTDB).
-  esp_task_wdt_reset();
-  if (Firebase.RTDB.getBool(&fbdo, (basePath + "clearDiagLogRequested").c_str())) {
-    if (fbdo.boolData()) {
-      Firebase.RTDB.setBool(&fbdo, (basePath + "clearDiagLogRequested").c_str(), false);
-      clearBootLog();
-      clearBootLogRtdb();
-      Serial.println("[DIAG] Boot log cleared (NVS + RTDB)");
+      ESP.restart();
     }
   }
 }
 
+// Tracks when we last wrote to /history (any path — change-driven or idle fallback)
+unsigned long lastHistoryWriteAt = 0;
+
 // Internal: write a history entry with explicit values + tag.
 void writeHistoryValues(uint8_t bits, uint8_t pct, uint8_t flg, const char* tag) {
   if (!firebaseHealthy) return;
-
-  // Dedupe guard — if this exact value is already the most recent /history
-  // entry, skip the write entirely. The change-driven path and idle-1h
-  // fallback both come through here, so this is the single funnel that
-  // guarantees /history can never have two consecutive identical rows.
-  // 0xFF sentinel = nothing written yet → first push always goes through.
-  if (lastHistoryPct   != 0xFF &&
-      bits == lastHistoryBits &&
-      pct  == lastHistoryPct  &&
-      flg  == lastHistoryFlags) {
-    Serial.printf("[HISTORY] Skipped duplicate (%s, pct=%u)\n", tag, pct);
-    // Update lastHistoryWriteAt anyway so the idle-1h fallback restarts its
-    // hour clock from this skipped attempt — keeps the fallback rhythm
-    // honest instead of trying again on the next loop iteration.
-    lastHistoryWriteAt = millis();
-    return;
-  }
-
   FirebaseJson json;
   json.set("pct", pct);
   json.set("bits", bits);
   json.set("flags", flg);
   json.set("ts/.sv", "timestamp");
-  esp_task_wdt_reset();
   if (Firebase.RTDB.pushJSON(&fbdo, ("devices/" + deviceCode + "/history").c_str(), &json)) {
     lastHistoryWriteAt = millis();
-    lastHistoryBits  = bits;
-    lastHistoryPct   = pct;
-    lastHistoryFlags = flg;
-    Preferences hp;
-    hp.begin("senseflow", false);
-    hp.putUChar("lhBits",  bits);
-    hp.putUChar("lhPct",   pct);
-    hp.putUChar("lhFlags", flg);
-    hp.end();
     Serial.printf("[HISTORY] Entry recorded (%s)\n", tag);
   }
 }
 
-// Spacing for IDLE-only history writes (heartbeat fallback so the chart
-// isn't blank when level is steady). Change-driven writes ignore this —
-// real level changes go to history immediately, otherwise the chart would
-// show the wrong value for up to an hour after a fill/drain event.
-#define HISTORY_MIN_INTERVAL (60UL * 60UL * 1000UL)   // 1 hour
-
-// Change-driven write — fires on every confirmed level change. NO time
-// gate: history must reflect what live just published, or the chart lags.
+// Change-driven: write current values to /history when analytics is enabled.
 void writeHistory() {
   if (!analyticsOn) return;
   writeHistoryValues(sensorBits, confirmedPct, flags, "change");
 }
 
-// Idle fallback — if no history written for 1 hour, push last-confirmed
-// values so chart isn't blank. Never the boot-default 0%.
+// Idle fallback: if no history has been written for 1 hour, push the
+// last-confirmed-stable values so the analytics chart isn't blank.
 void writeHistoryIdleIfDue() {
   if (!analyticsOn) return;
   if (!haveConfirmedValue) return;
-  if (lastHistoryWriteAt != 0 && millis() - lastHistoryWriteAt < HISTORY_MIN_INTERVAL) return;
+  const unsigned long IDLE_HISTORY_INTERVAL = 60UL * 60UL * 1000UL;  // 1 hour
+  if (millis() - lastHistoryWriteAt < IDLE_HISTORY_INTERVAL) return;
   writeHistoryValues(lastConfirmedBits, lastConfirmedPct, lastConfirmedFlags, "idle-1h");
 }
 
-// Check config — read analyticsOn, notifyOn, diagnosticsOn flags.
-// Polled every 30 sec from the main loop. Off → on transitions trigger
-// one-shot side effects (boot log upload on diagnosticsOn flip).
+// Check config — read analyticsOn flag
 void checkConfig() {
   if (!firebaseHealthy) return;
-  String base = "devices/" + deviceCode + "/config/";
-
-  esp_task_wdt_reset();
-  if (Firebase.RTDB.getBool(&fbdo, (base + "analyticsOn").c_str())) {
+  String path = "devices/" + deviceCode + "/config/analyticsOn";
+  if (Firebase.RTDB.getBool(&fbdo, path.c_str())) {
     bool newVal = fbdo.boolData();
     if (newVal != analyticsOn) {
       analyticsOn = newVal;
       Serial.printf("[CONFIG] analyticsOn = %s\n", analyticsOn ? "ON" : "OFF");
-    }
-  }
-
-  esp_task_wdt_reset();
-  if (Firebase.RTDB.getBool(&fbdo, (base + "notifyOn").c_str())) {
-    bool newVal = fbdo.boolData();
-    if (newVal != notifyOn) {
-      notifyOn = newVal;
-      Serial.printf("[CONFIG] notifyOn = %s\n", notifyOn ? "ON" : "OFF");
-    }
-  }
-
-  esp_task_wdt_reset();
-  if (Firebase.RTDB.getBool(&fbdo, (base + "diagnosticsOn").c_str())) {
-    bool newVal = fbdo.boolData();
-    if (newVal != diagnosticsOn) {
-      diagnosticsOn = newVal;
-      Serial.printf("[CONFIG] diagnosticsOn = %s\n", diagnosticsOn ? "ON" : "OFF");
-    }
-    // Materialise the pending boot capture if (a) diagnostics is now on,
-    // and (b) we haven't already logged this boot. Triggers on first
-    // confirmation after boot AND on later off→on flips within the same
-    // session. Free-customer device that never flips on → nothing happens.
-    if (diagnosticsOn && pendingBootCaptured && !diagnosticsLoggedThisBoot) {
-      appendBootLogEntry(pendingBootReason, pendingBootPrevUptime);
-      // Reset NVS uptime to 0 so the next persistCurrentUptime() records
-      // THIS session's uptime, not the previous one.
-      persistCurrentUptime();
-      uploadLatestBootLog();
-      diagnosticsLoggedThisBoot = true;
-      pendingBootCaptured       = false;
-      diagnosticsLoggingActive  = true;
-    } else if (diagnosticsOn && !diagnosticsLoggingActive) {
-      // Already logged this boot but admin re-enabled later — restart the
-      // periodic uptime save loop so we still catch the next crash.
-      diagnosticsLoggingActive = true;
-    } else if (!diagnosticsOn && diagnosticsLoggingActive) {
-      // Admin turned it off — stop persistent uptime saves. Existing log
-      // entries stay in NVS + RTDB until cleared.
-      diagnosticsLoggingActive = false;
     }
   }
 }
@@ -1486,22 +1031,63 @@ void checkConfig() {
 //  CHANGE DETECTION — only push when values change
 // ══════════════════════════════════════════════════
 
-// Cloud-push change detection.
-// processDipSensors() now owns the stability logic via a 60-sec dominant-
-// level rolling window — anything reaching (sensorBits, confirmedPct, flags)
-// is ALREADY vetted for stability. This function is just a "changed since
-// last push?" check that also stamps last-confirmed for heartbeat use.
-bool hasDataChanged() {
-  // Always mark the current committed reading as the "last known good"
-  // that heartbeat pushes should send.
-  lastConfirmedBits  = sensorBits;
-  lastConfirmedPct   = confirmedPct;
-  lastConfirmedFlags = flags;
-  haveConfirmedValue = true;
+// Cloud-push stability gate.
+// A new (bits/pct/flags) value must repeat across DATA_CONFIRM consecutive
+// calls before it's eligible for cloud/MQTT push. This protects against
+// single-read glitches (bad common-rod contact, EMI burst, power dip)
+// that would otherwise pollute Firebase history.
+//
+// Local UI (AP page, LED, web /sstatus) keeps using sensorBits/confirmedPct
+// instantly — only the cloud channel waits.
+//
+// At 3 sec read interval × 3 confirms = ~9 sec lag before a real change
+// reaches the cloud. Tank physics make this invisible.
+#define DATA_CONFIRM 5
 
-  return (sensorBits    != lastSentBits) ||
-         (confirmedPct  != lastSentPct)  ||
-         (flags         != lastSentFlags);
+bool hasDataChanged() {
+  static uint8_t candidateBits  = 0xFF;
+  static uint8_t candidatePct   = 0xFF;
+  static uint8_t candidateFlags = 0xFF;
+  static uint8_t confirmCount   = 0;
+
+  // First call after boot — seed candidate without pushing yet
+  if (confirmCount == 0 && candidateBits == 0xFF && candidatePct == 0xFF) {
+    candidateBits  = sensorBits;
+    candidatePct   = confirmedPct;
+    candidateFlags = flags;
+    confirmCount   = 1;
+    return false;
+  }
+
+  // Current reading matches running candidate → increment confirm count
+  if (sensorBits == candidateBits &&
+      confirmedPct == candidatePct &&
+      flags == candidateFlags) {
+    if (confirmCount < 255) confirmCount++;
+  } else {
+    // Mismatch → restart candidate window with the new value
+    candidateBits  = sensorBits;
+    candidatePct   = confirmedPct;
+    candidateFlags = flags;
+    confirmCount   = 1;
+  }
+
+  // Once a value is confirmed N times, stamp it as the last-known-good value
+  // (heartbeat uses this so cloud always gets a stable reading even during glitches).
+  if (confirmCount >= DATA_CONFIRM) {
+    lastConfirmedBits  = candidateBits;
+    lastConfirmedPct   = candidatePct;
+    lastConfirmedFlags = candidateFlags;
+    haveConfirmedValue = true;
+
+    // Eligible to push only when it differs from last cloud push
+    if (candidateBits  != lastSentBits  ||
+        candidatePct   != lastSentPct   ||
+        candidateFlags != lastSentFlags) {
+      return true;
+    }
+  }
+  return false;
 }
 
 // ══════════════════════════════════════════════════
@@ -1561,10 +1147,7 @@ void handleLED() {
     }
     #endif
     else {
-      // LED reflects INSTANT reading so an installer at the physical
-      // device sees real-time water motion (matches AP page). The cloud
-      // dashboard uses the committed (dominant) value.
-      setLevelColor(instantPct);
+      setLevelColor(confirmedPct);
     }
   }
 }
@@ -1647,17 +1230,7 @@ h2{font-size:14px;font-weight:600;color:#666;margin-bottom:8px}
   {
     html += "<div class='card'>";
     html += "<h1>SenseFlow Device</h1>";
-    if (userAssignedName.length() > 0) {
-      html += "<p style='font-size:15px;font-weight:600;color:#334155;margin-bottom:2px'>" + userAssignedName + "</p>";
-    }
     html += "<p class='code'>" + deviceCode + "</p>";
-    // User-assigned physical-identity label. Installer edits inline; save
-    // is a plain GET to /setusername that redirects back to /.
-    html += "<form action='/setusername' method='GET' style='margin-top:8px;display:flex;gap:6px;align-items:center'>";
-    html += "<span style='font-size:11px;color:#666;white-space:nowrap'>Name:</span>";
-    html += "<input type='text' name='n' maxlength='32' value='" + userAssignedName + "' placeholder='e.g. 3F West Flush' style='flex:1;padding:6px 8px;border:1px solid #ddd;border-radius:6px;font-size:12px'>";
-    html += "<button class='btn btn-blue' type='submit' style='margin:0;padding:6px 12px;font-size:12px'>Save</button>";
-    html += "</form>";
 
     html += "<div class='tank-wrap' style='margin-top:14px'>";
     // Tank graphic — SVG with tapered shoulders + lid, water clipped inside body
@@ -1676,8 +1249,7 @@ h2{font-size:14px;font-weight:600;color:#666;margin-bottom:8px}
     }
     int innerTop = 50, innerBottom = 240;       // y range of water fill inside SVG
     int innerHeight = innerBottom - innerTop;   // 190
-    // Initial render uses INSTANT reading (matches /sstatus poll updates).
-    int waterYStart = innerBottom - (innerHeight * instantPct / 100);
+    int waterYStart = innerBottom - (innerHeight * confirmedPct / 100);
     int waterH = innerBottom - waterYStart;
 
     html += "<div class='tank' id='tank'>";
@@ -1702,7 +1274,7 @@ h2{font-size:14px;font-weight:600;color:#666;margin-bottom:8px}
     html += "</g>";
     // Probe markers (drawn outside clip so they show even above water)
     for (int i = 0; i < SENSOR_COUNT; i++) {
-      bool on = (instantBits >> i) & 1;
+      bool on = (sensorBits >> i) & 1;
       int pct = PCT ? PCT[i] : 0;
       int probeY = innerBottom - (innerHeight * pct / 100);
       String color = on ? "#2563eb" : "#cbd5e1";
@@ -1719,9 +1291,9 @@ h2{font-size:14px;font-weight:600;color:#666;margin-bottom:8px}
 
     // Right-side readout
     html += "<div class='tank-info'>";
-    html += "<div class='big-pct' id='bigPct'>" + String(instantPct) + "%</div>";
+    html += "<div class='big-pct' id='bigPct'>" + String(confirmedPct) + "%</div>";
     if (tankCapacityLitres > 0) {
-      uint32_t litres = (uint32_t)(((uint64_t)instantPct * tankCapacityLitres) / 100ULL);
+      uint32_t litres = (uint32_t)(((uint64_t)confirmedPct * tankCapacityLitres) / 100ULL);
       html += "<div class='litres' id='litres'>" + fmtLitres(litres) + " / " + fmtLitres(tankCapacityLitres) + "</div>";
     } else {
       html += "<div class='litres' id='litres' style='display:none'></div>";
@@ -1746,15 +1318,7 @@ h2{font-size:14px;font-weight:600;color:#666;margin-bottom:8px}
   // Device Info Card (ultrasonic)
   html += "<div class='card'>";
   html += "<h1>SenseFlow Device</h1>";
-  if (userAssignedName.length() > 0) {
-    html += "<p style='font-size:15px;font-weight:600;color:#334155;margin-bottom:2px'>" + userAssignedName + "</p>";
-  }
   html += "<p class='code'>" + deviceCode + "</p>";
-  html += "<form action='/setusername' method='GET' style='margin-top:8px;display:flex;gap:6px;align-items:center'>";
-  html += "<span style='font-size:11px;color:#666;white-space:nowrap'>Name:</span>";
-  html += "<input type='text' name='n' maxlength='32' value='" + userAssignedName + "' placeholder='e.g. 3F West Flush' style='flex:1;padding:6px 8px;border:1px solid #ddd;border-radius:6px;font-size:12px'>";
-  html += "<button class='btn btn-blue' type='submit' style='margin:0;padding:6px 12px;font-size:12px'>Save</button>";
-  html += "</form>";
   html += "</div>";
   #endif
 
@@ -1770,9 +1334,9 @@ h2{font-size:14px;font-weight:600;color:#666;margin-bottom:8px}
     int rssi = WiFi.RSSI();
     String sig;
     if (WiFi.status() != WL_CONNECTED) sig = "Not connected";
-    else if (rssi >= -65) sig = "Excellent";
-    else if (rssi >= -70) sig = "Good";
-    else if (rssi >= -98) sig = "Fair";
+    else if (rssi >= -55) sig = "Excellent";
+    else if (rssi >= -65) sig = "Good";
+    else if (rssi >= -75) sig = "Fair";
     else                  sig = "Weak";
 
     String lastUpd;
@@ -1838,9 +1402,6 @@ h2{font-size:14px;font-weight:600;color:#666;margin-bottom:8px}
   html += "<span>AP active for 10 min after each boot</span></label>";
   html += "<p style='font-size:11px;color:#888;margin:6px 0 10px'>10-min mode auto-extends while you're on this page.</p>";
 
-  // Test LED button — installer identifies which physical device this AP
-  // belongs to. Uses fetch() so the page doesn't navigate away.
-  html += "<button class='btn btn-blue' id='testLedBtn' onclick=\"var b=this;b.disabled=true;var o=b.textContent;b.textContent='Blinking...';fetch('/testled').finally(()=>{setTimeout(()=>{b.disabled=false;b.textContent=o},2000)})\">Test LED (Identify Device)</button>";
   html += "<a href='/restart'><button class='btn btn-red'>Restart Device</button></a>";
   html += "</div>";
 
@@ -1963,7 +1524,7 @@ void mqttCommandCallback(char* topic, byte* payload, unsigned int len) {
   }
   else if (t == base + "restart") {
     delay(500);
-    safeRestart();
+    ESP.restart();
   }
   else if (t == base + "analytics") {
     bool on = (p == "1" || p == "true" || p == "ON");
@@ -2066,498 +1627,6 @@ void mqttLoop() {
 bool crashedLastBoot = false;
 unsigned long crashIndicatorStart = 0;
 
-// ══════════════════════════════════════════════════
-//  NTP TIME SYNC
-// ══════════════════════════════════════════════════
-
-uint32_t nowEpoch() {
-  time_t now = time(nullptr);
-  return (now > 1700000000) ? (uint32_t)now : 0;   // sanity: post-2023
-}
-
-void syncNTPIfDue() {
-  if (WiFi.status() != WL_CONNECTED) return;
-  if (ntpSynced && (millis() - lastNtpSyncAt < NTP_RESYNC_INTERVAL)) return;
-
-  configTime(NTP_TZ_OFFSET_S, 0, NTP_SERVER);
-  // Wait up to 3 sec for first sync (boot path) or just kick off (resync)
-  for (int i = 0; i < 30 && nowEpoch() == 0; i++) delay(100);
-  uint32_t e = nowEpoch();
-  if (e > 0) {
-    ntpSynced = true;
-    lastNtpSyncAt = millis();
-    Serial.printf("[NTP] Sync OK, epoch=%u\n", e);
-
-    // On the first successful sync after boot, stamp firstBootAt if unset
-    Preferences p;
-    p.begin("senseflow", false);
-    if (firstBootAt == 0) {
-      firstBootAt = e;
-      p.putUInt("firstBoot", firstBootAt);
-      Serial.printf("[BOOT] firstBootAt = %u\n", firstBootAt);
-    }
-    // If never OTA'd, lastUpdatedAt mirrors firstBootAt
-    if (lastUpdatedAt == 0) {
-      lastUpdatedAt = firstBootAt;
-      p.putUInt("lastUpd", lastUpdatedAt);
-    }
-    p.end();
-
-    // Now that timestamps are real (not 0), push to Firebase if changed.
-    // Write-once cache ensures this is a no-op on subsequent reboots.
-    reportFirmwareInfoIfChanged();
-  }
-}
-
-// ══════════════════════════════════════════════════
-//  OTA — admin-triggered firmware update
-// ══════════════════════════════════════════════════
-
-#if ENABLE_CLOUD
-
-// Report firmware info to Firebase /devices/<code>/info/
-void reportFirmwareInfo() {
-  if (!firebaseHealthy) return;
-  FirebaseJson json;
-  json.set("firmwareVersion", FIRMWARE_VERSION);
-  json.set("firstBootAt",     firstBootAt);
-  json.set("lastUpdatedAt",   lastUpdatedAt);
-  String path = "devices/" + deviceCode + "/info";
-  Firebase.RTDB.updateNode(&fbdo, path.c_str(), &json);
-}
-
-// Write-once optimisation — only push to Firebase if firmware version OR
-// lastUpdatedAt has changed since the last reported snapshot (stored in NVS).
-// Saves a Firebase write per boot/NTP sync on devices that haven't changed.
-void reportFirmwareInfoIfChanged() {
-  if (!firebaseHealthy) return;
-
-  // Build a stable hash of {firmwareVersion, lastUpdatedAt}. djb2 on the
-  // version string XOR lastUpdatedAt is enough — collisions are harmless
-  // (worst case: one extra write).
-  uint32_t verHash = 5381;
-  const char* s = FIRMWARE_VERSION;
-  while (*s) { verHash = ((verHash << 5) + verHash) + (uint8_t)(*s++); }
-  uint32_t key = verHash ^ lastUpdatedAt;
-
-  Preferences p;
-  p.begin("senseflow", false);
-  uint32_t lastKey = p.getUInt("rptKey", 0);
-  if (key == lastKey) {
-    p.end();
-    return;   // nothing changed — skip the Firebase write
-  }
-  reportFirmwareInfo();
-  p.putUInt("rptKey", key);
-  p.end();
-  Serial.printf("[FB] reportFirmwareInfo pushed (key=%u)\n", key);
-}
-
-// Set OTA status fields on Firebase
-void setOtaStatus(const String& status, uint8_t retries) {
-  if (!firebaseHealthy) return;
-  FirebaseJson json;
-  json.set("lastOtaStatus", status);
-  json.set("otaRetryCount", retries);
-  String path = "devices/" + deviceCode + "/info";
-  Firebase.RTDB.updateNode(&fbdo, path.c_str(), &json);
-}
-
-// Clear the trigger so we don't re-fire on next poll
-void clearOtaTrigger() {
-  if (!firebaseHealthy) return;
-  FirebaseJson json;
-  json.set("otaTrigger", false);
-  String path = "devices/" + deviceCode + "/config";
-  Firebase.RTDB.updateNode(&fbdo, path.c_str(), &json);
-}
-
-// Execute the actual HTTP(S) firmware download + flash. Blocks for the
-// duration of the download — watchdog is fed via progress callback.
-// Returns reason string on failure, empty string on success (won't return
-// at all on success because device reboots).
-String runHttpUpdate(const String& url, const String& md5) {
-  // Disable watchdog during long download
-  esp_task_wdt_delete(NULL);
-
-  // Pick client based on URL scheme
-  WiFiClient        plainClient;
-  WiFiClientSecure  tlsClient;
-  WiFiClient*       chosen = nullptr;
-  if (url.startsWith("https://")) {
-    tlsClient.setInsecure();   // accept self-signed / unknown CA; admin owns the URL
-    chosen = &tlsClient;
-  } else {
-    chosen = &plainClient;
-  }
-
-  httpUpdate.setLedPin(LED_PIN, LOW);
-  httpUpdate.rebootOnUpdate(false);   // we'll reboot ourselves after Firebase write
-  if (md5.length() == 32) {
-    httpUpdate.setMD5sum(md5);
-  }
-  // Feed watchdog during download via progress callback
-  httpUpdate.onProgress([](int progress, int total){
-    static uint32_t lastFeed = 0;
-    if (millis() - lastFeed > 2000) {
-      lastFeed = millis();
-      Serial.printf("[OTA] %d / %d bytes\n", progress, total);
-    }
-  });
-
-  t_httpUpdate_return ret = httpUpdate.update(*chosen, url);
-
-  // Re-arm watchdog
-  esp_task_wdt_add(NULL);
-
-  switch (ret) {
-    case HTTP_UPDATE_FAILED:
-      return "fail:" + String(httpUpdate.getLastError()) + ":" + httpUpdate.getLastErrorString();
-    case HTTP_UPDATE_NO_UPDATES:
-      return "fail:no_update";
-    case HTTP_UPDATE_OK:
-      return "";   // success, but execution won't reach here if we rebooted
-    default:
-      return "fail:unknown";
-  }
-}
-
-// Check Firebase for an OTA trigger and execute if due. Runs from main
-// loop on a 30-sec timer.
-void checkOtaTrigger() {
-  if (!firebaseHealthy) return;
-  if (WiFi.status() != WL_CONNECTED) return;
-  if (!ntpSynced) return;   // need real time to honor schedules
-
-  String basePath = "devices/" + deviceCode + "/config/";
-
-  // Each Firebase call can stall up to ~2s on a flaky network. Feed the
-  // watchdog between calls so a chain of slow reads doesn't add up to >60s.
-  esp_task_wdt_reset();
-  if (!Firebase.RTDB.getBool(&fbdo, (basePath + "otaTrigger").c_str())) return;
-  if (!fbdo.boolData()) return;   // not triggered
-
-  // Read scheduled time
-  uint32_t scheduledAt = 0;
-  esp_task_wdt_reset();
-  if (Firebase.RTDB.getInt(&fbdo, (basePath + "otaScheduledAt").c_str())) {
-    scheduledAt = (uint32_t)fbdo.intData();
-  }
-  uint32_t epoch = nowEpoch();
-  if (scheduledAt > 0 && epoch < scheduledAt) {
-    // Not yet time
-    return;
-  }
-  // Stale trigger guard — if scheduled time is more than 7 days in the past,
-  // assume the admin meant a different update window and don't auto-flash.
-  const uint32_t SEVEN_DAYS = 7UL * 24UL * 3600UL;
-  if (scheduledAt > 0 && epoch > scheduledAt + SEVEN_DAYS) {
-    Serial.println("[OTA] Trigger expired (>7 days past scheduled time) — clearing");
-    setOtaStatus("fail:expired", 0);
-    clearOtaTrigger();
-    return;
-  }
-
-  // Read retry count + URL + MD5
-  uint8_t retries = 0;
-  String infoPath = "devices/" + deviceCode + "/info/";
-  esp_task_wdt_reset();
-  if (Firebase.RTDB.getInt(&fbdo, (infoPath + "otaRetryCount").c_str())) {
-    retries = (uint8_t)fbdo.intData();
-  }
-  if (retries >= OTA_MAX_RETRIES) {
-    setOtaStatus("fail:max_retries", retries);
-    clearOtaTrigger();
-    Serial.println("[OTA] Max retries reached — giving up");
-    return;
-  }
-
-  String url, md5;
-  esp_task_wdt_reset();
-  if (Firebase.RTDB.getString(&fbdo, (basePath + "otaTargetUrl").c_str())) url = fbdo.stringData();
-  if (url.length() == 0) {
-    setOtaStatus("fail:no_url", retries);
-    clearOtaTrigger();
-    return;
-  }
-  esp_task_wdt_reset();
-  if (Firebase.RTDB.getString(&fbdo, (basePath + "otaTargetMd5").c_str())) md5 = fbdo.stringData();
-
-  Serial.printf("[OTA] Starting download: %s\n", url.c_str());
-  setOtaStatus("in_progress", retries);
-
-  String result = runHttpUpdate(url, md5);
-
-  if (result.length() == 0) {
-    // Success — record then reboot. Clear the report-cache key so the
-    // freshly-booted new firmware re-pushes timestamps to Firebase.
-    Preferences p;
-    p.begin("senseflow", false);
-    lastUpdatedAt = nowEpoch();
-    p.putUInt("lastUpd", lastUpdatedAt);
-    p.remove("rptKey");   // force re-push on next boot
-    p.end();
-
-    setOtaStatus("success", 0);
-    clearOtaTrigger();
-    Serial.println("[OTA] Success — rebooting into new firmware");
-    delay(1000);
-    safeRestart();
-  } else {
-    // Fail — increment retry, set next scheduled time with random backoff
-    retries++;
-    setOtaStatus(result, retries);
-    if (retries < OTA_MAX_RETRIES) {
-      uint32_t backoffSec = 60 + (esp_random() % 540);   // 1-10 min
-      FirebaseJson json;
-      json.set("otaScheduledAt", epoch + backoffSec);
-      Firebase.RTDB.updateNode(&fbdo, ("devices/" + deviceCode + "/config").c_str(), &json);
-      Serial.printf("[OTA] Failed (%s), retry %u/%u in %u sec\n",
-                    result.c_str(), retries, OTA_MAX_RETRIES, backoffSec);
-    } else {
-      clearOtaTrigger();
-      Serial.println("[OTA] Final fail — trigger cleared");
-    }
-  }
-}
-
-#else
-void reportFirmwareInfo() {}
-void checkOtaTrigger() {}
-#endif  // ENABLE_CLOUD
-
-// ══════════════════════════════════════════════════
-//  DIAGNOSTICS — BOOT LOG
-// ══════════════════════════════════════════════════
-//
-// Tracks every restart so admin can diagnose flaky devices remotely.
-// Storage: 50-entry circular buffer in NVS, ~800 bytes total. Indexed by
-// `bootCount % 50` so we never overflow and the latest 50 are always there.
-// Cloud upload is gated by `diagnosticsOn` to avoid bandwidth waste on
-// healthy devices.
-//
-// Uptime tracking: persistCurrentUptime() saves millis()/1000 to NVS
-// every 10 min (every 60 s during first 10 min after boot, to catch
-// early-boot brownouts). Next boot reads this — that's how we know how
-// long the previous session ran before dying.
-
-#define BOOTLOG_NVS_NS "diag"
-
-// Parse "17.0.9" → 17, 0, 9
-void parseFwVersion(const char* v, uint8_t* maj, uint8_t* min, uint8_t* patch) {
-  *maj = *min = *patch = 0;
-  int dots = 0;
-  uint8_t acc = 0;
-  for (const char* p = v; *p; p++) {
-    if (*p == '.') {
-      if (dots == 0) *maj = acc;
-      else if (dots == 1) *min = acc;
-      dots++;
-      acc = 0;
-    } else if (*p >= '0' && *p <= '9') {
-      acc = acc * 10 + (*p - '0');
-    }
-  }
-  if (dots >= 2) *patch = acc;
-}
-
-// Append a new boot log entry to NVS. Called once from setup() after we
-// know the reset reason + previous uptime. Updates the in-RAM
-// latestBootEntry so the cloud upload path can grab it.
-void appendBootLogEntry(uint8_t reason, uint32_t uptimeBefore) {
-  Preferences p;
-  p.begin(BOOTLOG_NVS_NS, false);
-  boot_logIdx = p.getUChar("idx", 0);
-  bootCount   = p.getUInt("count", 0);
-
-  BootLogEntry e;
-  e.epoch          = nowEpoch();              // 0 if NTP not yet synced — Cloud Function tolerates
-  e.uptimeBefore   = uptimeBefore;
-  e.freeHeapAtBoot = ESP.getFreeHeap();
-  e.reason         = (uint8_t)reason;
-  parseFwVersion(FIRMWARE_VERSION, &e.fwMajor, &e.fwMinor, &e.fwPatch);
-
-  // Persist this slot
-  char key[8];
-  snprintf(key, sizeof(key), "e%u", boot_logIdx);
-  p.putBytes(key, &e, sizeof(e));
-
-  // Advance index circularly
-  boot_logIdx = (boot_logIdx + 1) % BOOTLOG_CAPACITY;
-  bootCount++;
-  p.putUChar("idx", boot_logIdx);
-  p.putUInt("count", bootCount);
-  p.end();
-
-  latestBootEntry    = e;
-  hasLatestBootEntry = true;
-  Serial.printf("[DIAG] Boot logged: reason=%u uptimeBefore=%us heap=%u (#%u)\n",
-                e.reason, e.uptimeBefore, e.freeHeapAtBoot, bootCount);
-}
-
-// Persist current millis()/1000 to NVS so the next boot knows how long
-// this session ran. Adaptive cadence — caller decides when to call.
-void persistCurrentUptime() {
-  uint32_t up = (uint32_t)(millis() / 1000);
-  Preferences p;
-  p.begin(BOOTLOG_NVS_NS, false);
-  p.putUInt("up", up);
-  p.end();
-}
-
-// Read previous session's uptime from NVS (set by persistCurrentUptime()
-// during last run). Returns 0 if NVS is fresh (first boot ever).
-uint32_t readPreviousUptime() {
-  Preferences p;
-  p.begin(BOOTLOG_NVS_NS, true);   // read-only
-  uint32_t prev = p.getUInt("up", 0);
-  p.end();
-  return prev;
-}
-
-// Reset reason → human-readable string for log + serial dump.
-const char* resetReasonStr(uint8_t r) {
-  switch ((esp_reset_reason_t)r) {
-    case ESP_RST_POWERON:  return "power-on";
-    case ESP_RST_EXT:      return "external-pin";
-    case ESP_RST_SW:       return "software";
-    case ESP_RST_PANIC:    return "panic";
-    case ESP_RST_INT_WDT:  return "int-wdt";
-    case ESP_RST_TASK_WDT: return "task-wdt";
-    case ESP_RST_WDT:      return "other-wdt";
-    case ESP_RST_DEEPSLEEP:return "deep-sleep";
-    case ESP_RST_BROWNOUT: return "brownout";
-    case ESP_RST_SDIO:     return "sdio";
-    default:               return "unknown";
-  }
-}
-
-// Read entry at slot i (0..49). Returns true if a valid entry was loaded.
-bool readBootLogEntry(uint8_t i, BootLogEntry* out) {
-  if (i >= BOOTLOG_CAPACITY) return false;
-  Preferences p;
-  p.begin(BOOTLOG_NVS_NS, true);
-  char key[8];
-  snprintf(key, sizeof(key), "e%u", i);
-  size_t n = p.getBytes(key, out, sizeof(BootLogEntry));
-  p.end();
-  return (n == sizeof(BootLogEntry));
-}
-
-// Wipe NVS boot log + RTDB upload. Triggered by clearDiagLogRequested
-// command from admin or `DIAG CLEAR` serial command.
-void clearBootLog() {
-  Preferences p;
-  p.begin(BOOTLOG_NVS_NS, false);
-  p.clear();
-  p.end();
-  boot_logIdx = 0;
-  bootCount   = 0;
-  hasLatestBootEntry = false;
-  Serial.println("[DIAG] Boot log NVS cleared");
-}
-
-// Dump the last 50 entries to Serial (human-readable). Bound to the
-// `BOOTLOG` serial command — always available regardless of diagnosticsOn,
-// since this is local-only and helps installer diagnose USB-attached devices.
-void dumpBootLogToSerial() {
-  Preferences p;
-  p.begin(BOOTLOG_NVS_NS, true);
-  uint8_t  idx   = p.getUChar("idx", 0);
-  uint32_t total = p.getUInt("count", 0);
-  p.end();
-
-  Serial.println("\n--- BOOT LOG (oldest first, max 50) ---");
-  Serial.printf("Total boots ever: %u\n", total);
-  if (total == 0) {
-    Serial.println("(empty)\n");
-    return;
-  }
-
-  uint8_t toShow = total < BOOTLOG_CAPACITY ? (uint8_t)total : BOOTLOG_CAPACITY;
-  // Walk circularly starting from the oldest slot.
-  uint8_t start = (total < BOOTLOG_CAPACITY) ? 0 : idx;
-  for (uint8_t k = 0; k < toShow; k++) {
-    uint8_t slot = (start + k) % BOOTLOG_CAPACITY;
-    BootLogEntry e;
-    if (!readBootLogEntry(slot, &e)) continue;
-    Serial.printf("%2u) epoch=%u  ran=%us  reason=%u (%s)  heap=%u  fw=%u.%u.%u\n",
-                  k + 1, e.epoch, e.uptimeBefore, e.reason,
-                  resetReasonStr(e.reason), e.freeHeapAtBoot,
-                  e.fwMajor, e.fwMinor, e.fwPatch);
-  }
-  Serial.println("--------------------------------------\n");
-}
-
-#if ENABLE_CLOUD
-// Upload the most recent boot log entry to RTDB. Path:
-//   /devices/<code>/diagnostics/boots/<slot>
-// where <slot> = (bootCount - 1) % 50. Admin UI reads from there.
-void uploadLatestBootLog() {
-  if (!firebaseHealthy) return;
-  if (!diagnosticsOn)   return;
-  if (!hasLatestBootEntry) return;
-
-  BootLogEntry& e = latestBootEntry;
-  uint8_t slot = (bootCount == 0) ? 0 : (uint8_t)((bootCount - 1) % BOOTLOG_CAPACITY);
-
-  char path[128];
-  snprintf(path, sizeof(path), "devices/%s/diagnostics/boots/%u",
-           deviceCode.c_str(), slot);
-
-  FirebaseJson json;
-  json.set("epoch",          e.epoch);
-  json.set("uptimeBefore",   e.uptimeBefore);
-  json.set("freeHeapAtBoot", e.freeHeapAtBoot);
-  json.set("reason",         e.reason);
-  json.set("reasonStr",      resetReasonStr(e.reason));
-  json.set("fwVersion",      String(e.fwMajor) + "." + String(e.fwMinor) + "." + String(e.fwPatch));
-  json.set("bootNumber",     bootCount);
-
-  esp_task_wdt_reset();
-  if (Firebase.RTDB.setJSON(&fbdo, path, &json)) {
-    Serial.printf("[DIAG] Boot log uploaded to slot %u\n", slot);
-  } else {
-    Serial.printf("[DIAG] Boot log upload failed: %s\n", fbdo.errorReason().c_str());
-  }
-}
-
-// Snapshot live diagnostics to RTDB. Called on refreshDiagRequested
-// command (admin clicks button in UI). Cheap, single write.
-void uploadDiagnosticsNow() {
-  if (!firebaseHealthy) return;
-  if (!diagnosticsOn)   return;
-
-  String path = "devices/" + deviceCode + "/diagnostics/now";
-
-  FirebaseJson json;
-  json.set("uptime",                 (uint32_t)(millis() / 1000));
-  json.set("freeHeap",               ESP.getFreeHeap());
-  json.set("rssi",                   WiFi.RSSI());
-  json.set("internetAvailable",      internetAvailable);
-  json.set("firebaseHealthy",        firebaseHealthy);
-  json.set("consecutivePushFails",   consecutiveFailCount);
-  json.set("lastNtpSyncAt",          (uint32_t)(lastNtpSyncAt / 1000));
-  json.set("ts/.sv",                 "timestamp");
-
-  esp_task_wdt_reset();
-  Firebase.RTDB.setJSON(&fbdo, path.c_str(), &json);
-}
-
-// Wipe RTDB boot log path. Called from clearDiagLogRequested command.
-void clearBootLogRtdb() {
-  if (!firebaseHealthy) return;
-  String path = "devices/" + deviceCode + "/diagnostics/boots";
-  esp_task_wdt_reset();
-  Firebase.RTDB.deleteNode(&fbdo, path.c_str());
-}
-
-#else
-void uploadLatestBootLog() {}
-void uploadDiagnosticsNow() {}
-void clearBootLogRtdb()    {}
-#endif  // ENABLE_CLOUD
-
 void setup() {
   Serial.begin(115200);
   delay(500);
@@ -2565,7 +1634,7 @@ void setup() {
 
   // Log reset reason so installer/log can see if device crashed
   esp_reset_reason_t reason = esp_reset_reason();
-  Serial.printf("[BOOT] Reset reason: %d (%s)\n", (int)reason, resetReasonStr((uint8_t)reason));
+  Serial.printf("[BOOT] Reset reason: %d\n", (int)reason);
   if (reason == ESP_RST_PANIC || reason == ESP_RST_INT_WDT ||
       reason == ESP_RST_TASK_WDT || reason == ESP_RST_WDT ||
       reason == ESP_RST_BROWNOUT) {
@@ -2574,27 +1643,18 @@ void setup() {
     crashIndicatorStart = millis();
   }
 
-  // Capture reset reason + previous-session uptime to RAM only. NO NVS
-  // write here — we don't know yet whether diagnosticsOn is true (config
-  // hasn't been read). If it IS on, checkConfig() will materialise this
-  // into NVS + cloud later. Free customers' devices that never enable
-  // diagnostics will never write to NVS for diagnostics. Zero wear.
-  pendingBootReason       = (uint8_t)reason;
-  pendingBootPrevUptime   = readPreviousUptime();
-  pendingBootCaptured     = true;
-
   // Hardware watchdog — reboot if main loop ever blocks > 30 s.
   // (Firebase TLS at worst case ~3s now thanks to timeout tightening.)
   // ESP32 core 3.x uses a config struct; older cores use (timeout, panic).
   #if ESP_IDF_VERSION_MAJOR >= 5
     esp_task_wdt_config_t wdt_cfg = {
-      .timeout_ms = 60000,
+      .timeout_ms = 30000,
       .idle_core_mask = 0,
       .trigger_panic = true
     };
     esp_task_wdt_init(&wdt_cfg);
   #else
-    esp_task_wdt_init(60, true);
+    esp_task_wdt_init(30, true);
   #endif
   esp_task_wdt_add(NULL);
 
@@ -2685,18 +1745,7 @@ void setup() {
     WebServer* srv = mvs.getServer();
     srv->send(200, "text/html", "<html><body><h2>Restarting...</h2><script>setTimeout(()=>history.back(),3000)</script></body></html>");
     delay(1000);
-    safeRestart();
-  });
-
-  // Test LED — triggers the same rainbow blink as the cloud test command.
-  // Lets an installer confirm which physical device they're connected to
-  // when multiple SenseFlow APs are visible in the same area.
-  mvs.addEndpoint("/testled", []() {
-    WebServer* srv = mvs.getServer();
-    testBlinkActive = true;
-    testBlinkStart  = millis();
-    srv->send(200, "application/json", "{\"ok\":true}");
-    Serial.println("[TEST] LED rainbow blink triggered from AP page");
+    ESP.restart();
   });
 
   mvs.addEndpoint("/sstatus", []() {
@@ -2712,16 +1761,10 @@ void setup() {
     if (apMode == 1 && apTimerStart != 0 && !apTimerEnded && millis() < apTimerDeadline) {
       apLeft = (apTimerDeadline - millis()) / 1000;
     }
-    // AP page shows INSTANT reading so an installer sees real-time water
-    // motion. Cloud dashboard uses the committed (dominant-level) value —
-    // see processDipSensors(). committedLevel exposed as `stableLevel`
-    // so installer can see both when needed.
     String json = "{";
     json += "\"code\":\"" + deviceCode + "\",";
-    json += "\"level\":" + String(instantPct) + ",";
-    json += "\"bits\":" + String(instantBits) + ",";
-    json += "\"stableLevel\":" + String(confirmedPct) + ",";
-    json += "\"stableBits\":" + String(sensorBits) + ",";
+    json += "\"level\":" + String(confirmedPct) + ",";
+    json += "\"bits\":" + String(sensorBits) + ",";
     json += "\"count\":" + String(SENSOR_COUNT) + ",";
     json += "\"flags\":" + String(flags) + ",";
     json += "\"error\":" + String(sensorError ? "true" : "false") + ",";
@@ -2747,28 +1790,6 @@ void setup() {
       capPrefs.end();
       Serial.println("Tank capacity set to: " + String(c) + " L");
     }
-    srv->sendHeader("Location", "/"); srv->send(302);
-  });
-
-  // User-assigned physical-identity label. Installer types this on the
-  // AP page during setup to match this specific hardware to its physical
-  // location ("3F West Flush" etc.). Saved to NVS + mirrored to Firebase
-  // /info if cloud is up. Max 32 chars, plain text only.
-  mvs.addEndpoint("/setusername", []() {
-    WebServer* srv = mvs.getServer();
-    String name = srv->arg("n");
-    name.trim();
-    if (name.length() > 32) name = name.substring(0, 32);
-    userAssignedName = name;
-    Preferences np;
-    np.begin("senseflow", false);
-    np.putString("userName", name);
-    np.end();
-    Serial.println("[NAME] User-assigned name set to: '" + name + "'");
-    // Push to Firebase /info immediately so admin sees it without waiting
-    // for the next heartbeat. Silently skipped when cloud unavailable —
-    // next heartbeat will sync via updateDeviceInfo().
-    if (firebaseHealthy) updateDeviceInfo(true);
     srv->sendHeader("Location", "/"); srv->send(302);
   });
 
@@ -2814,107 +1835,29 @@ void setup() {
     srv->sendHeader("Location", "/"); srv->send(302);
   });
 
-  // Debug dump — read the credentials directly out of the same NVS
-  // namespace MvsConnect uses so we can see EXACTLY what's stored.
-  // BENCH DEBUG: password is printed in cleartext on purpose so we can
-  // spot character-encoding / trailing-whitespace / locale issues. REPLACE
-  // this with `<hidden, len=N>` before flashing production devices.
-  {
-    Preferences dbg;
-    dbg.begin("mvswifi", true);   // read-only
-    String dbgSsid = dbg.getString("ssid", "");
-    String dbgPass = dbg.getString("password", "");
-    bool dbgValid  = dbg.getBool("valid", false);
-    dbg.end();
-    Serial.printf("[WIFI-DBG] NVS namespace 'mvswifi' contents:\n");
-    Serial.printf("[WIFI-DBG]   ssid     = '%s' (len=%u)\n", dbgSsid.c_str(), dbgSsid.length());
-    Serial.printf("[WIFI-DBG]   password = '%s' (len=%u)\n", dbgPass.c_str(), dbgPass.length());
-    Serial.printf("[WIFI-DBG]   valid    = %s\n", dbgValid ? "true" : "false");
-    // Byte-level hex dump of both fields. If something is being stored
-    // with stray UTF-8 BOM, NUL terminator, or unicode look-alike chars,
-    // this will show it. Each byte in 2-digit hex with " " separator.
-    Serial.printf("[WIFI-DBG]   ssid hex   ="); for (size_t i = 0; i < dbgSsid.length(); i++) Serial.printf(" %02X", (uint8_t)dbgSsid[i]); Serial.println();
-    Serial.printf("[WIFI-DBG]   pass hex   ="); for (size_t i = 0; i < dbgPass.length(); i++) Serial.printf(" %02X", (uint8_t)dbgPass[i]); Serial.println();
-    Serial.printf("[WIFI-DBG] WiFi.macAddress() = %s\n", WiFi.macAddress().c_str());
-  }
-
-  // Scan visible networks once at boot so we can see whether the saved
-  // SSID is even in range, and what auth/RSSI it advertises. Short scan
-  // (~2-3 sec) — only happens once per boot, safe to add.
-  {
-    Serial.println("[WIFI-DBG] Scanning visible networks...");
-    int n = WiFi.scanNetworks(false, false, false, 200);
-    Serial.printf("[WIFI-DBG] Found %d networks:\n", n);
-    for (int i = 0; i < n; i++) {
-      Serial.printf("[WIFI-DBG]   %2d: %-32s  RSSI=%d  ch=%d  enc=%d  bssid=%s\n",
-                    i + 1, WiFi.SSID(i).c_str(), WiFi.RSSI(i),
-                    WiFi.channel(i), (int)WiFi.encryptionType(i),
-                    WiFi.BSSIDstr(i).c_str());
-    }
-    WiFi.scanDelete();
-  }
-
-  // Try connecting to saved WiFi — using the SAME recipe that the manual
-  // AP-page handler uses, because mvs.connectToSavedWiFi() has been
-  // failing in the field even at strong signal (-59 dBm, credentials
-  // verified clean via WIFI_DBG). We don't know whether it's a library
-  // bug or an AP+STA timing issue, but the manual path with
-  // disconnect(true) + delay(1000) + WiFi.begin() + 90s status-poll
-  // works reliably on the same hardware / same router / same credentials.
-  // Bypass the library and use that recipe directly.
-  {
-    Preferences wp;
-    wp.begin("mvswifi", true);
-    String savedSsid = wp.getString("ssid", "");
-    String savedPass = wp.getString("password", "");
-    bool   savedVal  = wp.getBool("valid", false);
-    wp.end();
-
-    if (savedSsid.length() > 0 && savedVal) {
-      Serial.printf("Connecting to saved WiFi '%s' (direct begin path)...\n", savedSsid.c_str());
-      setLED(0, 0, 255);
-      WiFi.disconnect(true);
-      delay(1000);
-      WiFi.begin(savedSsid.c_str(), savedPass.c_str());
-
-      unsigned long deadline = millis() + 90000UL;
-      while (millis() < deadline && WiFi.status() != WL_CONNECTED) {
-        delay(500);
-        Serial.print(".");
-        esp_task_wdt_reset();
+  // Try connecting to saved WiFi
+  if (mvs.hasSavedWiFi()) {
+    Serial.println("Connecting to saved WiFi...");
+    setLED(0, 0, 255);  // Blue while connecting
+    if (mvs.connectToSavedWiFi(30)) {
+      Serial.println("WiFi connected! IP: " + WiFi.localIP().toString());
+      setGoogleDNS();
+      // (boot "green on connect" removed — green is reserved for tank-full)
+      if (apMode == 1) {
+        // 10-min mode: start countdown now that STA is up
+        apTimerStart = millis();
+        apTimerDeadline = apTimerStart + AP_AUTO_OFF_MS;
+        apTimerEnded = false;
+        Serial.println("AP 10-min countdown started");
       }
-      Serial.println();
-
-      if (WiFi.status() == WL_CONNECTED) {
-        Serial.println("WiFi connected! IP: " + WiFi.localIP().toString());
-        Serial.printf("RSSI: %d dBm, SSID: %s\n", WiFi.RSSI(), WiFi.SSID().c_str());
-        setGoogleDNS();
-        if (apMode == 1) {
-          apTimerStart = millis();
-          apTimerDeadline = apTimerStart + AP_AUTO_OFF_MS;
-          apTimerEnded = false;
-          Serial.println("AP 10-min countdown started");
-        }
-        // Only kick off Firebase if the router actually has WAN. Without
-        // this check, Firebase.signUp() blocks on TLS handshake for 60s+
-        // when the router has an SSID but no internet — causing a Task
-        // WDT reboot loop. The main loop's periodic recovery path will
-        // pick up Firebase init once internet comes back.
-        internetAvailable = checkInternet();
-        lastInternetCheck = millis();
-        if (internetAvailable) {
-          initFirebase();
-        } else {
-          Serial.println("[BOOT] WiFi up but no internet — deferring Firebase init");
-        }
-      } else {
-        Serial.printf("WiFi connection FAILED (status=%d, 90s timeout), AP mode active\n", WiFi.status());
-        setLED(255, 255, 255);
-      }
+      initFirebase();
     } else {
-      Serial.println("No saved WiFi, AP mode active for setup");
-      setLED(255, 255, 255);
+      Serial.println("WiFi connection failed, AP mode active");
+      setLED(255, 255, 255);  // White = no WiFi
     }
+  } else {
+    Serial.println("No saved WiFi, AP mode active for setup");
+    setLED(255, 255, 255);
   }
 
   // MvsOTA
@@ -2947,24 +1890,8 @@ void loop() {
     if (freeHeap < 30000) {
       Serial.println("[HEAP] Below 30 KB — restarting cleanly");
       delay(500);
-      safeRestart();
+      ESP.restart();
     }
-  }
-
-  // Diagnostics — persist current uptime to NVS so the NEXT boot knows
-  // how long this session ran before dying. GATED on diagnosticsLoggingActive
-  // so devices with diagnostics OFF never write to NVS for diagnostics
-  // (zero wear for free customers). Adaptive cadence when ON: every 60s
-  // in the first 10 min (catches early-boot brownouts), then every 10 min.
-  static unsigned long lastUptimeSave = 0;
-  const unsigned long UPTIME_SAVE_EARLY  = 60UL  * 1000UL;
-  const unsigned long UPTIME_SAVE_NORMAL = 600UL * 1000UL;
-  unsigned long uptimeSaveInterval = (now < 10UL * 60UL * 1000UL)
-                                     ? UPTIME_SAVE_EARLY
-                                     : UPTIME_SAVE_NORMAL;
-  if (diagnosticsLoggingActive && now - lastUptimeSave >= uptimeSaveInterval) {
-    lastUptimeSave = now;
-    persistCurrentUptime();
   }
 
   // Scheduled auto-restart (industrial practice): reboot after 7 days uptime
@@ -2976,40 +1903,7 @@ void loop() {
     Serial.println("[REBOOT] Scheduled 7-day restart");
     if (firebaseReady) updateDeviceInfo(false);
     delay(500);
-    safeRestart();
-  }
-
-  // ── Cloud-stale self-heal watchdog ──────────────────────────────────
-  // Field devices have gone "half-alive" — SSID still broadcasting, LED
-  // still cycling, main loop still feeding Task WDT — but AP page won't
-  // load and cloud shows offline. Only a manual power cycle recovered.
-  //
-  // Root cause is almost certainly an internal Firebase library stall
-  // (TLS retry loop or heap fragmentation preventing allocation) that
-  // keeps calling delay() often enough to feed Task WDT but never makes
-  // progress. Task WDT can't catch this because we ARE resetting it.
-  //
-  // Detection: if network is confirmed up but we haven't successfully
-  // pushed to /live in > 20 min (4x the 5-min heartbeat), the Firebase
-  // layer is stuck. Force a clean safeRestart() to recover — that's the
-  // exact recipe that fixed the 2 stuck devices Vishal reported.
-  //
-  // Guard: only fires AFTER Firebase has been healthy at least once
-  // (lastSuccessfulPush != 0). Never fires during OTA or the first
-  // few minutes on a fresh boot.
-  const unsigned long CLOUD_STALE_MS = 20UL * 60UL * 1000UL;   // 20 min
-  static unsigned long lastCloudCheck = 0;
-  if (!mvsota.isUpdating() && now - lastCloudCheck >= 60000UL) {
-    lastCloudCheck = now;
-    if (lastSuccessfulPush != 0 &&                  // Firebase was healthy before
-        WiFi.status() == WL_CONNECTED &&            // network is up now
-        internetAvailable &&                        // DNS-reachable now
-        now - lastSuccessfulPush > CLOUD_STALE_MS) {
-      unsigned long staleMin = (now - lastSuccessfulPush) / 60000UL;
-      Serial.printf("[WATCHDOG] Cloud stale %lu min despite network up — self-restart\n", staleMin);
-      delay(500);
-      safeRestart();
-    }
+    ESP.restart();
   }
 
   // MvsConnect always runs (AP mode web server)
@@ -3078,36 +1972,25 @@ void loop() {
     checkFirebaseReady();
 
     if (firebaseReady && firebaseHealthy) {
-      // Change-driven data push (only fires after 3-confirm gate)
+      // Change-driven data push
       if (hasDataChanged()) {
         Serial.printf("Data changed: bits=%d pct=%d flags=%d → pushing\n", sensorBits, confirmedPct, flags);
         if (pushLiveData()) {
           updateDeviceInfo(true);
-          writeHistory();
-          // Premium tier: also ping the notification dispatcher. No-op when
-          // notifyOn=false (free customers cost nothing).
-          pushNotifyTrigger(confirmedPct, flags);
+          writeHistory();  // Record to history if analytics enabled
         }
-        handleLED();
+        handleLED();  // Prevent LED freeze during Firebase calls
       }
 
-      // Idle 1-hour fallback — if no /history entry for 1 hour, push the
-      // last-confirmed value so analytics chart isn't blank.
+      // Idle 1-hour fallback — if no /history entry written in last 1 hour
+      // (no changes happening), push the last-confirmed value so the chart
+      // doesn't go blank. Uses lastConfirmed*, never the boot-default 0%.
       writeHistoryIdleIfDue();
       handleLED();
 
-      // NTP sync (first boot + every 24h)
-      syncNTPIfDue();
-
-      // OTA trigger poll (every 30 s, NTP-time-gated)
-      if (now - lastOtaCheckAt >= OTA_CHECK_INTERVAL_MS) {
-        lastOtaCheckAt = now;
-        checkOtaTrigger();
-        handleLED();
-      }
-
-      // 5-minute heartbeat — pushes last-confirmed-stable value, never the
-      // possibly-glitchy current reading.
+      // 5-minute heartbeat — pushes last-confirmed-stable value, not the
+      // current possibly-glitchy reading. Cloud sees device as online
+      // without absorbing a transient glitch.
       if (now - lastHeartbeat >= HEARTBEAT_INTERVAL) {
         lastHeartbeat = now;
         Serial.println("Heartbeat — pushing last-confirmed value");
@@ -3124,13 +2007,9 @@ void loop() {
         handleLED();
       }
 
-      // Check config every 60 seconds (analyticsOn / notifyOn / diagnosticsOn
-      // flags). Was 30s — bumped to 60s to halve RTDB config polling
-      // bandwidth. These flags change once in a blue moon (admin toggles),
-      // 60s response time is fine. Combined with the command-poll bump,
-      // baseline RTDB downloads drop ~75% per device.
+      // Check config every 30 seconds (analyticsOn flag)
       static unsigned long lastConfigCheck = 0;
-      if (now - lastConfigCheck >= 60000) {
+      if (now - lastConfigCheck >= 30000) {
         lastConfigCheck = now;
         checkConfig();
       }
@@ -3143,48 +2022,16 @@ void loop() {
     if (manualWiFiInProgress && (now - manualWiFiStart > 30000)) {
       manualWiFiInProgress = false;
     }
-    // Auto-reconnect only if manual WiFi is not in progress.
-    // Use the same direct-WiFi.begin recipe as the boot path and the
-    // manual AP-page handler — the library wrapper has been failing.
-    // 30-sec cadence here is the same as before, just different mechanics.
+    // Auto-reconnect only if manual WiFi is not in progress
     static unsigned long lastReconnect = 0;
     if (!manualWiFiInProgress && (now - lastReconnect > 30000)) {
       lastReconnect = now;
-      Preferences wp;
-      wp.begin("mvswifi", true);
-      String savedSsid = wp.getString("ssid", "");
-      String savedPass = wp.getString("password", "");
-      bool   savedVal  = wp.getBool("valid", false);
-      wp.end();
-      if (savedSsid.length() > 0 && savedVal) {
-        Serial.printf("Attempting WiFi reconnect to '%s'...\n", savedSsid.c_str());
-        WiFi.disconnect(true);
-        delay(500);
-        WiFi.begin(savedSsid.c_str(), savedPass.c_str());
-
-        // Short blocking poll — 2 s budget so we don't starve loop().
-        // Was 15 s in earlier revs of 17.0.10 but caused Task WDT crashes
-        // when combined with Firebase TLS calls that were already mid-
-        // timeout. At strong signal a fresh begin() associates in well
-        // under 2 s; at weak signal the next 30-sec cycle will retry.
-        unsigned long deadline = millis() + 2000UL;
-        while (millis() < deadline && WiFi.status() != WL_CONNECTED) {
-          delay(250);
-          esp_task_wdt_reset();
-        }
-        if (WiFi.status() == WL_CONNECTED) {
-          Serial.printf("Reconnected! RSSI: %d dBm, IP: %s\n", WiFi.RSSI(), WiFi.localIP().toString().c_str());
+      if (mvs.hasSavedWiFi()) {
+        Serial.println("Attempting WiFi reconnect...");
+        if (mvs.connectToSavedWiFi(10)) {
+          Serial.println("Reconnected!");
           setGoogleDNS();
-          // Same gate as boot path — never call initFirebase() unless
-          // the router actually has internet. The main-loop internet
-          // check (every 30s) will notice when WAN is back and either
-          // recover firebaseHealthy or call initFirebase() then.
-          if (!firebaseReady) {
-            internetAvailable = checkInternet();
-            lastInternetCheck = millis();
-            if (internetAvailable) initFirebase();
-            else Serial.println("[RECONNECT] No internet — deferring Firebase init");
-          }
+          if (!firebaseReady) initFirebase();
         }
       }
     }
@@ -3218,10 +2065,6 @@ void handleSerialCommand(String cmd) {
     Serial.println("Error:      " + String(sensorError ? "YES" : "No"));
     Serial.println("Uptime:     " + String(millis() / 1000) + "s");
     Serial.println("Free Heap:  " + String(ESP.getFreeHeap()));
-    Serial.println("Firmware:   " + String(FIRMWARE_VERSION));
-    Serial.printf ("NTP synced: %s (epoch=%u)\n", ntpSynced ? "yes" : "no", nowEpoch());
-    Serial.printf ("firstBootAt:   %u\n", firstBootAt);
-    Serial.printf ("lastUpdatedAt: %u\n", lastUpdatedAt);
     Serial.println("--------------------\n");
   }
   else if (cmd == "ADMIN") {
@@ -3240,13 +2083,13 @@ void handleSerialCommand(String cmd) {
   else if (cmd == "RESTART" || cmd == "RESET") {
     Serial.println("Restarting...");
     delay(500);
-    safeRestart();
+    ESP.restart();
   }
   else if (cmd == "RESET_WIFI") {
     Serial.println("Clearing WiFi credentials...");
     mvs.clearSavedWiFi();
     delay(500);
-    safeRestart();
+    ESP.restart();
   }
   else if (cmd == "AP_ON") {
     Serial.println("Re-enabling AP (clears 10-min timer)");
@@ -3287,62 +2130,9 @@ void handleSerialCommand(String cmd) {
     wifiPrefs.end();
     Serial.println("Credentials saved. Restarting...");
     delay(500);
-    safeRestart();
-  }
-  else if (cmd == "BOOTLOG") {
-    dumpBootLogToSerial();
-  }
-  else if (cmd == "DIAG") {
-    Serial.println("\n--- LIVE DIAGNOSTICS ---");
-    Serial.printf("Uptime:              %us\n", (uint32_t)(millis() / 1000));
-    Serial.printf("Free heap:           %u bytes\n", ESP.getFreeHeap());
-    Serial.printf("RSSI:                %d dBm\n", WiFi.RSSI());
-    Serial.printf("Internet available:  %s\n", internetAvailable ? "yes" : "no");
-    Serial.printf("Firebase healthy:    %s\n", firebaseHealthy ? "yes" : "no");
-    Serial.printf("Push fails (cons):   %d\n", consecutiveFailCount);
-    Serial.printf("NTP synced:          %s (last sync %lu ms ago)\n",
-                  ntpSynced ? "yes" : "no",
-                  ntpSynced ? (millis() - lastNtpSyncAt) : 0);
-    Serial.printf("notifyOn flag:       %s\n", notifyOn ? "ON" : "OFF");
-    Serial.printf("diagnosticsOn flag:  %s\n", diagnosticsOn ? "ON" : "OFF");
-    Serial.println("------------------------\n");
-  }
-  else if (cmd == "DIAG CLEAR") {
-    clearBootLog();
-    Serial.println("Boot log cleared (local NVS only — RTDB not touched).");
-  }
-  else if (cmd == "WIFI_DBG" || cmd == "WIFIDBG") {
-    Preferences dbg;
-    dbg.begin("mvswifi", true);
-    String dbgSsid = dbg.getString("ssid", "");
-    String dbgPass = dbg.getString("password", "");
-    bool dbgValid  = dbg.getBool("valid", false);
-    dbg.end();
-    Serial.println("\n--- WIFI NVS DUMP ---");
-    Serial.printf("ssid     = '%s' (len=%u)\n", dbgSsid.c_str(), dbgSsid.length());
-    Serial.printf("password = '%s' (len=%u)\n", dbgPass.c_str(), dbgPass.length());
-    Serial.printf("valid    = %s\n", dbgValid ? "true" : "false");
-    Serial.printf("MAC      = %s\n", WiFi.macAddress().c_str());
-    Serial.printf("ssid hex ="); for (size_t i = 0; i < dbgSsid.length(); i++) Serial.printf(" %02X", (uint8_t)dbgSsid[i]); Serial.println();
-    Serial.printf("pass hex ="); for (size_t i = 0; i < dbgPass.length(); i++) Serial.printf(" %02X", (uint8_t)dbgPass[i]); Serial.println();
-    Serial.printf("Status   = %d (3=connected)\n", WiFi.status());
-    if (WiFi.status() == WL_CONNECTED) {
-      Serial.printf("SSID     = '%s'\n", WiFi.SSID().c_str());
-      Serial.printf("IP       = %s\n", WiFi.localIP().toString().c_str());
-      Serial.printf("RSSI     = %d dBm\n", WiFi.RSSI());
-    }
-    Serial.println("Scanning visible networks...");
-    int n = WiFi.scanNetworks(false, false, false, 200);
-    Serial.printf("Found %d networks:\n", n);
-    for (int i = 0; i < n; i++) {
-      Serial.printf("  %2d: %-32s  RSSI=%d  ch=%d  enc=%d\n",
-                    i + 1, WiFi.SSID(i).c_str(), WiFi.RSSI(i),
-                    WiFi.channel(i), (int)WiFi.encryptionType(i));
-    }
-    WiFi.scanDelete();
-    Serial.println("---------------------\n");
+    ESP.restart();
   }
   else if (cmd == "HELP") {
-    Serial.println("\nCommands: STATUS, ADMIN, FIREBASE, RESTART, RESET_WIFI, WIFI <ssid> <pass>, BOOTLOG, DIAG, DIAG CLEAR, WIFI_DBG, HELP\n");
+    Serial.println("\nCommands: STATUS, ADMIN, FIREBASE, RESTART, RESET_WIFI, WIFI <ssid> <pass>, HELP\n");
   }
 }

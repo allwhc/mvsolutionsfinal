@@ -35,3 +35,13 @@ dist-ssr
 # Local backups (timestamped revert safety)
 _backups/
 
+# Environment variables (VAPID key etc.)
+.env
+.env.local
+.env.*.local
+
+# Firebase cache
+.firebase/
+firebase-debug.log
+functions/node_modules/
+

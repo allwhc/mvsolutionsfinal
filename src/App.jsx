@@ -8,6 +8,7 @@ import RegisterForm from "./components/Auth/RegisterForm";
 import OrgRegisterForm from "./components/Auth/OrgRegisterForm";
 import Dashboard from "./pages/Dashboard";
 import DeviceDetail from "./pages/DeviceDetail";
+import Kiosk from "./pages/Kiosk";
 import Subscribe from "./pages/Subscribe";
 import Profile from "./pages/Profile";
 import JoinOrg from "./pages/JoinOrg";
@@ -66,6 +67,10 @@ export default function App() {
             <Route path="/org/groups" element={<ProtectedRoute roles={["orgAdmin"]}><OrgGroups /></ProtectedRoute>} />
             <Route path="/org/invite" element={<ProtectedRoute roles={["orgAdmin"]}><OrgInvite /></ProtectedRoute>} />
           </Route>
+
+          {/* Kiosk mode — full-screen wall display, no AppLayout so
+              the app's sidebar/header don't take up screen real estate. */}
+          <Route path="/kiosk" element={<ProtectedRoute><Kiosk /></ProtectedRoute>} />
 
           {/* Redirect root — superadmin goes to /admin, others to /dashboard */}
           <Route path="/" element={<ProtectedRoute><HomeRedirect /></ProtectedRoute>} />

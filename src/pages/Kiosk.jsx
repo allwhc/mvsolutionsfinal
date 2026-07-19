@@ -1,0 +1,469 @@
+import { useState, useEffect, useMemo } from "react";
+import { useNavigate } from "react-router-dom";
+import { useAuth } from "../context/AuthContext";
+import { useDevices } from "../hooks/useDevices";
+import { getOrgGroups } from "../firebase/db";
+
+// Level-band palette. Each band has three tones — deep (used litres),
+// mid (pct / band label / tile border), soft (out-of-total litres).
+// The three tones share the same hue so "12 KL / 40 KL" reads as one
+// object instead of two disconnected numbers.
+function bandFor(pct) {
+  if (pct <= 0) return {
+    key: "empty", label: "Empty",
+    fill: "#dc2626", text: "#fff",
+    deep: "#fca5a5", soft: "#7f1d1d",
+  };
+  if (pct <= 25) return {
+    key: "low", label: "Low",
+    fill: "#ea580c", text: "#fff",
+    deep: "#fdba74", soft: "#7c2d12",
+  };
+  if (pct <= 50) return {
+    key: "half", label: "Half",
+    fill: "#eab308", text: "#111",
+    deep: "#fde047", soft: "#713f12",
+  };
+  if (pct <= 75) return {
+    key: "good", label: "Good",
+    fill: "#0284c7", text: "#fff",
+    deep: "#7dd3fc", soft: "#0c4a6e",
+  };
+  return {
+    key: "full", label: "Full",
+    fill: "#16a34a", text: "#fff",
+    deep: "#86efac", soft: "#14532d",
+  };
+}
+
+// Format 750 → "750 L", 1500 → "1.5 KL", 2500000 → "2.5 ML"
+function fmtLitres(v) {
+  if (!v || v <= 0) return "";
+  if (v >= 1000000) return (v / 1000000).toFixed(2) + " ML";
+  if (v >= 1000)    return (v / 1000).toFixed(1) + " KL";
+  return v + " L";
+}
+
+// A tank is "in alert" ONLY when the user has explicitly set a threshold
+// AND the current value crosses it. Purple/grey states (sensor fault,
+// offline) DO NOT push a tank to alert zone — they just tint the tile.
+function isTankInAlert(d, isOnline) {
+  if (!isOnline) return false;
+  const pct = d.live?.confirmedPct;
+  if (pct == null) return false;
+  const lo = d.alertLowPct;
+  const hi = d.alertHighPct;
+  if (lo != null && lo !== "" && pct <= lo)  return true;
+  if (hi != null && hi !== "" && pct >= hi)  return true;
+  return false;
+}
+
+// Severity for alert-zone sort: empty (0) worst, then low pct, then high pct.
+function alertSeverity(d) {
+  const pct = d.live?.confirmedPct ?? 0;
+  const lo  = d.alertLowPct;
+  const hi  = d.alertHighPct;
+  if (lo != null && lo !== "" && pct <= lo) {
+    // Low alerts: emptier = more severe. Empty = 0 = lowest score.
+    return pct;
+  }
+  if (hi != null && hi !== "" && pct >= hi) {
+    // High alerts: fuller = more severe. Rank after all low alerts.
+    return 1000 - pct;
+  }
+  return 9999;
+}
+
+// Presentational tile. Two layouts:
+//   compact = false (default) — SVG tank + name + pct + capacity
+//   compact = true            — no SVG; name + big pct + capacity only
+function TankTile({ d, isOnline, colorByLevel, compact, isAlert }) {
+  const pct        = d.live?.confirmedPct ?? 0;
+  const flags      = d.live?.flags ?? 0;
+  const sensorErr  = (flags & 0x01) === 0x01;
+  const band       = bandFor(pct);
+  const capL       = d.tankCapacityLitres || d.catalog?.tankCapacityLitres || 0;
+  const litres     = capL > 0 ? Math.round((pct * capL) / 100) : 0;
+  const name       = d.deviceName || d.deviceCode;
+  const userLabel  = d.info?.userAssignedName || "";
+
+  // Tile-level status color. Alert flashing wins visually via the outer
+  // ring; below the ring the tile still shows its band color so a viewer
+  // can tell WHICH kind of alert (empty vs low-25 vs high-90).
+  let tileTint = band.fill;
+  if (sensorErr)   tileTint = "#7e22ce";     // purple
+  if (!isOnline)   tileTint = "#6b7280";     // grey
+
+  // Water fill color for the SVG. Off → traditional blue. On → level band.
+  const waterFill = colorByLevel ? band.fill : "#2563eb";
+  const waterTop  = colorByLevel ? band.fill : "#60a5fa";
+
+  // Tank SVG geometry (matches the AP page silhouette).
+  const innerTop    = 50;
+  const innerBottom = 240;
+  const innerH      = innerBottom - innerTop;
+  const yStart      = innerBottom - Math.round((innerH * pct) / 100);
+
+  return (
+    <div
+      className={
+        "relative flex flex-col rounded-xl border-2 overflow-hidden w-full " +
+        (isAlert ? "animate-pulse ring-4 ring-red-500 ring-offset-2 ring-offset-neutral-900" : "")
+      }
+      style={{
+        background: "#111827",
+        borderColor: tileTint,
+      }}
+    >
+      {/* Top band with band color + label */}
+      <div
+        className="px-2 py-1 flex items-center justify-between text-[10px] font-bold uppercase tracking-wider"
+        style={{ background: tileTint, color: band.text }}
+      >
+        <span>
+          {!isOnline ? "Offline" : sensorErr ? "Sensor Fault" : band.label}
+        </span>
+        <span>{d.deviceCode.split("-")[1]}</span>
+      </div>
+
+      {compact ? (
+        // Compact: name on top, big pct, then litres as two harmonised
+        // tones of the same hue — deep (used) + soft badge (of total)
+        // so both numbers stay legible + visually connected.
+        <div className="flex-1 flex flex-col justify-center items-center py-4 px-2 gap-1.5">
+          <div className="text-sm text-neutral-200 text-center line-clamp-1 w-full font-semibold">
+            {userLabel || name}
+          </div>
+          <div className="text-5xl font-black leading-none tracking-tight" style={{ color: tileTint }}>
+            {isOnline ? `${pct}%` : "—"}
+          </div>
+          {capL > 0 && (
+            <div
+              className="mt-1 flex items-baseline gap-1.5 px-3 py-1.5 rounded-full whitespace-nowrap"
+              style={{
+                background: isOnline ? band.soft : "#374151",
+              }}
+            >
+              <span
+                className="text-xl font-extrabold leading-none"
+                style={{ color: isOnline ? band.deep : "#e5e7eb" }}
+              >
+                {isOnline ? fmtLitres(litres) : "—"}
+              </span>
+              <span
+                className="text-xs font-bold leading-none"
+                style={{ color: isOnline ? band.deep : "#d1d5db", opacity: 0.7 }}
+              >
+                /
+              </span>
+              <span
+                className="text-sm font-bold leading-none"
+                style={{ color: isOnline ? band.deep : "#d1d5db", opacity: 0.85 }}
+              >
+                {fmtLitres(capL)}
+              </span>
+            </div>
+          )}
+        </div>
+      ) : (
+        // Normal layout: SVG tank on left, readout on right.
+        <div className="flex-1 flex items-stretch p-2 gap-2">
+          <svg viewBox="0 0 150 260" className="h-24 w-16 flex-shrink-0" preserveAspectRatio="xMidYMid meet">
+            <defs>
+              <clipPath id={`clip-${d.deviceCode}`}>
+                <path d="M 15 60 Q 15 50 25 50 L 125 50 Q 135 50 135 60 L 135 220 Q 135 240 115 240 L 35 240 Q 15 240 15 220 Z" />
+              </clipPath>
+              <linearGradient id={`grad-${d.deviceCode}`} x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor={waterTop} />
+                <stop offset="100%" stopColor={waterFill} />
+              </linearGradient>
+            </defs>
+            {/* body */}
+            <path
+              d="M 15 60 Q 15 50 25 50 L 125 50 Q 135 50 135 60 L 135 220 Q 135 240 115 240 L 35 240 Q 15 240 15 220 Z"
+              fill="#1f2937"
+              stroke="#94a3b8"
+              strokeWidth="3"
+            />
+            {/* lid */}
+            <rect x="10" y="30" width="130" height="14" rx="4" fill="#475569" />
+            <rect x="35" y="20" width="80" height="12" rx="3" fill="#64748b" />
+            {/* water */}
+            {isOnline && pct > 0 && (
+              <g clipPath={`url(#clip-${d.deviceCode})`}>
+                <rect x="0" y={yStart} width="150" height={innerBottom - yStart} fill={`url(#grad-${d.deviceCode})`} />
+                <ellipse cx="75" cy={yStart} rx="65" ry="3" fill={waterTop} opacity="0.7" />
+              </g>
+            )}
+          </svg>
+
+          <div className="flex-1 min-w-0 flex flex-col justify-center gap-0.5">
+            <div className="text-xs text-neutral-300 line-clamp-2 font-medium leading-tight">
+              {userLabel || name}
+            </div>
+            <div className="text-3xl font-black leading-none" style={{ color: tileTint }}>
+              {isOnline ? `${pct}%` : "—"}
+            </div>
+            {capL > 0 && (
+              <div className="text-[10px] text-neutral-400 truncate">
+                {isOnline ? `${fmtLitres(litres)} / ${fmtLitres(capL)}` : fmtLitres(capL)}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default function Kiosk() {
+  const { user, userData, isOrgAdmin, isOrgMember } = useAuth();
+  const { devices, loading } = useDevices();
+  const navigate = useNavigate();
+
+  // Preferences persisted per-browser. Not synced to Firestore — the
+  // kiosk display setup lives on the TV/monitor that's running it, and
+  // owner might want different tiles on their laptop vs the wall display.
+  const [colorByLevel, setColorByLevel] = useState(
+    () => localStorage.getItem("kiosk.colorByLevel") === "true"
+  );
+  const [compact, setCompact] = useState(
+    () => localStorage.getItem("kiosk.compact") === "true"
+  );
+  const [groupFilter, setGroupFilter] = useState(
+    () => localStorage.getItem("kiosk.groupFilter") || "all"
+  );
+
+  useEffect(() => { localStorage.setItem("kiosk.colorByLevel", String(colorByLevel)); }, [colorByLevel]);
+  useEffect(() => { localStorage.setItem("kiosk.compact",      String(compact));      }, [compact]);
+  useEffect(() => { localStorage.setItem("kiosk.groupFilter",  groupFilter);          }, [groupFilter]);
+
+  // Groups for org accounts — reuse existing helper.
+  const isOrg = isOrgAdmin || isOrgMember;
+  const orgId = userData?.orgId;
+  const [groups, setGroups] = useState([]);
+  useEffect(() => {
+    if (isOrg && orgId) getOrgGroups(orgId).then(setGroups);
+  }, [isOrg, orgId]);
+
+  // Request browser fullscreen on entry. Chrome/Edge/Firefox all support
+  // requestFullscreen; iOS Safari doesn't but the kiosk view still works
+  // — the browser chrome just stays visible.
+  useEffect(() => {
+    const el = document.documentElement;
+    if (el.requestFullscreen && !document.fullscreenElement) {
+      el.requestFullscreen().catch(() => {
+        // User denied or browser blocked — ignore, page still works.
+      });
+    }
+    // Auto-exit on route change / unmount.
+    return () => {
+      if (document.fullscreenElement && document.exitFullscreen) {
+        document.exitFullscreen().catch(() => {});
+      }
+    };
+  }, []);
+
+  // Esc key exits kiosk mode (in addition to browser's native Esc for
+  // fullscreen — we also navigate away so user isn't stuck staring at
+  // the kiosk view with browser chrome back).
+  useEffect(() => {
+    function onKey(e) {
+      if (e.key === "Escape") handleExit();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  function handleExit() {
+    if (document.fullscreenElement && document.exitFullscreen) {
+      document.exitFullscreen().catch(() => {});
+    }
+    navigate("/dashboard");
+  }
+
+  // Online = has heartbeat within the last 15 min. Matches Dashboard.jsx.
+  const isDeviceOnline = (d) => {
+    const lastSeen = d.info?.lastSeen;
+    const isStale  = lastSeen ? (Date.now() - lastSeen) > 900000 : true;
+    return d.info?.online && !isStale;
+  };
+
+  // Apply group filter same way Dashboard does. Individual accounts skip
+  // this entirely — the dropdown is hidden for them.
+  const filteredDevices = useMemo(() => {
+    return devices.filter((d) => {
+      if (groupFilter === "all") return true;
+      const g = groups.find((x) => x.groupId === groupFilter);
+      if (g) return g.deviceCodes?.includes(d.deviceCode);
+      return true;
+    });
+  }, [devices, groupFilter, groups]);
+
+  // Split into alert vs normal buckets. Alert bucket sorted by severity
+  // (empty first). Normal bucket alphabetical by displayed name for
+  // predictable wall-of-tanks scanning.
+  const { alertTanks, normalTanks } = useMemo(() => {
+    const alerts = [];
+    const normal = [];
+    for (const d of filteredDevices) {
+      const online = isDeviceOnline(d);
+      if (isTankInAlert(d, online)) alerts.push(d);
+      else normal.push(d);
+    }
+    alerts.sort((a, b) => alertSeverity(a) - alertSeverity(b));
+    normal.sort((a, b) => {
+      const na = (a.info?.userAssignedName || a.deviceName || a.deviceCode).toLowerCase();
+      const nb = (b.info?.userAssignedName || b.deviceName || b.deviceCode).toLowerCase();
+      return na.localeCompare(nb);
+    });
+    return { alertTanks: alerts, normalTanks: normal };
+  }, [filteredDevices]);
+
+  // Grid sizing: normal tiles 180px min, compact 140px min. auto-fill wraps.
+  const gridClass = compact
+    ? "grid gap-3"
+    : "grid gap-3";
+  const gridStyle = {
+    gridTemplateColumns: compact
+      ? "repeat(auto-fill, minmax(160px, 1fr))"
+      : "repeat(auto-fill, minmax(200px, 1fr))",
+  };
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-neutral-900 flex items-center justify-center">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500"></div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-neutral-900 text-white flex flex-col">
+      {/* Top bar */}
+      <div className="flex items-center gap-3 px-4 py-2 border-b border-neutral-700 bg-neutral-950 flex-shrink-0">
+        {/* Logo + brand */}
+        <div className="flex items-center gap-2">
+          <div className="w-8 h-8 rounded-lg bg-blue-600 flex items-center justify-center font-black text-white text-sm">
+            SF
+          </div>
+          <div>
+            <div className="text-sm font-bold leading-none">SenseFlow</div>
+            <div className="text-[10px] text-neutral-400 leading-none mt-0.5">Kiosk</div>
+          </div>
+        </div>
+
+        {/* Group filter (org accounts only) */}
+        {isOrg && groups.length > 0 && (
+          <select
+            value={groupFilter}
+            onChange={(e) => setGroupFilter(e.target.value)}
+            className="ml-2 bg-neutral-800 border border-neutral-700 rounded-lg px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
+          >
+            <option value="all">All Groups</option>
+            {groups.map((g) => (
+              <option key={g.groupId} value={g.groupId}>{g.name}</option>
+            ))}
+          </select>
+        )}
+
+        {/* Toggles */}
+        <div className="flex items-center gap-2 ml-2">
+          <label className="flex items-center gap-1.5 text-xs cursor-pointer select-none bg-neutral-800 px-2.5 py-1.5 rounded-lg border border-neutral-700 hover:border-neutral-600">
+            <input
+              type="checkbox"
+              checked={colorByLevel}
+              onChange={(e) => setColorByLevel(e.target.checked)}
+              className="accent-blue-500"
+            />
+            Color by level
+          </label>
+          <label className="flex items-center gap-1.5 text-xs cursor-pointer select-none bg-neutral-800 px-2.5 py-1.5 rounded-lg border border-neutral-700 hover:border-neutral-600">
+            <input
+              type="checkbox"
+              checked={compact}
+              onChange={(e) => setCompact(e.target.checked)}
+              className="accent-blue-500"
+            />
+            Compact tiles
+          </label>
+        </div>
+
+        {/* Spacer */}
+        <div className="flex-1" />
+
+        {/* User + exit */}
+        <div className="text-right leading-tight">
+          <div className="text-sm font-medium">{userData?.displayName || user?.email}</div>
+          {isOrg && (
+            <div className="text-[10px] text-neutral-400">{userData?.orgName || orgId}</div>
+          )}
+        </div>
+        <button
+          onClick={handleExit}
+          className="ml-2 flex items-center gap-1.5 bg-red-600 hover:bg-red-700 px-3 py-1.5 rounded-lg text-sm font-semibold"
+          title="Exit kiosk (Esc)"
+        >
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+          </svg>
+          Exit
+        </button>
+      </div>
+
+      {/* Content */}
+      <div className="flex-1 overflow-auto p-4">
+        {filteredDevices.length === 0 ? (
+          <div className="h-full flex items-center justify-center text-neutral-500">
+            No devices to display
+          </div>
+        ) : (
+          <>
+            {/* Alert zone — only renders when at least one tank is in alert. */}
+            {alertTanks.length > 0 && (
+              <div className="mb-6 rounded-xl border-2 border-red-600 bg-red-950/30 p-3">
+                <div className="flex items-center gap-2 mb-2">
+                  <svg className="w-5 h-5 text-red-500" fill="currentColor" viewBox="0 0 20 20">
+                    <path fillRule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.17 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 9a1 1 0 100-2 1 1 0 000 2z" clipRule="evenodd" />
+                  </svg>
+                  <span className="text-sm font-bold uppercase tracking-wider text-red-400">
+                    Alerts &mdash; {alertTanks.length} tank{alertTanks.length !== 1 ? "s" : ""}
+                  </span>
+                </div>
+                <div className={gridClass} style={gridStyle}>
+                  {alertTanks.map((d) => (
+                    <TankTile
+                      key={d.deviceCode}
+                      d={d}
+                      isOnline={isDeviceOnline(d)}
+                      colorByLevel={colorByLevel}
+                      compact={compact}
+                      isAlert={true}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Normal zone */}
+            {normalTanks.length > 0 && (
+              <div className={gridClass} style={gridStyle}>
+                {normalTanks.map((d) => (
+                  <TankTile
+                    key={d.deviceCode}
+                    d={d}
+                    isOnline={isDeviceOnline(d)}
+                    colorByLevel={colorByLevel}
+                    compact={compact}
+                    isAlert={false}
+                  />
+                ))}
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
