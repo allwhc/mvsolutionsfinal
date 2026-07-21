@@ -382,6 +382,7 @@ export default function AdminDevices() {
   const [filterStatus, setFilterStatus]     = useState("all");    // all/online/offline
   const [filterDiag, setFilterDiag]         = useState("all");    // all/on/off
   const [filterNotify, setFilterNotify]     = useState("all");    // all/on/off
+  const [filterAnalytics, setFilterAnalytics] = useState("all");  // all/on/off
   const [filterOwnerType, setFilterOwnerType] = useState("all");  // all/individual/group
   const [filterOrg, setFilterOrg]           = useState("all");    // all / specific orgId
   const [filterOwner, setFilterOwner]       = useState("");       // free-text owner name/email
@@ -808,10 +809,12 @@ export default function AdminDevices() {
       if (filterFirmware && !String(info.firmwareVersion || "").toLowerCase().includes(filterFirmware.toLowerCase())) return false;
       if (filterStatus === "online"  && !online) return false;
       if (filterStatus === "offline" &&  online) return false;
-      if (filterDiag   === "on"  && !cfg.diagnosticsOn) return false;
-      if (filterDiag   === "off" &&  cfg.diagnosticsOn) return false;
-      if (filterNotify === "on"  && !cfg.notifyOn) return false;
-      if (filterNotify === "off" &&  cfg.notifyOn) return false;
+      if (filterDiag      === "on"  && !cfg.diagnosticsOn) return false;
+      if (filterDiag      === "off" &&  cfg.diagnosticsOn) return false;
+      if (filterNotify    === "on"  && !cfg.notifyOn)      return false;
+      if (filterNotify    === "off" &&  cfg.notifyOn)      return false;
+      if (filterAnalytics === "on"  && !cfg.analyticsOn)   return false;
+      if (filterAnalytics === "off" &&  cfg.analyticsOn)   return false;
 
       // Owner-type filter — group customers vs individual buyers.
       if (filterOwnerType === "individual" && (!owner || owner.type !== "individual")) return false;
@@ -836,7 +839,7 @@ export default function AdminDevices() {
       }
       return true;
     });
-  }, [registered, infoMap, configMap, usersMap, orgsMap, filterClass, filterFirmware, filterStatus, filterDiag, filterNotify, filterOwnerType, filterOrg, filterOwner, filterSearch]);
+  }, [registered, infoMap, configMap, usersMap, orgsMap, filterClass, filterFirmware, filterStatus, filterDiag, filterNotify, filterAnalytics, filterOwnerType, filterOrg, filterOwner, filterSearch]);
 
   // Drop selections that no longer match the active filter so the bulk
   // "Apply to N" count stays honest. Without this, admin could narrow the
@@ -862,6 +865,7 @@ export default function AdminDevices() {
     (filterStatus    !== "all" ? 1 : 0) +
     (filterDiag      !== "all" ? 1 : 0) +
     (filterNotify    !== "all" ? 1 : 0) +
+    (filterAnalytics !== "all" ? 1 : 0) +
     (filterOwnerType !== "all" ? 1 : 0) +
     (filterOrg       !== "all" ? 1 : 0) +
     (filterFirmware ? 1 : 0) +
@@ -874,6 +878,7 @@ export default function AdminDevices() {
     setFilterStatus("all");
     setFilterDiag("all");
     setFilterNotify("all");
+    setFilterAnalytics("all");
     setFilterOwnerType("all");
     setFilterOrg("all");
     setFilterOwner("");
@@ -1204,6 +1209,14 @@ export default function AdminDevices() {
                     <label className="flex flex-col">
                       <span className="text-xs text-gray-500 mb-1">Premium notifications</span>
                       <select value={filterNotify} onChange={(e) => setFilterNotify(e.target.value)} className="border rounded px-2 py-1 text-sm">
+                        <option value="all">All</option>
+                        <option value="on">ON</option>
+                        <option value="off">OFF</option>
+                      </select>
+                    </label>
+                    <label className="flex flex-col">
+                      <span className="text-xs text-gray-500 mb-1">Analytics (history)</span>
+                      <select value={filterAnalytics} onChange={(e) => setFilterAnalytics(e.target.value)} className="border rounded px-2 py-1 text-sm">
                         <option value="all">All</option>
                         <option value="on">ON</option>
                         <option value="off">OFF</option>
