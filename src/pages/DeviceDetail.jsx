@@ -96,10 +96,18 @@ export default function DeviceDetail() {
   const { user, userData, isSuperAdmin, isOrgAdmin, isOrgMember } = useAuth();
   const orgId = userData?.orgId || null;
   // Org role — only orgAdmin can rename or remove org-owned devices.
-  // Regular org members are view-only. Individual (non-org) accounts
-  // are unaffected — the owner-check below still gates their edits.
+  // Regular org members are view-only.
   const isOrg = isOrgAdmin || isOrgMember;
-  const canEditOrgDevice = isOrg ? isOrgAdmin : true;   // non-org: always true; org: only admin
+  // Effective "device owner" for permission checks on shared per-tank
+  // settings (rename, tank capacity, wing membership, access mode).
+  //   • Individual account → the owner (isOwner from subscriptions)
+  //   • Org account         → orgAdmin (orgs don't have per-user owners)
+  //   • Superadmin          → always
+  // isOwner is set later by isDeviceOwner() effect. For org accounts
+  // it stays false (no per-user subscription), so `canEditDevice`
+  // relies on isOrgAdmin instead — otherwise orgAdmin couldn't edit
+  // tank capacity, rename, etc.
+  const canEditOrgDevice = isOrg ? isOrgAdmin : true;   // rename-only gate (see also isEffectiveOwner below)
   // Wing/group this device belongs to (org only) — read-only for members,
   // shown to everyone as informational context.
   const [wings, setWings] = useState([]);
@@ -112,6 +120,14 @@ export default function DeviceDetail() {
   const [catalog, setCatalog] = useState(null);
   const [loading, setLoading] = useState(true);
   const [isOwner, setIsOwner] = useState(false);
+  // Whoever has authority to edit shared per-tank settings (tank
+  // capacity, access mode, etc.). For individual accounts that's the
+  // subscription owner; for org accounts, orgAdmin (org devices have
+  // no per-user owner concept — the org owns the device, admin manages
+  // it). Superadmin always wins. Use this instead of raw `isOwner`
+  // anywhere the check is "who can change a shared property of THIS
+  // physical tank" — otherwise orgAdmin gets locked out.
+  const isEffectiveOwner = isOwner || isOrgAdmin || isSuperAdmin;
   const [subscribers, setSubscribers] = useState([]);
   const [showAccess, setShowAccess] = useState(false);
   const [accessMode, setAccessMode] = useState("open");
@@ -429,14 +445,14 @@ export default function DeviceDetail() {
                   everyone else sees the value read-only. */}
               <input type="number" min="0" max="100000" value={tankCapacityLitres}
                 onChange={(e) => setTankCapacityLitres(parseInt(e.target.value) || 0)}
-                disabled={!isOwner && !isSuperAdmin}
+                disabled={!isEffectiveOwner}
                 className="w-20 px-2 py-0.5 border border-gray-200 rounded text-sm disabled:bg-gray-50 disabled:text-gray-500" />
               <span className="text-gray-500 text-xs">
                 {tankCapacityLitres >= 1000
                   ? `= ${(tankCapacityLitres / 1000).toFixed(tankCapacityLitres % 1000 === 0 ? 0 : 1)} KL`
                   : "litres"}
               </span>
-              {(isOwner || isSuperAdmin) && (
+              {isEffectiveOwner && (
                 <button onClick={async () => {
                   await updateDoc(doc(db, "deviceCatalog", code), { tankCapacityLitres });
                 }} className="text-xs text-blue-600 hover:underline ml-1">Save</button>
@@ -914,15 +930,16 @@ export default function DeviceDetail() {
         </div>
       )}
 
-      {/* Owner controls */}
-      {(isOwner || isSuperAdmin) && (
+      {/* Owner controls — visible to the individual owner, orgAdmin
+          (org account effective owner), and superadmin. */}
+      {isEffectiveOwner && (
         <div className="bg-white rounded-xl shadow-sm border border-blue-200 mt-4 p-4">
           <div className="flex items-center justify-between mb-3">
             <h3 className="font-semibold text-gray-900">
-              {isOwner ? "Owner Controls" : "Admin Controls"}
+              {isOwner ? "Owner Controls" : isOrgAdmin ? "Admin Controls" : "Admin Controls"}
             </h3>
             <span className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full">
-              {isOwner ? "Owner" : "Admin"}
+              {isOwner ? "Owner" : isOrgAdmin ? "Org Admin" : "Admin"}
             </span>
           </div>
 
@@ -1011,7 +1028,7 @@ export default function DeviceDetail() {
               >
                 Download CSV (30d)
               </button>
-              {(isOwner || isSuperAdmin) && (
+              {isEffectiveOwner && (
                 <button
                   onClick={async () => {
                     if (!window.confirm("Clear all recorded history for this device? This cannot be undone.")) return;
