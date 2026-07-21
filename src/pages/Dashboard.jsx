@@ -150,20 +150,10 @@ export default function Dashboard() {
   const hour = new Date().getHours();
   const greeting = hour < 12 ? "Good Morning" : hour < 17 ? "Good Afternoon" : "Good Evening";
 
-  // ── Memoised derivations. MUST live above any early returns below so
-  // React sees the same hook count on every render (rule of hooks —
-  // fails with error #310 otherwise: "Rendered more hooks than during
-  // the previous render.").
-  //
-  // codesInAnyGroup: every device code currently attached to a wing.
-  // Used to answer "is this device unassigned?" for the Org Devices tab.
-  const codesInAnyGroup = useMemo(() => {
-    const s = new Set();
-    for (const g of groups) for (const c of (g.deviceCodes || [])) s.add(c);
-    return s;
-  }, [groups]);
-  // addableDevices: devices NOT already in the wing the add-modal is
-  // targeting. Empty when the modal is closed.
+  // Memoised: devices NOT already in the wing the add-modal is
+  // targeting. Empty when the modal is closed. Must live above any
+  // early returns to keep hook count stable across renders
+  // (React rule-of-hooks / error #310).
   const addableDevices = useMemo(() => {
     if (!addToWingModal) return [];
     const inWing = new Set(addToWingModal.deviceCodes || []);
@@ -206,13 +196,9 @@ export default function Dashboard() {
   // is global to the user's subscription set, not narrowed by the current tab.
   const searchActive = searchOpen && searchText.trim().length > 0;
 
-  // Filter devices: search first (global), else apply the org/group filter.
-  //   all  → every device the user can see
-  //   org  → org devices NOT assigned to any wing (used to be "in any group";
-  //          per Vishal that was backwards — unassigned should live here)
+  // Filter devices: search first (global), else apply the wing filter.
+  //   all       → every device the user can see (unassigned live here too)
   //   <groupId> → devices in that specific wing/group
-  // "personal" filter removed for org accounts (they have no personal
-  // devices — everything belongs to the org).
   const filteredDevices = devices.filter((d) => {
     if (searchActive) {
       const t = searchText.trim().toLowerCase();
@@ -220,7 +206,6 @@ export default function Dashboard() {
       return blob.includes(t);
     }
     if (filter === "all") return true;
-    if (filter === "org") return !codesInAnyGroup.has(d.deviceCode);
     const group = groups.find((g) => g.groupId === filter);
     if (group) return group.deviceCodes?.includes(d.deviceCode);
     return true;
@@ -473,14 +458,6 @@ export default function Dashboard() {
           >
             All ({devices.length})
           </button>
-          <button
-            onClick={() => setFilter("org")}
-            className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
-              filter === "org" ? "bg-purple-100 text-purple-700" : "bg-gray-100 text-gray-600 hover:bg-gray-200"
-            }`}
-          >
-            Org Devices ({devices.length - codesInAnyGroup.size})
-          </button>
           {groups.map((g) => (
             <button
               key={g.groupId}
@@ -563,11 +540,13 @@ export default function Dashboard() {
                   )
                 );
                 // Wing X button — only rendered when viewing a specific
-                // wing tab AND the user is orgAdmin. Positioned over the
-                // tile's top-right corner; stopPropagation on click so
-                // it doesn't also trigger the tile's <Link> navigation.
+                // wing tab AND the user is orgAdmin AND the dashboard is
+                // unlocked (matches the lock semantics used for drag).
+                // Positioned over the tile's top-right corner;
+                // stopPropagation on click so it doesn't also trigger
+                // the tile's <Link> navigation.
                 const activeGroup = groups.find((g) => g.groupId === filter);
-                const showRemoveX = activeGroup && isOrgAdmin;
+                const showRemoveX = activeGroup && isOrgAdmin && !locked;
                 return (
                   <SortableTile key={d.deviceCode} id={d.deviceCode} enabled={dragEnabled}>
                     <div className="relative">
