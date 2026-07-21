@@ -4,7 +4,7 @@ import { useAuth } from "../context/AuthContext";
 import { useDebugMode } from "../context/DebugModeContext";
 import { useDevices } from "../hooks/useDevices";
 import { useDashboardAlertSound } from "../hooks/useDashboardAlertSound";
-import { getOrgGroups, updateUserDoc } from "../firebase/db";
+import { getOrgGroups, updateUserDoc, updateOrgGroup } from "../firebase/db";
 import DeviceCard from "../components/DeviceCard/DeviceCard";
 import DeviceAnalyticsModal from "../components/Analytics/DeviceAnalyticsModal";
 import NotificationPermissionBanner from "../components/NotificationPermissionBanner";
@@ -115,8 +115,13 @@ export default function Dashboard() {
   // dnd-kit pointer sensor — small activation distance prevents accidental
   // drags when the user is just trying to tap (especially on the chart icon).
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
-  const [filter, setFilter] = useState("all"); // "all" | "personal" | "org" | groupId
+  const [filter, setFilter] = useState("all"); // "all" | "org" | groupId
   const [groups, setGroups] = useState([]);
+  // Add-to-wing modal state. Non-null while the modal is open. Only
+  // renders when the current filter is a specific wing/group AND the
+  // user is orgAdmin. Contains the group object being edited.
+  const [addToWingModal, setAddToWingModal] = useState(null);
+  const [selectedToAdd, setSelectedToAdd] = useState(new Set());
   const [locked, setLocked] = useState(() => {
     // Persist lock state across navigations — only user toggles it
     const saved = localStorage.getItem("dashboardLocked");
@@ -181,7 +186,22 @@ export default function Dashboard() {
   // is global to the user's subscription set, not narrowed by the current tab.
   const searchActive = searchOpen && searchText.trim().length > 0;
 
+  // Set of every device code currently attached to any wing/group.
+  // Used to answer "is this device unassigned to a wing?" without
+  // walking `groups[].deviceCodes` for every device in the list.
+  const codesInAnyGroup = useMemo(() => {
+    const s = new Set();
+    for (const g of groups) for (const c of (g.deviceCodes || [])) s.add(c);
+    return s;
+  }, [groups]);
+
   // Filter devices: search first (global), else apply the org/group filter.
+  //   all  → every device the user can see
+  //   org  → org devices NOT assigned to any wing (used to be "in any group";
+  //          per Vishal that was backwards — unassigned should live here)
+  //   <groupId> → devices in that specific wing/group
+  // "personal" filter removed for org accounts (they have no personal
+  // devices — everything belongs to the org).
   const filteredDevices = devices.filter((d) => {
     if (searchActive) {
       const t = searchText.trim().toLowerCase();
@@ -189,8 +209,7 @@ export default function Dashboard() {
       return blob.includes(t);
     }
     if (filter === "all") return true;
-    if (filter === "personal") return !d.groupId;
-    if (filter === "org") return !!d.groupId;
+    if (filter === "org") return !codesInAnyGroup.has(d.deviceCode);
     const group = groups.find((g) => g.groupId === filter);
     if (group) return group.deviceCodes?.includes(d.deviceCode);
     return true;
@@ -250,6 +269,42 @@ export default function Dashboard() {
       catch (e) { console.error("Failed to save dashboard order:", e); }
     }
   }
+
+  // Wing/group membership editing. Only orgAdmin can call these; the UI
+  // that triggers them is hidden for members. Optimistic — local groups
+  // state updates immediately so the tile appears/disappears from the
+  // wing tab without waiting for Firestore.
+  async function removeDeviceFromWing(groupId, deviceCode) {
+    if (!orgId) return;
+    if (!confirm("Remove this device from the wing?")) return;
+    const g = groups.find((x) => x.groupId === groupId);
+    if (!g) return;
+    const nextCodes = (g.deviceCodes || []).filter((c) => c !== deviceCode);
+    setGroups((prev) => prev.map((x) => x.groupId === groupId ? { ...x, deviceCodes: nextCodes } : x));
+    try { await updateOrgGroup(orgId, groupId, { deviceCodes: nextCodes }); }
+    catch (e) { console.error("Failed to remove from wing:", e); alert("Failed to remove — try again"); }
+  }
+
+  async function commitAddToWing() {
+    if (!orgId || !addToWingModal) return;
+    const g = addToWingModal;
+    const current = new Set(g.deviceCodes || []);
+    for (const c of selectedToAdd) current.add(c);
+    const nextCodes = Array.from(current);
+    setGroups((prev) => prev.map((x) => x.groupId === g.groupId ? { ...x, deviceCodes: nextCodes } : x));
+    try { await updateOrgGroup(orgId, g.groupId, { deviceCodes: nextCodes }); }
+    catch (e) { console.error("Failed to add to wing:", e); alert("Failed to add — try again"); }
+    setAddToWingModal(null);
+    setSelectedToAdd(new Set());
+  }
+
+  // Devices available to add to the current wing modal (devices NOT
+  // already in this specific wing). Empty when modal closed.
+  const addableDevices = useMemo(() => {
+    if (!addToWingModal) return [];
+    const inWing = new Set(addToWingModal.deviceCodes || []);
+    return devices.filter((d) => !inWing.has(d.deviceCode));
+  }, [addToWingModal, devices]);
 
   return (
     <div>
@@ -416,20 +471,12 @@ export default function Dashboard() {
             All ({devices.length})
           </button>
           <button
-            onClick={() => setFilter("personal")}
-            className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
-              filter === "personal" ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-600 hover:bg-gray-200"
-            }`}
-          >
-            My Devices
-          </button>
-          <button
             onClick={() => setFilter("org")}
             className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
               filter === "org" ? "bg-purple-100 text-purple-700" : "bg-gray-100 text-gray-600 hover:bg-gray-200"
             }`}
           >
-            Org Devices
+            Org Devices ({devices.length - codesInAnyGroup.size})
           </button>
           {groups.map((g) => (
             <button
@@ -444,6 +491,28 @@ export default function Dashboard() {
           ))}
         </div>
       )}
+
+      {/* Wing management bar — appears only when viewing a specific
+          wing/group tab AND the current user is orgAdmin. Members see
+          nothing extra. */}
+      {(() => {
+        const activeGroup = groups.find((g) => g.groupId === filter);
+        if (!activeGroup || !isOrgAdmin) return null;
+        return (
+          <div className="mb-4 flex items-center justify-between gap-3 rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-2">
+            <div className="text-xs text-indigo-800">
+              <span className="font-semibold">{activeGroup.name}</span>
+              <span className="ml-2 text-indigo-600">{(activeGroup.deviceCodes || []).length} device{(activeGroup.deviceCodes || []).length !== 1 ? "s" : ""}</span>
+            </div>
+            <button
+              onClick={() => { setAddToWingModal(activeGroup); setSelectedToAdd(new Set()); }}
+              className="text-xs font-semibold bg-indigo-600 text-white px-3 py-1.5 rounded-lg hover:bg-indigo-700"
+            >
+              + Add device to {activeGroup.name}
+            </button>
+          </div>
+        );
+      })()}
 
       {/* Device grid. When drag is enabled the grid is wrapped with
           dnd-kit. When disabled we render the same grid with no drag
@@ -490,9 +559,28 @@ export default function Dashboard() {
                     <Link to={`/device/${d.deviceCode}`}>{card}</Link>
                   )
                 );
+                // Wing X button — only rendered when viewing a specific
+                // wing tab AND the user is orgAdmin. Positioned over the
+                // tile's top-right corner; stopPropagation on click so
+                // it doesn't also trigger the tile's <Link> navigation.
+                const activeGroup = groups.find((g) => g.groupId === filter);
+                const showRemoveX = activeGroup && isOrgAdmin;
                 return (
                   <SortableTile key={d.deviceCode} id={d.deviceCode} enabled={dragEnabled}>
-                    {inner}
+                    <div className="relative">
+                      {inner}
+                      {showRemoveX && (
+                        <button
+                          onClick={(e) => { e.preventDefault(); e.stopPropagation(); removeDeviceFromWing(activeGroup.groupId, d.deviceCode); }}
+                          onMouseDown={(e) => e.stopPropagation()}
+                          className="absolute top-2 right-2 z-10 w-7 h-7 rounded-full bg-red-500 text-white text-sm font-bold flex items-center justify-center shadow hover:bg-red-600"
+                          title={`Remove from ${activeGroup.name}`}
+                          aria-label={`Remove device from ${activeGroup.name}`}
+                        >
+                          ×
+                        </button>
+                      )}
+                    </div>
                   </SortableTile>
                 );
               })}
@@ -520,6 +608,54 @@ export default function Dashboard() {
           sensorCount={analyticsDevice.info?.sensorCount ?? analyticsDevice.sensorCount ?? 4}
           onClose={() => setAnalyticsDevice(null)}
         />
+      )}
+
+      {/* Add-to-wing modal — orgAdmin picks devices to attach to the
+          currently viewed wing. Shows only devices NOT already in this
+          wing. Multi-select via checkboxes, one commit on Save. */}
+      {addToWingModal && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+             onClick={() => { setAddToWingModal(null); setSelectedToAdd(new Set()); }}>
+          <div className="bg-white rounded-xl p-5 w-full max-w-md max-h-[80vh] flex flex-col"
+               onClick={(e) => e.stopPropagation()}>
+            <h3 className="font-bold text-lg mb-1">Add devices to {addToWingModal.name}</h3>
+            <p className="text-xs text-gray-500 mb-3">Pick one or more devices to attach to this wing.</p>
+            {addableDevices.length === 0 ? (
+              <p className="text-gray-400 text-sm py-8 text-center">Every device is already in this wing.</p>
+            ) : (
+              <div className="flex-1 overflow-y-auto border border-gray-200 rounded-lg divide-y">
+                {addableDevices.map((d) => {
+                  const checked = selectedToAdd.has(d.deviceCode);
+                  return (
+                    <label key={d.deviceCode}
+                           className="flex items-center gap-3 px-3 py-2 hover:bg-gray-50 cursor-pointer">
+                      <input type="checkbox" checked={checked} onChange={(e) => {
+                        const next = new Set(selectedToAdd);
+                        if (e.target.checked) next.add(d.deviceCode); else next.delete(d.deviceCode);
+                        setSelectedToAdd(next);
+                      }} />
+                      <div className="min-w-0 flex-1">
+                        <div className="text-sm font-medium text-gray-900 truncate">
+                          {d.info?.userAssignedName || d.deviceName || d.deviceCode}
+                        </div>
+                        <div className="text-[11px] text-gray-500 font-mono truncate">{d.deviceCode}</div>
+                      </div>
+                    </label>
+                  );
+                })}
+              </div>
+            )}
+            <div className="flex gap-2 mt-3">
+              <button onClick={commitAddToWing}
+                      disabled={selectedToAdd.size === 0}
+                      className="flex-1 bg-indigo-600 text-white py-2 rounded-lg text-sm font-medium disabled:opacity-50 hover:bg-indigo-700">
+                Add {selectedToAdd.size > 0 ? `(${selectedToAdd.size})` : ""}
+              </button>
+              <button onClick={() => { setAddToWingModal(null); setSelectedToAdd(new Set()); }}
+                      className="px-4 py-2 bg-gray-100 text-gray-600 rounded-lg text-sm">Cancel</button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

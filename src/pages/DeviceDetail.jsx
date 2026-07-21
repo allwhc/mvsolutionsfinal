@@ -5,7 +5,7 @@ import { useDevice } from "../hooks/useDevice";
 import {
   getDevice, unsubscribeFromDevice, isDeviceOwner, getDeviceSubscribers,
   setDeviceAccess, removeSubscriber, createDeviceInvite, getDeviceInvites,
-  updateUserDoc,
+  updateUserDoc, getOrgGroups, removeDeviceFromOrg, updateOrgGroup,
 } from "../firebase/db";
 import { doc, updateDoc } from "firebase/firestore";
 import { db } from "../firebase/config";
@@ -93,8 +93,20 @@ function fmtLitres(L) {
 
 export default function DeviceDetail() {
   const { code } = useParams();
-  const { user, userData, isSuperAdmin } = useAuth();
+  const { user, userData, isSuperAdmin, isOrgAdmin, isOrgMember } = useAuth();
   const orgId = userData?.orgId || null;
+  // Org role — only orgAdmin can rename or remove org-owned devices.
+  // Regular org members are view-only. Individual (non-org) accounts
+  // are unaffected — the owner-check below still gates their edits.
+  const isOrg = isOrgAdmin || isOrgMember;
+  const canEditOrgDevice = isOrg ? isOrgAdmin : true;   // non-org: always true; org: only admin
+  // Wing/group this device belongs to (org only) — read-only for members,
+  // shown to everyone as informational context.
+  const [wings, setWings] = useState([]);
+  useEffect(() => {
+    if (isOrg && orgId) getOrgGroups(orgId).then(setWings);
+  }, [isOrg, orgId]);
+  const currentWing = wings.find((w) => (w.deviceCodes || []).includes(code));
   const { debugMode } = useDebugMode();
   const { live, info, isOnline } = useDevice(code);
   const [catalog, setCatalog] = useState(null);
@@ -186,11 +198,38 @@ export default function DeviceDetail() {
   }, [code]);
 
   async function handleUnsubscribe() {
+    // Org accounts use a different path — the button label + confirm
+    // message + underlying write are handled by handleRemoveFromOrg
+    // below. This function is now individual-only.
     const msg = isOwner
       ? "You are the owner. If you unsubscribe, ownership transfers to the next subscriber. Continue?"
       : "Unsubscribe from this device?";
     if (!confirm(msg)) return;
     await unsubscribeFromDevice(user.uid, code);
+    navigate("/dashboard");
+  }
+
+  // orgAdmin action — remove device from the org's shared list AND
+  // detach it from every wing. Device catalog is untouched so admin can
+  // re-add later by scanning. No ownership transfer (org accounts have
+  // no ownership concept — admin manages everything).
+  async function handleRemoveFromOrg() {
+    if (!orgId) return;
+    if (!confirm(`Remove this device from your organisation?\n\nThe device stays registered and can be re-added by scanning its QR code.`)) return;
+    try {
+      await removeDeviceFromOrg(orgId, code);
+      // Auto-detach from any wing that contains this device.
+      for (const w of wings) {
+        if ((w.deviceCodes || []).includes(code)) {
+          const next = (w.deviceCodes || []).filter((c) => c !== code);
+          await updateOrgGroup(orgId, w.groupId, { deviceCodes: next });
+        }
+      }
+    } catch (e) {
+      console.error("Remove from org failed:", e);
+      alert("Failed to remove — try again");
+      return;
+    }
     navigate("/dashboard");
   }
 
@@ -284,8 +323,14 @@ export default function DeviceDetail() {
           ) : (
             <div className="flex items-center gap-2">
               <span className="text-sm font-semibold text-gray-900">{deviceName || catalog.deviceName || code}</span>
-              <button onClick={() => { setNameInput(deviceName || catalog.deviceName || ""); setEditingName(true); }}
-                className="text-xs text-blue-600 hover:underline">Edit</button>
+              {/* Rename allowed for: individual accounts (owner-check
+                  further gates behavior elsewhere), or orgAdmin. Regular
+                  org members are view-only per the "admin manages
+                  fleet" model. */}
+              {canEditOrgDevice && (
+                <button onClick={() => { setNameInput(deviceName || catalog.deviceName || ""); setEditingName(true); }}
+                  className="text-xs text-blue-600 hover:underline">Edit</button>
+              )}
             </div>
           )}
         </div>
@@ -303,6 +348,15 @@ export default function DeviceDetail() {
               is the customer-facing rename-anytime display name. */}
           <span className="text-gray-500">User-Assigned Name</span>
           <span className="text-gray-900">{info?.userAssignedName || "—"}</span>
+          {/* Wing/group membership — org accounts only. Read-only for
+              everyone here; orgAdmin manages membership from the wing
+              tab on the dashboard (per-tile X + Add-to-Wing button). */}
+          {isOrg && (
+            <>
+              <span className="text-gray-500">Wing / Group</span>
+              <span className="text-gray-900">{currentWing?.name || "— Unassigned —"}</span>
+            </>
+          )}
           <span className="text-gray-500">Class</span>
           <span className="text-gray-900">{DEVICE_CLASS[catalog.deviceClass] || "Unknown"}</span>
           <span className="text-gray-500">Sensor Type</span>
@@ -1002,8 +1056,19 @@ export default function DeviceDetail() {
             className="px-4 py-2 bg-green-50 text-green-600 rounded-lg text-sm hover:bg-green-100">Test LED</button>
           <button onClick={() => { if (confirm("Restart this device? It will go offline for a few seconds.")) sendRestartCommand(code); }}
             className="px-4 py-2 bg-yellow-50 text-yellow-600 rounded-lg text-sm hover:bg-yellow-100">Restart</button>
-          <button onClick={handleUnsubscribe}
-            className="px-4 py-2 bg-red-50 text-red-600 rounded-lg text-sm hover:bg-red-100">Unsubscribe</button>
+          {/* Removal button — path differs by account type:
+              • Individual account → Unsubscribe (may transfer ownership)
+              • Org account, orgAdmin → Remove from Organisation (deletes
+                from orgDevices + detaches from all wings; catalog kept)
+              • Org account, member → button hidden (view-only) */}
+          {!isOrg && (
+            <button onClick={handleUnsubscribe}
+              className="px-4 py-2 bg-red-50 text-red-600 rounded-lg text-sm hover:bg-red-100">Unsubscribe</button>
+          )}
+          {isOrg && isOrgAdmin && (
+            <button onClick={handleRemoveFromOrg}
+              className="px-4 py-2 bg-red-50 text-red-600 rounded-lg text-sm hover:bg-red-100">Remove from Organisation</button>
+          )}
         </div>
       </div>
     </div>
