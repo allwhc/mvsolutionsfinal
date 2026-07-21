@@ -93,7 +93,8 @@ function fmtLitres(L) {
 
 export default function DeviceDetail() {
   const { code } = useParams();
-  const { user, isSuperAdmin } = useAuth();
+  const { user, userData, isSuperAdmin } = useAuth();
+  const orgId = userData?.orgId || null;
   const { debugMode } = useDebugMode();
   const { live, info, isOnline } = useDevice(code);
   const [catalog, setCatalog] = useState(null);
@@ -254,6 +255,11 @@ export default function DeviceDetail() {
                     if (trimmed) {
                       await updateDoc(doc(db, "subscriptions", user.uid, "devices", code), { deviceName: trimmed });
                       if (isOwner) await updateDoc(doc(db, "deviceCatalog", code), { deviceName: trimmed });
+                      // Org accounts: dashboard reads from orgDevices, so
+                      // the rename has to land there too or the tile keeps
+                      // showing the old name. Fire-and-forget for the
+                      // org write — non-org accounts skip this entirely.
+                      if (orgId) await updateDoc(doc(db, "orgDevices", orgId, "devices", code), { deviceName: trimmed });
                       setDeviceName(trimmed);
                       if (isOwner) setCatalog({ ...catalog, deviceName: trimmed });
                     }
@@ -267,6 +273,7 @@ export default function DeviceDetail() {
                 if (trimmed) {
                   await updateDoc(doc(db, "subscriptions", user.uid, "devices", code), { deviceName: trimmed });
                   if (isOwner) await updateDoc(doc(db, "deviceCatalog", code), { deviceName: trimmed });
+                  if (orgId) await updateDoc(doc(db, "orgDevices", orgId, "devices", code), { deviceName: trimmed });
                   setDeviceName(trimmed);
                   if (isOwner) setCatalog({ ...catalog, deviceName: trimmed });
                 }

@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { useSearchParams } from "react-router-dom";
 import { getAllDevices, approvePendingDevice, registerDevice, updateDevice, deleteDeviceFromCatalog, getAllUsers, getAllOrgs } from "../../firebase/db";
-import { sendTestCommand, sendRestartCommand, getPendingDevicesRTDB, listenToDeviceLive, listenToDeviceInfo, listenToValveConfig, setAnalyticsEnabled, setDiagnosticsEnabled, setNotifyEnabled, bulkSetConfigFlag, getDevicesInfoMap, getDevicesConfigMap, deleteHistoryOlderThan } from "../../firebase/rtdb";
+import { sendTestCommand, sendRestartCommand, getPendingDevicesRTDB, listenToDeviceLive, listenToDeviceInfo, listenToValveConfig, setAnalyticsEnabled, setDiagnosticsEnabled, setNotifyEnabled, bulkSetConfigFlag, getDevicesInfoMap, getDevicesConfigMap, getDeviceInfo, deleteHistoryOlderThan } from "../../firebase/rtdb";
 import { QRCodeSVG } from "qrcode.react";
 
 const DEVICE_CLASS = { 1: "Valve", 2: "Sensor", 3: "Motor", "senseflowstandard": "SenseFlow Standard" };
@@ -1127,7 +1127,20 @@ export default function AdminDevices() {
                   <p className="text-xs text-gray-500">{DEVICE_CLASS[d.deviceClass] || "?"} | {SENSOR_TYPE[d.sensorType] || "?"} | {d.sensorCount || 0} sensors</p>
                   {d.macAddress && <p className="text-xs text-gray-400">MAC: {d.macAddress}</p>}
                 </div>
-                <button onClick={() => setRegisterModal(d)} className="bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-green-700">Register</button>
+                <button onClick={async () => {
+                  // Pre-fill the Device Name input with the installer's
+                  // user-assigned label (typed on the device AP page and
+                  // mirrored to /devices/<code>/info/userAssignedName).
+                  // If the installer didn't type one, or the fetch fails,
+                  // the input stays blank and admin types their own.
+                  let installerName = "";
+                  try {
+                    const info = await getDeviceInfo(d.deviceCode);
+                    installerName = (info?.userAssignedName || "").trim();
+                  } catch { /* offline / permissions → blank */ }
+                  setExtraFields({ deviceName: installerName, location: "", notes: "" });
+                  setRegisterModal({ ...d, installerName });
+                }} className="bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-green-700">Register</button>
               </div>
             </div>
           ))}
@@ -1410,6 +1423,11 @@ export default function AdminDevices() {
             <div className="text-sm text-gray-600 mb-4">
               <p className="font-mono font-semibold">{registerModal.deviceCode}</p>
               <p>{DEVICE_CLASS[registerModal.deviceClass]} | {SENSOR_TYPE[registerModal.sensorType]} | {registerModal.sensorCount} sensors</p>
+              {registerModal.installerName && (
+                <p className="mt-2 px-2 py-1.5 bg-blue-50 border border-blue-200 rounded text-xs text-blue-900">
+                  <span className="font-semibold">Installer set name:</span> {registerModal.installerName}
+                </p>
+              )}
             </div>
             <div className="space-y-3 mb-4">
               <p className="text-xs text-gray-500 font-medium">Optional details</p>
