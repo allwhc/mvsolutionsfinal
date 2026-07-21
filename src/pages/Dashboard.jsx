@@ -150,6 +150,26 @@ export default function Dashboard() {
   const hour = new Date().getHours();
   const greeting = hour < 12 ? "Good Morning" : hour < 17 ? "Good Afternoon" : "Good Evening";
 
+  // ── Memoised derivations. MUST live above any early returns below so
+  // React sees the same hook count on every render (rule of hooks —
+  // fails with error #310 otherwise: "Rendered more hooks than during
+  // the previous render.").
+  //
+  // codesInAnyGroup: every device code currently attached to a wing.
+  // Used to answer "is this device unassigned?" for the Org Devices tab.
+  const codesInAnyGroup = useMemo(() => {
+    const s = new Set();
+    for (const g of groups) for (const c of (g.deviceCodes || [])) s.add(c);
+    return s;
+  }, [groups]);
+  // addableDevices: devices NOT already in the wing the add-modal is
+  // targeting. Empty when the modal is closed.
+  const addableDevices = useMemo(() => {
+    if (!addToWingModal) return [];
+    const inWing = new Set(addToWingModal.deviceCodes || []);
+    return devices.filter((d) => !inWing.has(d.deviceCode));
+  }, [addToWingModal, devices]);
+
   if (loading) {
     return (
       <div className="flex items-center justify-center py-20">
@@ -185,15 +205,6 @@ export default function Dashboard() {
   // Active search overrides the org filter entirely — "find any of my devices"
   // is global to the user's subscription set, not narrowed by the current tab.
   const searchActive = searchOpen && searchText.trim().length > 0;
-
-  // Set of every device code currently attached to any wing/group.
-  // Used to answer "is this device unassigned to a wing?" without
-  // walking `groups[].deviceCodes` for every device in the list.
-  const codesInAnyGroup = useMemo(() => {
-    const s = new Set();
-    for (const g of groups) for (const c of (g.deviceCodes || [])) s.add(c);
-    return s;
-  }, [groups]);
 
   // Filter devices: search first (global), else apply the org/group filter.
   //   all  → every device the user can see
@@ -297,14 +308,6 @@ export default function Dashboard() {
     setAddToWingModal(null);
     setSelectedToAdd(new Set());
   }
-
-  // Devices available to add to the current wing modal (devices NOT
-  // already in this specific wing). Empty when modal closed.
-  const addableDevices = useMemo(() => {
-    if (!addToWingModal) return [];
-    const inWing = new Set(addToWingModal.deviceCodes || []);
-    return devices.filter((d) => !inWing.has(d.deviceCode));
-  }, [addToWingModal, devices]);
 
   return (
     <div>
