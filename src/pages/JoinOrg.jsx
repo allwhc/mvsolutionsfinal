@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
-import { getOrg, getOrgMembers, addOrgMember, updateUserDoc, updateOrg } from "../firebase/db";
+import { getOrg, addOrgMember, updateUserDoc, updateOrg } from "../firebase/db";
 import { loginWithGoogle, registerWithEmail } from "../firebase/auth";
 
 const MAX_MEMBERS = 10;
@@ -23,12 +23,22 @@ export default function JoinOrg() {
 
   useEffect(() => {
     async function load() {
-      const o = await getOrg(orgId);
-      if (!o) { setError("Organisation not found"); setLoading(false); return; }
-      const members = await getOrgMembers(orgId);
-      setOrg(o);
-      setMemberCount(members.length);
-      setLoading(false);
+      try {
+        // Only fetch the org doc. `getOrgMembers` needs auth (a visitor
+        // clicking an invite link is usually NOT signed in yet), so
+        // reading the roster would throw permission-denied and hang
+        // the page on the spinner. Use org.memberCount instead — a
+        // denormalised counter bumped by orgAdmin adds and self-joins.
+        const o = await getOrg(orgId);
+        if (!o) { setError("Organisation not found"); setLoading(false); return; }
+        setOrg(o);
+        setMemberCount(o.memberCount || 0);
+      } catch (err) {
+        console.error("JoinOrg load failed:", err);
+        setError("Couldn't load organisation. Please try again in a moment.");
+      } finally {
+        setLoading(false);
+      }
     }
     load();
   }, [orgId]);

@@ -51,11 +51,21 @@ export default function OrgMembers() {
     }
   }
 
-  async function handleRemove(uid) {
-    if (!confirm("Remove this member?")) return;
-    await removeOrgMember(orgId, uid);
-    await updateUserDoc(uid, { role: "individual", orgId: null, orgName: null });
-    await load();
+  async function handleRemove(uid, memberName) {
+    // removeOrgMember() in db.js handles the two-part revoke: drops
+    // the membership record AND clears the target user's orgId /
+    // orgName / role so their dashboard flips back to
+    // individual-account mode on next load. It also decrements the
+    // org's memberCount so the invite page's "spots left" is right.
+    const label = memberName || "this member";
+    if (!confirm(`Remove ${label} from your organisation?\n\nThey will lose access to all tanks in the org.`)) return;
+    try {
+      await removeOrgMember(orgId, uid);
+      await load();
+    } catch (e) {
+      console.error("Remove failed:", e);
+      alert("Failed to remove — try again");
+    }
   }
 
   if (loading) {
@@ -131,7 +141,7 @@ export default function OrgMembers() {
               }`}>{m.role}</span>
             </div>
             {m.uid !== user.uid && (
-              <button onClick={() => handleRemove(m.uid)} className="text-xs text-red-500 hover:text-red-700">Remove</button>
+              <button onClick={() => handleRemove(m.uid, m.displayName || m.email)} className="text-xs text-red-500 hover:text-red-700">Remove</button>
             )}
           </div>
         ))}

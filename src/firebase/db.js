@@ -113,7 +113,37 @@ export async function getOrgMembers(orgId) {
 }
 
 export async function removeOrgMember(orgId, uid) {
+  // Two-step revoke: drop the membership record AND clear the removed
+  // user's org attachment on their user doc. Without the user-doc
+  // cleanup, their dashboard still tries to read this org's shared
+  // devices (fails permission-denied since they're no longer a
+  // member) and their UI reports "you are already in another
+  // organisation" if they click a fresh invite. Reset role to plain
+  // "user" so their next login sees the individual-account UX.
   await deleteDoc(doc(db, "orgMembers", orgId, "members", uid));
+  try {
+    await updateDoc(doc(db, "users", uid), {
+      orgId: null,
+      orgName: null,
+      role: "user",
+    });
+  } catch (e) {
+    // Non-fatal — if the user doc write fails (rules edge, missing
+    // doc, etc.) the membership is still gone and the removed user
+    // has effectively lost access. Log and move on.
+    console.warn("removeOrgMember: user doc cleanup failed:", e);
+  }
+  // Best-effort memberCount decrement so the invite page shows the
+  // right "spots left" for future joiners.
+  try {
+    const orgSnap = await getDoc(doc(db, "orgs", orgId));
+    if (orgSnap.exists()) {
+      const cur = orgSnap.data().memberCount || 0;
+      if (cur > 0) await updateDoc(doc(db, "orgs", orgId), { memberCount: cur - 1 });
+    }
+  } catch (e) {
+    console.warn("removeOrgMember: memberCount decrement failed:", e);
+  }
 }
 
 // ── Org Groups ──

@@ -18,18 +18,34 @@ service cloud.firestore {
 
     // Orgs — anyone (including unauthenticated) can read, so the
     // /register/org pre-flight check "does this org id already exist?"
-    // works before Firebase Auth signup completes. Writes still require
-    // orgAdmin or superadmin. Org names aren't sensitive; leaking their
-    // existence is the same info you get by attempting a duplicate name.
+    // works before Firebase Auth signup completes. Writes require
+    // orgAdmin or superadmin, EXCEPT: a newly authenticated user
+    // accepting an invite may bump memberCount by exactly 1 (and touch
+    // no other fields), so the /join/<orgId> flow doesn't need a
+    // Cloud Function just to keep the "X of 10" counter accurate.
     match /orgs/{orgId} {
       allow read: if true;
-      allow write: if request.auth != null && (isOrgAdmin(orgId) || isSuperAdmin());
+      allow create, delete: if request.auth != null && (isOrgAdmin(orgId) || isSuperAdmin());
+      allow update: if request.auth != null && (
+        isOrgAdmin(orgId) || isSuperAdmin() ||
+        // Self-join memberCount bump: only that one field, only +1.
+        (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['memberCount'])
+         && request.resource.data.memberCount == resource.data.memberCount + 1)
+      );
     }
 
-    // Org Members
+    // Org Members. Reads still restricted to members + superadmin so
+    // one org can't enumerate another org's roster. Creation loosened:
+    // an authenticated user may add THEMSELVES as a member (join flow),
+    // but only orgAdmin/superadmin can add other people, update roles,
+    // or remove members.
     match /orgMembers/{orgId}/members/{uid} {
       allow read: if request.auth != null && (isOrgMember(orgId) || isSuperAdmin());
-      allow write: if request.auth != null && (isOrgAdmin(orgId) || isSuperAdmin());
+      allow create: if request.auth != null && (
+        isOrgAdmin(orgId) || isSuperAdmin() ||
+        request.auth.uid == uid   // self-join via invite link
+      );
+      allow update, delete: if request.auth != null && (isOrgAdmin(orgId) || isSuperAdmin());
     }
 
     // Org Groups
