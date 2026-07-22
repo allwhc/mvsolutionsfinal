@@ -29,13 +29,20 @@ service cloud.firestore {
       allow write: if request.auth != null && (isOrgAdmin(orgId) || isSuperAdmin());
     }
 
-    // Org Members. Reads still restricted to members + superadmin so
-    // one org can't enumerate another org's roster. Creation loosened:
-    // an authenticated user may add THEMSELVES as a member (join flow),
-    // but only orgAdmin/superadmin can add other people, update roles,
-    // or remove members.
+    // Org Members. Reads for other people's records still restricted
+    // to org members + superadmin — one org can't enumerate another
+    // org's roster. But a user may ALWAYS read their OWN membership
+    // record (self-poll for status change after orgAdmin approves —
+    // otherwise a pending user has no way to notice they've been let
+    // in without a Cloud Function). Creation loosened: an
+    // authenticated user may add THEMSELVES (self-join via invite
+    // link); only orgAdmin/superadmin can add other people, update
+    // roles, or remove members.
     match /orgMembers/{orgId}/members/{uid} {
-      allow read: if request.auth != null && (isOrgMember(orgId) || isSuperAdmin());
+      allow read: if request.auth != null && (
+        isOrgMember(orgId) || isSuperAdmin() ||
+        request.auth.uid == uid   // read own record (pending status poll)
+      );
       allow create: if request.auth != null && (
         isOrgAdmin(orgId) || isSuperAdmin() ||
         request.auth.uid == uid   // self-join via invite link

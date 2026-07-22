@@ -1,7 +1,87 @@
 import { createContext, useContext, useState, useEffect } from "react";
 import { onAuthStateChanged } from "firebase/auth";
-import { auth } from "../firebase/config";
+import { doc, getDoc } from "firebase/firestore";
+import { auth, db } from "../firebase/config";
 import { getUserDoc, updateUserDoc, getPlan, getOrg } from "../firebase/db";
+
+// Self-heal path — reads the user's OWN membership record from their
+// pending or current org and reconciles the user doc. Called on every
+// AuthContext refresh so a member notices approve/reject/remove
+// without needing a Cloud Function. Rules only let a user write to
+// their own /users/{uid} doc, so orgAdmin's approve action can flip
+// the membership record but can't touch the target's user doc — this
+// closes that loop from the member's side.
+//
+// Three cases handled:
+//   1. Pending → active   (admin approved) → set orgId, clear pending
+//   2. Pending → missing  (admin rejected) → clear pendingOrgId
+//   3. Active → missing   (admin revoked) → clear orgId + role
+async function promoteSelfIfApproved(uid, doc) {
+  if (!doc) return null;
+  const pendingOrgId = doc.pendingOrgId || null;
+  const activeOrgId  = doc.orgId        || null;
+  if (!pendingOrgId && !activeOrgId) return null;
+
+  // Case 1 or 2 — pending self-join. Check membership record status.
+  if (pendingOrgId) {
+    try {
+      const snap = await getDoc(doc_ref(pendingOrgId, uid));
+      if (!snap.exists()) {
+        // Rejected — orgAdmin dropped the pending record.
+        await updateUserDoc(uid, { pendingOrgId: null, pendingOrgName: null });
+        return { changed: true, kind: "rejected" };
+      }
+      const rec = snap.data();
+      if (rec.status === "active") {
+        // Approved! Read org name so downstream UI has it.
+        let orgName = doc.pendingOrgName || "";
+        try {
+          const oSnap = await getDoc(doc_orgRef(pendingOrgId));
+          if (oSnap.exists()) orgName = oSnap.data().name || orgName;
+        } catch { /* keep prior name */ }
+        await updateUserDoc(uid, {
+          orgId: pendingOrgId,
+          orgName,
+          role: "orgMember",
+          pendingOrgId: null,
+          pendingOrgName: null,
+        });
+        return { changed: true, kind: "approved" };
+      }
+      // Still pending — nothing to do.
+      return null;
+    } catch (e) {
+      console.warn("promoteSelfIfApproved: pending check failed:", e);
+      return null;
+    }
+  }
+
+  // Case 3 — active membership disappeared (orgAdmin removed us).
+  if (activeOrgId) {
+    try {
+      const snap = await getDoc(doc_ref(activeOrgId, uid));
+      if (!snap.exists()) {
+        await updateUserDoc(uid, {
+          orgId: null,
+          orgName: null,
+          role: "user",
+        });
+        return { changed: true, kind: "revoked" };
+      }
+    } catch (e) {
+      // Rules would deny a truly-removed user reading /orgMembers/.../<uid>
+      // ONLY if the org itself was deleted. Treat any deny here as
+      // "not sure" and leave state alone — don't accidentally strip
+      // a real membership over a transient rules issue.
+      console.warn("promoteSelfIfApproved: active check failed:", e);
+    }
+  }
+  return null;
+}
+
+// Helper refs kept tiny + named so the function above reads cleanly.
+function doc_ref(orgId, uid)  { return doc(db, "orgMembers", orgId, "members", uid); }
+function doc_orgRef(orgId)    { return doc(db, "orgs", orgId); }
 
 const AuthContext = createContext(null);
 
@@ -36,7 +116,17 @@ export function AuthProvider({ children }) {
     const unsub = onAuthStateChanged(auth, async (firebaseUser) => {
       if (firebaseUser) {
         setUser(firebaseUser);
-        const doc = await getUserDoc(firebaseUser.uid);
+        let doc = await getUserDoc(firebaseUser.uid);
+
+        // Self-heal: reconcile pending / removed org membership.
+        // If admin approved/rejected/revoked since last load, this
+        // updates the user doc from OUR side (rules block admin from
+        // touching /users/{uid}). Re-fetch after so downstream code
+        // sees the reconciled state.
+        const outcome = await promoteSelfIfApproved(firebaseUser.uid, doc);
+        if (outcome?.changed) {
+          doc = await getUserDoc(firebaseUser.uid);
+        }
         setUserData(doc);
 
         if (!doc) { setLoading(false); return; }
@@ -123,7 +213,14 @@ export function AuthProvider({ children }) {
 
   async function refreshUserData() {
     if (user) {
-      const doc = await getUserDoc(user.uid);
+      let doc = await getUserDoc(user.uid);
+      // Same self-heal as on initial load. This is what makes
+      // PendingApproval's "Check status" button actually break the
+      // user out of the waiting screen once orgAdmin approves.
+      const outcome = await promoteSelfIfApproved(user.uid, doc);
+      if (outcome?.changed) {
+        doc = await getUserDoc(user.uid);
+      }
       setUserData(doc);
       if (doc?.orgId) {
         const org = await getOrg(doc.orgId);

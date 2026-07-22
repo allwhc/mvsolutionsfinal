@@ -121,38 +121,23 @@ export async function getOrgMembers(orgId) {
   return snap.docs.map((d) => ({ uid: d.id, ...d.data() }));
 }
 
-// Approve a pending self-join. Flips status → "active", copies the
-// user's pendingOrgId over to orgId and upgrades role to "orgMember"
-// so isOrgMember() rule passes, then bumps the org's memberCount.
-// Called only by orgAdmin (rules enforce this).
+// Approve a pending self-join. OrgAdmin can only flip the membership
+// record itself — Firestore rules block writes to another user's
+// /users/{uid} doc, so we can't touch orgId/role from here. Instead
+// the approved user self-promotes on next AuthContext refresh (see
+// promoteSelfIfApproved in AuthContext.jsx): they read their own
+// membership record, notice status=active, then write their own
+// user doc with orgId + role=orgMember. Self-writes are permitted.
 export async function approveOrgMember(orgId, uid, adminUid) {
   await updateDoc(doc(db, "orgMembers", orgId, "members", uid), {
     status: "active",
     approvedBy: adminUid,
     approvedAt: serverTimestamp(),
   });
-  // Read org name from the org doc so user doc's orgName stays in sync
-  // even if admin later renamed the org.
-  let orgName = "";
-  try {
-    const orgSnap = await getDoc(doc(db, "orgs", orgId));
-    if (orgSnap.exists()) orgName = orgSnap.data().name || "";
-  } catch { /* rules should allow read; ignore */ }
-  try {
-    await updateDoc(doc(db, "users", uid), {
-      orgId,
-      orgName,
-      role: "orgMember",
-      pendingOrgId: null,
-      pendingOrgName: null,
-    });
-  } catch (e) {
-    console.warn("approveOrgMember: user doc upgrade failed:", e);
-  }
-  // Bump the seat count now that this member is actually taking a seat.
-  // Pending members don't count toward the 10-cap (per Vishal's choice
-  // — otherwise admin could get stuck at 10 with unapproved joiners
-  // hogging seats).
+  // Bump the seat count now that this member is actually taking a
+  // seat. Pending members don't count toward the 10-cap (per Vishal's
+  // choice — otherwise admin could get stuck at 10 with unapproved
+  // joiners hogging seats).
   try {
     const orgSnap = await getDoc(doc(db, "orgs", orgId));
     if (orgSnap.exists()) {
@@ -164,34 +149,24 @@ export async function approveOrgMember(orgId, uid, adminUid) {
   }
 }
 
-// Reject a pending self-join. Drops the membership record and clears
-// the user's pendingOrgId so they can try joining a different org or
-// re-request approval later. memberCount is NOT decremented (was
-// never incremented — pending never counted).
+// Reject a pending self-join. OrgAdmin can only delete the membership
+// record — they can't write to the target user's /users/{uid} doc
+// (rules block cross-user writes). The rejected user self-heals on
+// next AuthContext refresh: promoteSelfIfApproved reads their own
+// membership record, sees it's missing, and clears pendingOrgId
+// from their own user doc.
 export async function rejectOrgMember(orgId, uid) {
   await deleteDoc(doc(db, "orgMembers", orgId, "members", uid));
-  try {
-    await updateDoc(doc(db, "users", uid), {
-      pendingOrgId: null,
-      pendingOrgName: null,
-    });
-  } catch (e) {
-    console.warn("rejectOrgMember: user doc cleanup failed:", e);
-  }
 }
 
+// Revoke an approved member. Drops the membership record and
+// decrements memberCount if the member was actually active. The
+// removed user's dashboard breaks the moment they lose their
+// membership — but rules block us from touching their user doc.
+// They self-heal on next AuthContext load: promoteSelfIfApproved
+// notices they have orgId set but no membership record for that org
+// and clears the stale orgId, dropping them back to individual mode.
 export async function removeOrgMember(orgId, uid) {
-  // Two-step revoke: drop the membership record AND clear the removed
-  // user's org attachment on their user doc. Without the user-doc
-  // cleanup, their dashboard still tries to read this org's shared
-  // devices (fails permission-denied since they're no longer a
-  // member) and their UI reports "you are already in another
-  // organisation" if they click a fresh invite. Reset role to plain
-  // "user" so their next login sees the individual-account UX.
-  //
-  // Only decrement memberCount if the member was "active" — pending
-  // members never counted toward the seat cap, so removing one
-  // shouldn't free a phantom seat.
   let wasActive = false;
   try {
     const m = await getDoc(doc(db, "orgMembers", orgId, "members", uid));
@@ -199,17 +174,6 @@ export async function removeOrgMember(orgId, uid) {
   } catch { /* fall through — default to not decrementing */ }
 
   await deleteDoc(doc(db, "orgMembers", orgId, "members", uid));
-  try {
-    await updateDoc(doc(db, "users", uid), {
-      orgId: null,
-      orgName: null,
-      role: "user",
-      pendingOrgId: null,
-      pendingOrgName: null,
-    });
-  } catch (e) {
-    console.warn("removeOrgMember: user doc cleanup failed:", e);
-  }
   if (wasActive) {
     try {
       const orgSnap = await getDoc(doc(db, "orgs", orgId));
