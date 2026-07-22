@@ -100,6 +100,15 @@ export async function deleteOrg(orgId) {
 }
 
 // ── Org Members ──
+// Two-status model:
+//   "pending" → self-joined via invite, waiting for orgAdmin approval.
+//               user doc gets pendingOrgId (NOT orgId) so isOrgMember()
+//               rule fails — they can't see any org data yet.
+//   "active"  → orgAdmin approved (or admin created them directly).
+//               user doc gets orgId + role "orgMember" — dashboard works.
+// displayName + email are denormalised onto the membership record so
+// orgAdmin doesn't need to read each member's /users/<uid> doc (which
+// the users rule blocks — only the user themselves or superadmin can).
 export async function addOrgMember(orgId, uid, data) {
   await setDoc(doc(db, "orgMembers", orgId, "members", uid), {
     ...data,
@@ -112,6 +121,65 @@ export async function getOrgMembers(orgId) {
   return snap.docs.map((d) => ({ uid: d.id, ...d.data() }));
 }
 
+// Approve a pending self-join. Flips status → "active", copies the
+// user's pendingOrgId over to orgId and upgrades role to "orgMember"
+// so isOrgMember() rule passes, then bumps the org's memberCount.
+// Called only by orgAdmin (rules enforce this).
+export async function approveOrgMember(orgId, uid, adminUid) {
+  await updateDoc(doc(db, "orgMembers", orgId, "members", uid), {
+    status: "active",
+    approvedBy: adminUid,
+    approvedAt: serverTimestamp(),
+  });
+  // Read org name from the org doc so user doc's orgName stays in sync
+  // even if admin later renamed the org.
+  let orgName = "";
+  try {
+    const orgSnap = await getDoc(doc(db, "orgs", orgId));
+    if (orgSnap.exists()) orgName = orgSnap.data().name || "";
+  } catch { /* rules should allow read; ignore */ }
+  try {
+    await updateDoc(doc(db, "users", uid), {
+      orgId,
+      orgName,
+      role: "orgMember",
+      pendingOrgId: null,
+      pendingOrgName: null,
+    });
+  } catch (e) {
+    console.warn("approveOrgMember: user doc upgrade failed:", e);
+  }
+  // Bump the seat count now that this member is actually taking a seat.
+  // Pending members don't count toward the 10-cap (per Vishal's choice
+  // — otherwise admin could get stuck at 10 with unapproved joiners
+  // hogging seats).
+  try {
+    const orgSnap = await getDoc(doc(db, "orgs", orgId));
+    if (orgSnap.exists()) {
+      const cur = orgSnap.data().memberCount || 0;
+      await updateDoc(doc(db, "orgs", orgId), { memberCount: cur + 1 });
+    }
+  } catch (e) {
+    console.warn("approveOrgMember: memberCount bump failed:", e);
+  }
+}
+
+// Reject a pending self-join. Drops the membership record and clears
+// the user's pendingOrgId so they can try joining a different org or
+// re-request approval later. memberCount is NOT decremented (was
+// never incremented — pending never counted).
+export async function rejectOrgMember(orgId, uid) {
+  await deleteDoc(doc(db, "orgMembers", orgId, "members", uid));
+  try {
+    await updateDoc(doc(db, "users", uid), {
+      pendingOrgId: null,
+      pendingOrgName: null,
+    });
+  } catch (e) {
+    console.warn("rejectOrgMember: user doc cleanup failed:", e);
+  }
+}
+
 export async function removeOrgMember(orgId, uid) {
   // Two-step revoke: drop the membership record AND clear the removed
   // user's org attachment on their user doc. Without the user-doc
@@ -120,29 +188,38 @@ export async function removeOrgMember(orgId, uid) {
   // member) and their UI reports "you are already in another
   // organisation" if they click a fresh invite. Reset role to plain
   // "user" so their next login sees the individual-account UX.
+  //
+  // Only decrement memberCount if the member was "active" — pending
+  // members never counted toward the seat cap, so removing one
+  // shouldn't free a phantom seat.
+  let wasActive = false;
+  try {
+    const m = await getDoc(doc(db, "orgMembers", orgId, "members", uid));
+    if (m.exists()) wasActive = (m.data().status || "active") === "active";
+  } catch { /* fall through — default to not decrementing */ }
+
   await deleteDoc(doc(db, "orgMembers", orgId, "members", uid));
   try {
     await updateDoc(doc(db, "users", uid), {
       orgId: null,
       orgName: null,
       role: "user",
+      pendingOrgId: null,
+      pendingOrgName: null,
     });
   } catch (e) {
-    // Non-fatal — if the user doc write fails (rules edge, missing
-    // doc, etc.) the membership is still gone and the removed user
-    // has effectively lost access. Log and move on.
     console.warn("removeOrgMember: user doc cleanup failed:", e);
   }
-  // Best-effort memberCount decrement so the invite page shows the
-  // right "spots left" for future joiners.
-  try {
-    const orgSnap = await getDoc(doc(db, "orgs", orgId));
-    if (orgSnap.exists()) {
-      const cur = orgSnap.data().memberCount || 0;
-      if (cur > 0) await updateDoc(doc(db, "orgs", orgId), { memberCount: cur - 1 });
+  if (wasActive) {
+    try {
+      const orgSnap = await getDoc(doc(db, "orgs", orgId));
+      if (orgSnap.exists()) {
+        const cur = orgSnap.data().memberCount || 0;
+        if (cur > 0) await updateDoc(doc(db, "orgs", orgId), { memberCount: cur - 1 });
+      }
+    } catch (e) {
+      console.warn("removeOrgMember: memberCount decrement failed:", e);
     }
-  } catch (e) {
-    console.warn("removeOrgMember: memberCount decrement failed:", e);
   }
 }
 

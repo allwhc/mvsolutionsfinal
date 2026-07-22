@@ -43,18 +43,38 @@ export default function JoinOrg() {
     load();
   }, [orgId]);
 
-  async function joinOrg(uid) {
+  async function joinOrg(uid, joinerDisplayName, joinerEmail) {
+    // Only ACTIVE members count against the cap. Pending don't hold
+    // seats — otherwise the invite could get stuck at 10 with 8 real
+    // + 2 unapproved.
     if (memberCount >= MAX_MEMBERS) {
       setError("Organisation has reached maximum members");
       return;
     }
     setJoining(true);
     try {
-      await addOrgMember(orgId, uid, { role: "viewer", addedBy: "invite" });
-      await updateUserDoc(uid, { role: "orgMember", orgId, orgName: org.name });
-      await updateOrg(orgId, { memberCount: memberCount + 1 });
+      // Write membership as "pending" — orgAdmin must approve before
+      // this user can see any org data. displayName + email are
+      // denormalised onto the record so orgAdmin can list members
+      // without needing per-user Firestore read permission (blocked
+      // by the users rule for non-owners).
+      await addOrgMember(orgId, uid, {
+        role: "viewer",
+        status: "pending",
+        addedBy: "invite",
+        displayName: joinerDisplayName || "",
+        email: joinerEmail || "",
+      });
+      // Mark the user as PENDING on their user doc — NOT orgId. The
+      // isOrgMember() rule keys off orgId, so a pending user can't
+      // read /orgDevices/*, /orgGroups/*, or /orgMembers/*. The
+      // route guard uses pendingOrgId to force /pending-approval.
+      await updateUserDoc(uid, {
+        pendingOrgId: orgId,
+        pendingOrgName: org.name,
+      });
       await refreshUserData();
-      navigate("/dashboard");
+      navigate("/pending-approval");
     } catch (err) {
       setError(err.message);
       setJoining(false);
@@ -65,7 +85,7 @@ export default function JoinOrg() {
     setError("");
     try {
       const u = await loginWithGoogle();
-      await joinOrg(u.uid);
+      await joinOrg(u.uid, u.displayName || "", u.email || "");
     } catch (err) {
       setError(err.message);
     }
@@ -77,7 +97,7 @@ export default function JoinOrg() {
     setError("");
     try {
       const u = await registerWithEmail(email, password, name);
-      await joinOrg(u.uid);
+      await joinOrg(u.uid, name, email);
     } catch (err) {
       setError(err.message);
     }
@@ -89,11 +109,15 @@ export default function JoinOrg() {
       navigate("/dashboard");
       return;
     }
-    if (userData?.orgId) {
-      setError("You are already a member of another organisation");
+    if (userData?.pendingOrgId === orgId) {
+      navigate("/pending-approval");
       return;
     }
-    await joinOrg(user.uid);
+    if (userData?.orgId || userData?.pendingOrgId) {
+      setError("You are already attached to another organisation");
+      return;
+    }
+    await joinOrg(user.uid, userData?.displayName || "", userData?.email || "");
   }
 
   if (loading) {

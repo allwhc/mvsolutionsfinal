@@ -12,6 +12,7 @@ import Kiosk from "./pages/Kiosk";
 import Subscribe from "./pages/Subscribe";
 import Profile from "./pages/Profile";
 import JoinOrg from "./pages/JoinOrg";
+import PendingApproval from "./pages/PendingApproval";
 import AdminDashboard from "./pages/Admin/AdminDashboard";
 import AdminDevices from "./pages/Admin/AdminDevices";
 import AdminFirmware from "./pages/Admin/AdminFirmware";
@@ -32,6 +33,19 @@ function HomeRedirect() {
   return <Navigate to={isSuperAdmin ? "/admin" : "/dashboard"} replace />;
 }
 
+// Blocking guard for users with a pending self-join. If a user has
+// pendingOrgId set but no active orgId, they must sit on
+// /pending-approval and wait for orgAdmin to approve. This wraps every
+// authenticated non-kiosk route (dashboard, device, admin, org, etc.)
+// so a pending user can't sneak into any data view by typing a URL.
+function PendingGate({ children }) {
+  const { userData, loading } = useAuth();
+  if (loading) return null;
+  const isPending = !!userData?.pendingOrgId && !userData?.orgId;
+  if (isPending) return <Navigate to="/pending-approval" replace />;
+  return children;
+}
+
 export default function App() {
   return (
     <BrowserRouter>
@@ -45,8 +59,17 @@ export default function App() {
           <Route path="/register/org" element={<OrgRegisterForm />} />
           <Route path="/join/:orgId" element={<JoinOrg />} />
 
-          {/* Protected routes inside layout */}
-          <Route element={<ProtectedRoute><AppLayout /></ProtectedRoute>}>
+          {/* Pending-approval page — reachable only when authenticated
+              AND pendingOrgId is set. Sits outside AppLayout so the
+              blocked user doesn't see the header/sidebar of an app
+              they haven't been let into. */}
+          <Route path="/pending-approval" element={<ProtectedRoute><PendingApproval /></ProtectedRoute>} />
+
+          {/* Protected routes inside layout — wrapped in PendingGate
+              so a self-joined user waiting for admin approval gets
+              force-redirected to /pending-approval no matter what URL
+              they type. */}
+          <Route element={<ProtectedRoute><PendingGate><AppLayout /></PendingGate></ProtectedRoute>}>
             <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/device/:code" element={<DeviceDetail />} />
             <Route path="/subscribe" element={<Subscribe />} />
@@ -69,8 +92,10 @@ export default function App() {
           </Route>
 
           {/* Kiosk mode — full-screen wall display, no AppLayout so
-              the app's sidebar/header don't take up screen real estate. */}
-          <Route path="/kiosk" element={<ProtectedRoute><Kiosk /></ProtectedRoute>} />
+              the app's sidebar/header don't take up screen real estate.
+              Still gated by PendingGate so a waiting user can't see
+              other people's tanks via the kiosk URL either. */}
+          <Route path="/kiosk" element={<ProtectedRoute><PendingGate><Kiosk /></PendingGate></ProtectedRoute>} />
 
           {/* Redirect root — superadmin goes to /admin, others to /dashboard */}
           <Route path="/" element={<ProtectedRoute><HomeRedirect /></ProtectedRoute>} />

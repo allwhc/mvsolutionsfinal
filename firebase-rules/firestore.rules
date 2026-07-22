@@ -18,20 +18,15 @@ service cloud.firestore {
 
     // Orgs — anyone (including unauthenticated) can read, so the
     // /register/org pre-flight check "does this org id already exist?"
-    // works before Firebase Auth signup completes. Writes require
-    // orgAdmin or superadmin, EXCEPT: a newly authenticated user
-    // accepting an invite may bump memberCount by exactly 1 (and touch
-    // no other fields), so the /join/<orgId> flow doesn't need a
-    // Cloud Function just to keep the "X of 10" counter accurate.
+    // works before Firebase Auth signup completes AND the /join/<id>
+    // invite page can show the org name + spots-left counter without
+    // requiring the visitor to be signed in first.
+    // Writes are admin-only — memberCount bump happens inside the
+    // approve flow using orgAdmin rights; self-join no longer touches
+    // the seat count (pending members don't hold seats).
     match /orgs/{orgId} {
       allow read: if true;
-      allow create, delete: if request.auth != null && (isOrgAdmin(orgId) || isSuperAdmin());
-      allow update: if request.auth != null && (
-        isOrgAdmin(orgId) || isSuperAdmin() ||
-        // Self-join memberCount bump: only that one field, only +1.
-        (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['memberCount'])
-         && request.resource.data.memberCount == resource.data.memberCount + 1)
-      );
+      allow write: if request.auth != null && (isOrgAdmin(orgId) || isSuperAdmin());
     }
 
     // Org Members. Reads still restricted to members + superadmin so
