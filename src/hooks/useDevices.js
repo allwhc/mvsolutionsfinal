@@ -66,14 +66,21 @@ export function useDevices() {
       for (const sub of subs) {
         const catalog = await getDevice(sub.deviceCode);
         if (cancelled) return;
+        // Canonical fields (name, capacity, alerts, cleaning) live on
+        // the shared deviceCatalog now — one setting per physical tank
+        // instead of per subscriber. Read catalog first, fall back to
+        // the legacy per-subscription value so pre-migration data
+        // still displays correctly. Owner opening DeviceDetail
+        // silently promotes any per-user leftovers to catalog.
         deviceMap[sub.deviceCode] = {
           ...sub,
           catalog,
-          // Tank capacity now lives on the shared catalog. Fall back to
-          // the old per-subscription value for individuals who set it
-          // before the migration but never re-saved. Owner re-saving
-          // once will move it to catalog for everyone.
-          tankCapacityLitres: catalog?.tankCapacityLitres ?? sub.tankCapacityLitres ?? 0,
+          deviceName:          catalog?.deviceName          ?? sub.deviceName          ?? sub.deviceCode,
+          tankCapacityLitres:  catalog?.tankCapacityLitres  ?? sub.tankCapacityLitres  ?? 0,
+          alertLowPct:         catalog?.alertLowPct         ?? sub.alertLowPct         ?? null,
+          alertHighPct:        catalog?.alertHighPct        ?? sub.alertHighPct        ?? null,
+          lastCleanedAt:       catalog?.lastCleanedAt       ?? sub.lastCleanedAt       ?? null,
+          cleanIntervalDays:   catalog?.cleanIntervalDays   ?? sub.cleanIntervalDays   ?? 30,
           live: null,
           info: null,
         };

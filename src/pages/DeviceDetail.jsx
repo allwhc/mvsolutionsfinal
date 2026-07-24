@@ -186,20 +186,55 @@ export default function DeviceDetail() {
         // devices/<code>.tankCapacityLitres) which meant every new
         // subscriber saw 0L until they set it themselves.
         setTankCapacityLitres(d.tankCapacityLitres || 0);
-        // Load per-user cleaning + alert data from subscription (still
-        // per-user — each subscriber can have their own alert thresholds).
+        // Read order for shared per-tank settings (thresholds, cleaning
+        // date, name):
+        //   1. deviceCatalog — the canonical value, set by effective owner
+        //   2. Legacy per-user subscription — fallback for pre-migration
+        //      data. Still stored, still readable, just not authoritative
+        //      once catalog has a value.
+        // Notification RULES stay per-user (each phone gets to opt in/out
+        // per event) — read from subscription only, never from catalog.
         const { getDoc } = await import("firebase/firestore");
         const subSnap = await getDoc(doc(db, "subscriptions", user.uid, "devices", code));
-        if (subSnap.exists()) {
-          const subData = subSnap.data();
-          setLastCleanedAt(subData.lastCleanedAt || null);
-          setCleanIntervalDays(subData.cleanIntervalDays || 30);
-          setAlertLowPct(subData.alertLowPct ?? "");
-          setAlertHighPct(subData.alertHighPct ?? "");
-          setNotifRules(subData.notificationRules || {});
-          setDeviceName(subData.deviceName || "");
-          setValveAlertOpenHours(subData.valveAlertOpenHours ?? "");
-          setValveAlertClosedHours(subData.valveAlertClosedHours ?? "");
+        const subData = subSnap.exists() ? subSnap.data() : {};
+
+        // Alert thresholds — canonical: deviceCatalog. Fallback: sub.
+        setAlertLowPct(
+          d.alertLowPct  ?? subData.alertLowPct  ?? ""
+        );
+        setAlertHighPct(
+          d.alertHighPct ?? subData.alertHighPct ?? ""
+        );
+        // Cleaning — canonical: catalog.
+        setLastCleanedAt(d.lastCleanedAt        ?? subData.lastCleanedAt      ?? null);
+        setCleanIntervalDays(d.cleanIntervalDays ?? subData.cleanIntervalDays ?? 30);
+        // Device name — canonical: catalog.
+        setDeviceName(d.deviceName ?? subData.deviceName ?? "");
+
+        // Per-user (unchanged):
+        setNotifRules(subData.notificationRules || {});
+        setValveAlertOpenHours(subData.valveAlertOpenHours ?? "");
+        setValveAlertClosedHours(subData.valveAlertClosedHours ?? "");
+
+        // Silent self-migration: if effective owner opens the page and
+        // catalog values are empty but their own subscription has
+        // values, quietly promote them to catalog. Non-owners never
+        // trigger this — only the person allowed to set canonical
+        // values does. Wrapped in a fire-and-forget so any single
+        // failed write doesn't block the load.
+        const canWriteCatalog = owner || isSuperAdmin || (isOrgAdmin && !!orgId);
+        if (canWriteCatalog && subSnap.exists()) {
+          const patch = {};
+          if (d.alertLowPct       == null && subData.alertLowPct       != null) patch.alertLowPct       = subData.alertLowPct;
+          if (d.alertHighPct      == null && subData.alertHighPct      != null) patch.alertHighPct      = subData.alertHighPct;
+          if (d.lastCleanedAt     == null && subData.lastCleanedAt     != null) patch.lastCleanedAt     = subData.lastCleanedAt;
+          if (d.cleanIntervalDays == null && subData.cleanIntervalDays != null) patch.cleanIntervalDays = subData.cleanIntervalDays;
+          if (d.deviceName        == null && subData.deviceName        != null) patch.deviceName        = subData.deviceName;
+          if (Object.keys(patch).length > 0) {
+            updateDoc(doc(db, "deviceCatalog", code), patch)
+              .then(() => setCatalog((prev) => ({ ...prev, ...patch })))
+              .catch((e) => console.warn("catalog migration failed:", e));
+          }
         }
       }
       setLoading(false);
@@ -449,28 +484,43 @@ export default function DeviceDetail() {
         </div>
       </div>
 
-      {/* Tank Settings — only for devices with tanks (DIP or Ultrasonic) */}
+      {/* Tank Settings — only for devices with tanks (DIP or Ultrasonic).
+          Cleaning date + interval are canonical per tank (not per user
+          — a physical cleaning is a physical event). Non-owners see the
+          current values read-only. Tank capacity has been effective-
+          owner-only for a while; alerts + cleaning now match. */}
       {(catalog && (catalog.sensorType === 1 || catalog.sensorType === 2 || info?.sensorType === 1 || info?.sensorType === 2)) && (
         <div className="bg-white rounded-xl shadow-sm border border-gray-200 mt-4 p-4">
           <h3 className="font-semibold text-gray-900 mb-3">Tank Maintenance</h3>
+          {!isEffectiveOwner && (
+            <p className="text-[11px] text-gray-500 mb-3 bg-gray-50 rounded px-2 py-1">
+              Only the tank owner can change maintenance settings.
+            </p>
+          )}
           <div className="grid grid-cols-2 gap-2 text-sm mb-3">
             <span className="text-gray-500">Last Cleaned</span>
             <input type="date" value={lastCleanedAt || ""}
+              disabled={!isEffectiveOwner}
               onChange={async (e) => {
                 const val = e.target.value;
                 setLastCleanedAt(val);
-                await updateDoc(doc(db, "subscriptions", user.uid, "devices", code), { lastCleanedAt: val });
+                await updateDoc(doc(db, "deviceCatalog", code), { lastCleanedAt: val })
+                  .catch((e) => console.warn("lastCleanedAt save failed:", e));
               }}
-              className="px-2 py-0.5 border border-gray-200 rounded text-sm" />
+              className="px-2 py-0.5 border border-gray-200 rounded text-sm disabled:bg-gray-50 disabled:text-gray-500" />
             <span className="text-gray-500">Clean Every</span>
             <div className="flex items-center gap-1">
               <input type="number" min="7" max="365" value={cleanIntervalDays}
+                disabled={!isEffectiveOwner}
                 onChange={(e) => setCleanIntervalDays(parseInt(e.target.value) || 30)}
-                className="w-14 px-2 py-0.5 border border-gray-200 rounded text-sm" />
+                className="w-14 px-2 py-0.5 border border-gray-200 rounded text-sm disabled:bg-gray-50 disabled:text-gray-500" />
               <span className="text-gray-500 text-xs">days</span>
-              <button onClick={async () => {
-                await updateDoc(doc(db, "subscriptions", user.uid, "devices", code), { cleanIntervalDays });
-              }} className="text-xs text-blue-600 hover:underline ml-1">Save</button>
+              {isEffectiveOwner && (
+                <button onClick={async () => {
+                  await updateDoc(doc(db, "deviceCatalog", code), { cleanIntervalDays })
+                    .catch((e) => console.warn("cleanIntervalDays save failed:", e));
+                }} className="text-xs text-blue-600 hover:underline ml-1">Save</button>
+              )}
             </div>
             <span className="text-gray-500">Tank Capacity</span>
             <div className="flex items-center gap-1">
@@ -503,15 +553,18 @@ export default function DeviceDetail() {
               return <span className="text-red-600">🔴 Overdue by {Math.abs(left)} days</span>;
             })()}</span>
           </div>
-          <button onClick={async () => {
-            const today = new Date().toISOString().split("T")[0];
-            await updateDoc(doc(db, "subscriptions", user.uid, "devices", code), {
-              lastCleanedAt: today, cleanIntervalDays,
-            });
-            setLastCleanedAt(today);
-          }} className="w-full bg-green-50 text-green-700 py-2 rounded-lg text-sm font-medium hover:bg-green-100">
-            🍃 Mark as Cleaned Today
-          </button>
+          {isEffectiveOwner && (
+            <button onClick={async () => {
+              const today = new Date().toISOString().split("T")[0];
+              // Canonical cleaning log — deviceCatalog.
+              await updateDoc(doc(db, "deviceCatalog", code), {
+                lastCleanedAt: today, cleanIntervalDays,
+              }).catch((e) => console.warn("cleaning mark failed:", e));
+              setLastCleanedAt(today);
+            }} className="w-full bg-green-50 text-green-700 py-2 rounded-lg text-sm font-medium hover:bg-green-100">
+              🍃 Mark as Cleaned Today
+            </button>
+          )}
         </div>
       )}
 
@@ -524,20 +577,33 @@ export default function DeviceDetail() {
           <div className="bg-white rounded-xl shadow-sm border border-gray-200 mt-4 p-4">
             <h3 className="font-semibold text-gray-900 mb-3">Alert Settings</h3>
 
+            {/* Non-owners see the current thresholds read-only — the
+                owner (or orgAdmin / superadmin) is the only one who
+                can change them. Matches the "one canonical value per
+                tank" model applied to name / capacity / access. */}
+            {!isEffectiveOwner && (
+              <p className="text-[11px] text-gray-500 mb-3 bg-gray-50 rounded px-2 py-1">
+                Only the tank owner can change alerts. Ask them to update these.
+              </p>
+            )}
             {isSingle ? (
               /* Single sensor — simple toggles */
               <div className="space-y-3">
                 <div className="flex items-center justify-between">
                   <span className="text-sm text-gray-700">Alert when Empty</span>
                   <button
+                    disabled={!isEffectiveOwner}
                     onClick={async () => {
                       const newVal = alertLowPct === "" || alertLowPct === null ? 0 : null;
                       setAlertLowPct(newVal === null ? "" : "0");
-                      await updateDoc(doc(db, "subscriptions", user.uid, "devices", code), {
+                      // Canonical write — deviceCatalog. Fire-and-forget:
+                      // any write error surfaces via console; UI already
+                      // reflects intent optimistically.
+                      await updateDoc(doc(db, "deviceCatalog", code), {
                         alertLowPct: newVal,
-                      });
+                      }).catch((e) => console.warn("alertLowPct save failed:", e));
                     }}
-                    className={`px-4 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+                    className={`px-4 py-1.5 rounded-lg text-xs font-semibold transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
                       alertLowPct !== "" && alertLowPct !== null
                         ? "bg-red-500 text-white"
                         : "bg-gray-200 text-gray-600"
@@ -549,14 +615,15 @@ export default function DeviceDetail() {
                 <div className="flex items-center justify-between">
                   <span className="text-sm text-gray-700">Alert when Present</span>
                   <button
+                    disabled={!isEffectiveOwner}
                     onClick={async () => {
                       const newVal = alertHighPct === "" || alertHighPct === null ? 100 : null;
                       setAlertHighPct(newVal === null ? "" : "100");
-                      await updateDoc(doc(db, "subscriptions", user.uid, "devices", code), {
+                      await updateDoc(doc(db, "deviceCatalog", code), {
                         alertHighPct: newVal,
-                      });
+                      }).catch((e) => console.warn("alertHighPct save failed:", e));
                     }}
-                    className={`px-4 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+                    className={`px-4 py-1.5 rounded-lg text-xs font-semibold transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
                       alertHighPct !== "" && alertHighPct !== null
                         ? "bg-green-500 text-white"
                         : "bg-gray-200 text-gray-600"
@@ -574,35 +641,46 @@ export default function DeviceDetail() {
                   <span className="text-gray-500">Low Alert (≤)</span>
                   <div className="flex items-center gap-1">
                     <input type="number" min="0" max="100" value={alertLowPct}
+                      disabled={!isEffectiveOwner}
                       onChange={(e) => { setAlertLowPct(e.target.value); setAlertError(""); }}
                       placeholder="Off"
-                      className="w-16 px-2 py-0.5 border border-gray-200 rounded text-sm" />
+                      className="w-16 px-2 py-0.5 border border-gray-200 rounded text-sm disabled:bg-gray-50 disabled:text-gray-500" />
                     <span className="text-gray-500 text-xs">%</span>
                   </div>
                   <span className="text-gray-500">High Alert (≥)</span>
                   <div className="flex items-center gap-1">
                     <input type="number" min="0" max="100" value={alertHighPct}
+                      disabled={!isEffectiveOwner}
                       onChange={(e) => { setAlertHighPct(e.target.value); setAlertError(""); }}
                       placeholder="Off"
-                      className="w-16 px-2 py-0.5 border border-gray-200 rounded text-sm" />
+                      className="w-16 px-2 py-0.5 border border-gray-200 rounded text-sm disabled:bg-gray-50 disabled:text-gray-500" />
                     <span className="text-gray-500 text-xs">%</span>
                   </div>
                 </div>
                 {alertError && <p className="text-red-500 text-xs mb-2">{alertError}</p>}
-                <button onClick={async () => {
-                  const low = alertLowPct === "" ? null : parseInt(alertLowPct);
-                  const high = alertHighPct === "" ? null : parseInt(alertHighPct);
-                  if (low != null && high != null && low >= high) {
-                    setAlertError("Low must be less than High");
-                    return;
-                  }
-                  await updateDoc(doc(db, "subscriptions", user.uid, "devices", code), {
-                    alertLowPct: low, alertHighPct: high,
-                  });
-                  setAlertError("");
-                }} className="w-full bg-blue-50 text-blue-700 py-2 rounded-lg text-sm font-medium hover:bg-blue-100">
-                  Save Alert Settings
-                </button>
+                {isEffectiveOwner && (
+                  <button onClick={async () => {
+                    const low = alertLowPct === "" ? null : parseInt(alertLowPct);
+                    const high = alertHighPct === "" ? null : parseInt(alertHighPct);
+                    if (low != null && high != null && low >= high) {
+                      setAlertError("Low must be less than High");
+                      return;
+                    }
+                    // Canonical alert thresholds now live on
+                    // deviceCatalog — one setting per physical tank,
+                    // applies to every viewer's alert. See ownership
+                    // model discussion.
+                    await updateDoc(doc(db, "deviceCatalog", code), {
+                      alertLowPct: low, alertHighPct: high,
+                    }).catch((e) => {
+                      console.warn("alerts save failed:", e);
+                      setAlertError("Save failed — try again");
+                    });
+                    setAlertError("");
+                  }} className="w-full bg-blue-50 text-blue-700 py-2 rounded-lg text-sm font-medium hover:bg-blue-100">
+                    Save Alert Settings
+                  </button>
+                )}
                 <p className="text-xs text-gray-400 mt-2">Card flashes red when low, green when high. Leave empty to disable.</p>
               </>
             )}
