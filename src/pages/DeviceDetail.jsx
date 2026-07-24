@@ -213,6 +213,57 @@ export default function DeviceDetail() {
     return () => unsub();
   }, [code]);
 
+  // Rename a device. Fans out to the right stores depending on how
+  // this user relates to the device — each write is independent so
+  // one missing doc (very common for orgAdmin, who has no personal
+  // subscription for org devices) never blocks the others.
+  //
+  //   • Personal subscription (subscriptions/<uid>/devices/<code>)
+  //     → only exists for individual accounts that actually
+  //       subscribed to this device. Skip entirely for orgAdmin, who
+  //       manages the fleet without ever subscribing personally
+  //       (attempting the write throws "No document to update" and
+  //       cascaded the whole rename before this refactor).
+  //   • deviceCatalog/<code>
+  //     → shared display name. Any effective owner may write
+  //       (individual owner OR orgAdmin OR superadmin). Everyone else
+  //       reads through the fallback chain in the UI.
+  //   • orgDevices/<orgId>/devices/<code>
+  //     → what the org dashboard tile reads. Bumped for any org
+  //       device rename so the tile stops showing the stale name.
+  //
+  // Local state is optimistic-updated up front so the input closes
+  // instantly; the writes race in the background. If any of them
+  // fail, we surface an alert but the local rename is kept — user
+  // sees their intent, next reload will re-hydrate from Firestore.
+  async function saveDeviceName(trimmed) {
+    setDeviceName(trimmed);
+    if (isEffectiveOwner) setCatalog({ ...catalog, deviceName: trimmed });
+
+    const writes = [];
+    // Only touch the personal subscription if it actually exists for
+    // this user. Individual subscribers have one; orgAdmin doesn't.
+    if (!isOrg) {
+      writes.push(
+        updateDoc(doc(db, "subscriptions", user.uid, "devices", code), { deviceName: trimmed })
+          .catch((e) => console.warn("subscriptions rename failed:", e))
+      );
+    }
+    if (isEffectiveOwner) {
+      writes.push(
+        updateDoc(doc(db, "deviceCatalog", code), { deviceName: trimmed })
+          .catch((e) => console.warn("deviceCatalog rename failed:", e))
+      );
+    }
+    if (orgId) {
+      writes.push(
+        updateDoc(doc(db, "orgDevices", orgId, "devices", code), { deviceName: trimmed })
+          .catch((e) => console.warn("orgDevices rename failed:", e))
+      );
+    }
+    await Promise.allSettled(writes);
+  }
+
   async function handleUnsubscribe() {
     // Org accounts use a different path — the button label + confirm
     // message + underlying write are handled by handleRemoveFromOrg
@@ -307,17 +358,7 @@ export default function DeviceDetail() {
                 onKeyDown={async (e) => {
                   if (e.key === "Enter") {
                     const trimmed = nameInput.trim();
-                    if (trimmed) {
-                      await updateDoc(doc(db, "subscriptions", user.uid, "devices", code), { deviceName: trimmed });
-                      if (isOwner) await updateDoc(doc(db, "deviceCatalog", code), { deviceName: trimmed });
-                      // Org accounts: dashboard reads from orgDevices, so
-                      // the rename has to land there too or the tile keeps
-                      // showing the old name. Fire-and-forget for the
-                      // org write — non-org accounts skip this entirely.
-                      if (orgId) await updateDoc(doc(db, "orgDevices", orgId, "devices", code), { deviceName: trimmed });
-                      setDeviceName(trimmed);
-                      if (isOwner) setCatalog({ ...catalog, deviceName: trimmed });
-                    }
+                    if (trimmed) await saveDeviceName(trimmed);
                     setEditingName(false);
                   }
                   if (e.key === "Escape") setEditingName(false);
@@ -325,13 +366,7 @@ export default function DeviceDetail() {
               />
               <button onClick={async () => {
                 const trimmed = nameInput.trim();
-                if (trimmed) {
-                  await updateDoc(doc(db, "subscriptions", user.uid, "devices", code), { deviceName: trimmed });
-                  if (isOwner) await updateDoc(doc(db, "deviceCatalog", code), { deviceName: trimmed });
-                  if (orgId) await updateDoc(doc(db, "orgDevices", orgId, "devices", code), { deviceName: trimmed });
-                  setDeviceName(trimmed);
-                  if (isOwner) setCatalog({ ...catalog, deviceName: trimmed });
-                }
+                if (trimmed) await saveDeviceName(trimmed);
                 setEditingName(false);
               }} className="text-xs text-blue-600 hover:underline">Save</button>
               <button onClick={() => setEditingName(false)} className="text-xs text-gray-400 hover:underline">Cancel</button>
