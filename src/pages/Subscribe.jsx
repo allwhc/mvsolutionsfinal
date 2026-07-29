@@ -136,13 +136,22 @@ export default function Subscribe() {
         return;
       }
 
-      // Individual path — unchanged
+      // Individual / superadmin path. Superadmin passes the flag so
+      // subscribeToDevice force-sets isOwner=false regardless of
+      // subscriber order — MV Solutions never owns customer tanks,
+      // superadmin just observes.
       const isFirstSubscriber = subscribers.length === 0;
-      await subscribeToDevice(user.uid, code.trim(), deviceName, isFirstSubscriber);
+      await subscribeToDevice(
+        user.uid, code.trim(), deviceName,
+        isFirstSubscriber, isSuperAdmin,
+      );
 
-      setSuccess(isFirstSubscriber
-        ? "Subscribed as owner! You can set access controls from device details."
-        : "Subscribed successfully!"
+      setSuccess(
+        isSuperAdmin
+          ? "Added to your dashboard for observation."
+          : isFirstSubscriber
+            ? "Subscribed as owner! You can set access controls from device details."
+            : "Subscribed successfully!"
       );
       setTimeout(() => navigate("/dashboard"), 1500);
     } catch (err) {
@@ -228,8 +237,15 @@ export default function Subscribe() {
             <h3 className="font-semibold text-sm text-gray-900 mb-2">Device Found</h3>
             <p className="font-mono text-sm text-gray-700 mb-3">{code}</p>
 
-            {/* First subscriber badge */}
-            {subscribers.length === 0 && (
+            {/* Subscriber-status badge. Superadmin gets a distinct
+                "observer" banner — MV Solutions never owns customer
+                tanks, so the "first subscriber = owner" wording is
+                wrong for them regardless of subscriber order. */}
+            {isSuperAdmin ? (
+              <div className="bg-blue-50 border border-blue-200 rounded-lg px-3 py-2 mb-3">
+                <p className="text-blue-700 text-xs font-medium">You will be added as an observer (SenseFlow admin)</p>
+              </div>
+            ) : subscribers.length === 0 && (
               <div className="bg-green-50 border border-green-200 rounded-lg px-3 py-2 mb-3">
                 <p className="text-green-700 text-xs font-medium">You will be the first subscriber (owner)</p>
               </div>
@@ -284,7 +300,9 @@ export default function Subscribe() {
                   ? (isOrg ? "Adding..." : "Subscribing...")
                   : isOrg
                     ? "Add to Organisation"
-                    : subscribers.length === 0 ? "Subscribe as Owner" : "Subscribe"}
+                    : isSuperAdmin
+                      ? "Add to Observation Dashboard"
+                      : subscribers.length === 0 ? "Subscribe as Owner" : "Subscribe"}
               </button>
             )}
           </div>

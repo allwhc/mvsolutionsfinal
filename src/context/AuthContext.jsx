@@ -2,7 +2,7 @@ import { createContext, useContext, useState, useEffect } from "react";
 import { onAuthStateChanged } from "firebase/auth";
 import { doc, getDoc } from "firebase/firestore";
 import { auth, db } from "../firebase/config";
-import { getUserDoc, updateUserDoc, getPlan, getOrg } from "../firebase/db";
+import { getUserDoc, updateUserDoc, getPlan, getOrg, cleanupSuperadminOwnership } from "../firebase/db";
 
 // Self-heal path — reads the user's OWN membership record from their
 // pending or current org and reconciles the user doc. Called on every
@@ -196,6 +196,20 @@ export function AuthProvider({ children }) {
 
         setDeactivated(false);
         await updateUserDoc(firebaseUser.uid, { lastLogin: new Date() });
+
+        // Superadmin housekeeping — strip any accidental ownership
+        // (e.g. from a test subscribe before the "never own" rule
+        // shipped). Cheap when clean, silent when nothing to fix,
+        // never throws. Runs once per session — a small
+        // sessionStorage marker keeps it from repeating on every
+        // route change or hot-reload.
+        if (doc.role === "superadmin") {
+          const marker = `sa-cleanup:${firebaseUser.uid}`;
+          if (!sessionStorage.getItem(marker)) {
+            sessionStorage.setItem(marker, "1");
+            cleanupSuperadminOwnership(firebaseUser.uid).catch(() => { /* logged inside */ });
+          }
+        }
       } else {
         setUser(null);
         setUserData(null);

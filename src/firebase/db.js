@@ -298,7 +298,20 @@ export async function updatePlan(planId, data) {
 }
 
 // ── Subscriptions ──
-export async function subscribeToDevice(uid, deviceCode, deviceName, isOwner = false) {
+// Subscribe a user to a device.
+//
+// isSuperAdmin: pass true from the caller when the subscribing user is
+// a SenseFlow superadmin. In that case we FORCE isOwner=false regardless
+// of subscriber order — superadmin is treated as a permanent observer
+// on every device (MV Solutions doesn't own the tanks customers bought).
+// Their subscription record is written for dashboard visibility only,
+// and deviceCatalog.ownerUid is never set to a superadmin's uid.
+export async function subscribeToDevice(uid, deviceCode, deviceName, isOwner = false, isSuperAdmin = false) {
+  // Superadmin can never own — enforced here so no caller can slip
+  // isOwner=true through by accident (e.g. "first subscriber" logic
+  // in Subscribe.jsx that doesn't know about the role).
+  if (isSuperAdmin) isOwner = false;
+
   const batch = writeBatch(db);
 
   batch.set(doc(db, "subscriptions", uid, "devices", deviceCode), {
@@ -330,6 +343,104 @@ export async function subscribeToDevice(uid, deviceCode, deviceName, isOwner = f
   }
 
   await batch.commit();
+}
+
+// One-shot housekeeping: strip accidental superadmin ownership. Runs
+// on superadmin login (see AuthContext). Cheap when nothing needs
+// fixing — a single indexed query on deviceCatalog.ownerUid.
+//
+// Cleans up two artefacts:
+//   1. deviceCatalog docs where ownerUid == this superadmin's uid
+//      → set ownerUid = null (device becomes ownerless; next real
+//        customer to subscribe becomes owner naturally, or admin
+//        assigns via the Assign Owner tool)
+//   2. subscriptions/<superadminUid>/devices/* with isOwner=true
+//      → flip isOwner=false so future unsubscribe paths don't try
+//        to run the ownership-transfer logic
+//   3. deviceSubscribers/<code>/subscribers/<superadminUid>.isOwner
+//      → same, keep the mirror consistent
+//
+// Silent — logs to console on any per-doc failure but never throws
+// out of the function. Best-effort so a partial cleanup still improves
+// state.
+export async function cleanupSuperadminOwnership(superadminUid) {
+  let cleaned = 0;
+  try {
+    // 1. Catalog docs the superadmin owns.
+    const q = query(
+      collection(db, "deviceCatalog"),
+      where("ownerUid", "==", superadminUid),
+    );
+    const snap = await getDocs(q);
+    for (const d of snap.docs) {
+      try {
+        await updateDoc(doc(db, "deviceCatalog", d.id), { ownerUid: null });
+        cleaned++;
+      } catch (e) {
+        console.warn(`cleanupSuperadminOwnership: catalog ${d.id} failed:`, e);
+      }
+    }
+  } catch (e) {
+    console.warn("cleanupSuperadminOwnership: catalog query failed:", e);
+  }
+
+  // 2. Superadmin's own subscription records — clear isOwner flags.
+  try {
+    const subSnap = await getDocs(collection(db, "subscriptions", superadminUid, "devices"));
+    for (const s of subSnap.docs) {
+      if (s.data().isOwner) {
+        try {
+          await updateDoc(doc(db, "subscriptions", superadminUid, "devices", s.id), { isOwner: false });
+          // Also fix the mirror if it exists.
+          await updateDoc(doc(db, "deviceSubscribers", s.id, "subscribers", superadminUid), { isOwner: false })
+            .catch(() => { /* mirror may not exist for legacy rows */ });
+        } catch (e) {
+          console.warn(`cleanupSuperadminOwnership: sub ${s.id} failed:`, e);
+        }
+      }
+    }
+  } catch (e) {
+    console.warn("cleanupSuperadminOwnership: subs scan failed:", e);
+  }
+  return cleaned;
+}
+
+// Admin tool: reassign a device's ownerUid. Used when a device is
+// stuck ownerless (e.g. after superadmin cleanup, or the original
+// owner deleted their account). Superadmin-only from the UI side;
+// Firestore rules already allow any authed update to deviceCatalog.
+//
+// Pass newOwnerUid=null to explicitly clear ownership.
+// Also flips isOwner on the target user's subscription record + mirror
+// so the "Owner" badge appears on their side without needing them to
+// re-subscribe. If they don't have a subscription record yet, we skip
+// those writes silently — the catalog.ownerUid alone is enough for
+// isEffectiveOwner in the UI to grant them owner rights.
+export async function assignDeviceOwner(deviceCode, newOwnerUid) {
+  // Read the previous owner so we can strip their isOwner flag too.
+  let prevOwnerUid = null;
+  try {
+    const snap = await getDoc(doc(db, "deviceCatalog", deviceCode));
+    if (snap.exists()) prevOwnerUid = snap.data().ownerUid || null;
+  } catch { /* ignore */ }
+
+  await updateDoc(doc(db, "deviceCatalog", deviceCode), { ownerUid: newOwnerUid || null });
+
+  // Strip isOwner from previous owner's subscription records.
+  if (prevOwnerUid && prevOwnerUid !== newOwnerUid) {
+    try { await updateDoc(doc(db, "subscriptions", prevOwnerUid, "devices", deviceCode), { isOwner: false }); }
+    catch { /* record may not exist */ }
+    try { await updateDoc(doc(db, "deviceSubscribers", deviceCode, "subscribers", prevOwnerUid), { isOwner: false }); }
+    catch { /* mirror may not exist */ }
+  }
+
+  // Flip isOwner on the new owner's subscription records.
+  if (newOwnerUid) {
+    try { await updateDoc(doc(db, "subscriptions", newOwnerUid, "devices", deviceCode), { isOwner: true }); }
+    catch { /* they might not be subscribed yet — that's OK */ }
+    try { await updateDoc(doc(db, "deviceSubscribers", deviceCode, "subscribers", newOwnerUid), { isOwner: true }); }
+    catch { /* mirror may not exist */ }
+  }
 }
 
 export async function unsubscribeFromDevice(uid, deviceCode) {

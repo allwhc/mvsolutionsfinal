@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { useSearchParams } from "react-router-dom";
-import { getAllDevices, approvePendingDevice, registerDevice, updateDevice, deleteDeviceFromCatalog, getAllUsers, getAllOrgs } from "../../firebase/db";
+import { getAllDevices, approvePendingDevice, registerDevice, updateDevice, deleteDeviceFromCatalog, getAllUsers, getAllOrgs, subscribeToDevice, assignDeviceOwner, getDeviceSubscribers } from "../../firebase/db";
+import { useAuth } from "../../context/AuthContext";
 import { sendTestCommand, sendRestartCommand, getPendingDevicesRTDB, listenToDeviceLive, listenToDeviceInfo, listenToValveConfig, setAnalyticsEnabled, setDiagnosticsEnabled, setNotifyEnabled, bulkSetConfigFlag, getDevicesInfoMap, getDevicesConfigMap, getDeviceInfo, deleteHistoryOlderThan } from "../../firebase/rtdb";
 import { QRCodeSVG } from "qrcode.react";
 
@@ -8,6 +9,7 @@ const DEVICE_CLASS = { 1: "Valve", 2: "Sensor", 3: "Motor", "senseflowstandard":
 const SENSOR_TYPE = { 0: "None", 1: "DIP", 2: "Ultrasonic" };
 
 export default function AdminDevices() {
+  const { user } = useAuth();
   const [searchParams] = useSearchParams();
   const [pending, setPending] = useState([]);
   const [registered, setRegistered] = useState([]);
@@ -20,8 +22,13 @@ export default function AdminDevices() {
     return t === "pending" || t === "registered" ? t : "registered";
   });
   const [registerModal, setRegisterModal] = useState(null);
-  const [extraFields, setExtraFields] = useState({ deviceName: "", location: "", notes: "" });
+  const [extraFields, setExtraFields] = useState({ deviceName: "", location: "", notes: "", addToObservation: false });
   const [qrDevice, setQrDevice] = useState(null);
+  // Assign-owner modal — non-null when open. Holds the device being
+  // reassigned. Used to fix stuck-ownerless devices left behind by
+  // the superadmin cleanup or by legacy accidental subscriptions.
+  const [assignOwnerFor, setAssignOwnerFor] = useState(null);
+  const [assignOwnerPick, setAssignOwnerPick] = useState("");
   const [showManualAdd, setShowManualAdd] = useState(false);
   const [manualForm, setManualForm] = useState({
     deviceCode: "", deviceClass: 2, sensorType: 1, sensorCount: 4,
@@ -532,11 +539,60 @@ export default function AdminDevices() {
       if (extraFields.notes) extra.notes = extraFields.notes;
       await approvePendingDevice(deviceCode, pendingDev || {}, extra);
       setRegisterModal(null);
-      setExtraFields({ deviceName: "", location: "", notes: "" });
+      // Optional: also add this device to superadmin's own dashboard
+      // as an observer, so it appears alongside their other watched
+      // devices without a separate "add" trip. isSuperAdmin=true
+      // forces isOwner=false regardless of subscriber order — MV
+      // Solutions never owns customer tanks.
+      if (extraFields.addToObservation && user?.uid) {
+        try {
+          const nameForSub = extraFields.deviceName || deviceCode;
+          await subscribeToDevice(user.uid, deviceCode, nameForSub, false, true);
+        } catch (e) {
+          console.warn("observation subscribe failed:", e);
+          // Non-fatal — device is registered even if observation add fails.
+        }
+      }
+      setExtraFields({ deviceName: "", location: "", notes: "", addToObservation: false });
       await load();
       setQrDevice(deviceCode);
       setTab("registered");
     } catch (err) { alert(err.message); }
+  }
+
+  // Assign-owner tool state — list of current subscribers of the
+  // device open in the assign modal. Loaded lazily when the modal
+  // opens; empty otherwise. Includes anyone who has ever subscribed
+  // (both owner-flagged and observers).
+  const [assignOwnerSubs, setAssignOwnerSubs] = useState([]);
+  useEffect(() => {
+    if (!assignOwnerFor) { setAssignOwnerSubs([]); return; }
+    (async () => {
+      try {
+        const subs = await getDeviceSubscribers(assignOwnerFor.deviceCode);
+        setAssignOwnerSubs(subs || []);
+        // Preselect the current owner if the device already has one.
+        setAssignOwnerPick(assignOwnerFor.ownerUid || "");
+      } catch (e) {
+        console.warn("assign owner subs load failed:", e);
+        setAssignOwnerSubs([]);
+      }
+    })();
+  }, [assignOwnerFor]);
+
+  async function handleAssignOwner() {
+    if (!assignOwnerFor) return;
+    const code = assignOwnerFor.deviceCode;
+    const pick = assignOwnerPick || null;
+    // pick === null (or empty string treated as null) clears ownership.
+    try {
+      await assignDeviceOwner(code, pick);
+      setAssignOwnerFor(null);
+      setAssignOwnerPick("");
+      await load();
+    } catch (e) {
+      alert("Assign failed: " + (e?.message || e));
+    }
   }
 
   // ── Manual registration ──
@@ -1143,7 +1199,7 @@ export default function AdminDevices() {
                     const info = await getDeviceInfo(d.deviceCode);
                     installerName = (info?.userAssignedName || "").trim();
                   } catch { /* offline / permissions → blank */ }
-                  setExtraFields({ deviceName: installerName, location: "", notes: "" });
+                  setExtraFields({ deviceName: installerName, location: "", notes: "", addToObservation: false });
                   setRegisterModal({ ...d, installerName });
                 }} className="bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-green-700">Register</button>
               </div>
@@ -1411,6 +1467,9 @@ export default function AdminDevices() {
                       <button onClick={() => sendTestCommand(d.deviceCode)} className="px-3 py-1.5 bg-green-50 text-green-600 rounded-lg text-xs hover:bg-green-100">Test</button>
                       <button onClick={() => sendRestartCommand(d.deviceCode)} className="px-3 py-1.5 bg-yellow-50 text-yellow-600 rounded-lg text-xs hover:bg-yellow-100">Restart</button>
                       <button onClick={() => setQrDevice(d.deviceCode)} className="px-3 py-1.5 bg-blue-50 text-blue-600 rounded-lg text-xs hover:bg-blue-100">QR</button>
+                      <button onClick={() => setAssignOwnerFor(d)} className="px-3 py-1.5 bg-indigo-50 text-indigo-700 rounded-lg text-xs hover:bg-indigo-100">
+                        Owner
+                      </button>
                       <button onClick={() => handleToggleDeviceActive(d.deviceCode, d.isActive)}
                         className={`px-3 py-1.5 rounded-lg text-xs ${devActive ? "bg-red-50 text-red-600 hover:bg-red-100" : "bg-green-50 text-green-600 hover:bg-green-100"}`}>
                         {devActive ? "Deactivate" : "Activate"}
@@ -1450,10 +1509,94 @@ export default function AdminDevices() {
                 className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm" />
               <textarea placeholder="Notes" value={extraFields.notes} onChange={(e) => setExtraFields({ ...extraFields, notes: e.target.value })}
                 className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm" rows={2} />
+              {/* Observation shortcut — one-click register-and-watch.
+                  Auto-subscribes superadmin (isOwner forced false) so
+                  the device shows on their dashboard for immediate
+                  diagnostics without a second trip through Subscribe. */}
+              <label className="flex items-start gap-2 text-sm text-gray-700 cursor-pointer bg-blue-50 border border-blue-200 rounded-lg px-3 py-2">
+                <input
+                  type="checkbox"
+                  checked={extraFields.addToObservation}
+                  onChange={(e) => setExtraFields({ ...extraFields, addToObservation: e.target.checked })}
+                  className="mt-0.5"
+                />
+                <span>
+                  <span className="font-medium">Also add to my dashboard</span>
+                  <span className="block text-[11px] text-gray-500">Watch this device from your dashboard for diagnostics. You will not be recorded as owner.</span>
+                </span>
+              </label>
             </div>
             <div className="flex gap-2">
               <button onClick={() => handleApprove(registerModal.deviceCode)} className="flex-1 bg-green-600 text-white py-2 rounded-lg text-sm font-medium">Approve & Register</button>
               <button onClick={() => setRegisterModal(null)} className="px-4 py-2 bg-gray-100 text-gray-600 rounded-lg text-sm">Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Assign Owner Modal — superadmin sets/clears deviceCatalog.ownerUid
+          for a device. Used when a device is stuck ownerless (e.g. after
+          the superadmin-cleanup nulled a legacy accidental owner) OR to
+          hand a device over to a different customer. */}
+      {assignOwnerFor && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+             onClick={() => setAssignOwnerFor(null)}>
+          <div className="bg-white rounded-xl p-6 w-full max-w-md" onClick={(e) => e.stopPropagation()}>
+            <h3 className="font-bold text-lg mb-1">Assign device owner</h3>
+            <p className="text-xs text-gray-500 mb-1">{assignOwnerFor.deviceName || assignOwnerFor.deviceCode}</p>
+            <p className="font-mono text-[11px] text-gray-400 mb-4">{assignOwnerFor.deviceCode}</p>
+
+            {(() => {
+              const cur = ownerInfoFor(assignOwnerFor);
+              return (
+                <div className="mb-3 text-xs px-3 py-2 rounded-lg bg-gray-50 border border-gray-200">
+                  <span className="text-gray-500">Current owner: </span>
+                  <span className="font-medium text-gray-900">
+                    {cur ? `${cur.name}${cur.email ? ` (${cur.email})` : ""}` : "— unassigned —"}
+                  </span>
+                </div>
+              );
+            })()}
+
+            <label className="block text-xs text-gray-500 mb-1">Pick a new owner from current subscribers</label>
+            {assignOwnerSubs.length === 0 ? (
+              <p className="text-xs text-gray-400 italic mb-3">
+                No subscribers yet. Ask the customer to scan the QR — the next real subscriber becomes owner naturally, or come back here to assign after.
+              </p>
+            ) : (
+              <select
+                value={assignOwnerPick}
+                onChange={(e) => setAssignOwnerPick(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm mb-3"
+              >
+                <option value="">— Unassigned (clear owner) —</option>
+                {assignOwnerSubs.map((s) => {
+                  const u = usersMap[s.uid];
+                  const label = u
+                    ? `${u.displayName || u.email || s.uid.substring(0, 12)}${u.email ? ` — ${u.email}` : ""}`
+                    : s.uid.substring(0, 24) + "…";
+                  return (
+                    <option key={s.uid} value={s.uid}>
+                      {label}{s.isOwner ? " (current owner)" : ""}
+                    </option>
+                  );
+                })}
+              </select>
+            )}
+
+            <div className="flex gap-2">
+              <button
+                onClick={handleAssignOwner}
+                className="flex-1 bg-indigo-600 text-white py-2 rounded-lg text-sm font-medium hover:bg-indigo-700"
+              >
+                {assignOwnerPick ? "Assign as Owner" : "Clear Owner"}
+              </button>
+              <button
+                onClick={() => setAssignOwnerFor(null)}
+                className="px-4 py-2 bg-gray-100 text-gray-600 rounded-lg text-sm"
+              >
+                Cancel
+              </button>
             </div>
           </div>
         </div>
