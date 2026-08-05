@@ -555,17 +555,29 @@ export default function Dashboard() {
                 const showRemoveX = activeGroup && isOrgAdmin && !locked;
                 return (
                   <SortableTile key={d.deviceCode} id={d.deviceCode} enabled={dragEnabled}>
-                    <div className="relative">
+                    <div className="relative group">
                       {inner}
+                      {/* Wing-detach button — small minus icon, quiet
+                          at rest (grey, low opacity) so the tile stays
+                          calm. Reveals red confirm styling on hover so
+                          the affordance is unmistakable when the admin
+                          actually reaches for it. Minus (−) icon reads
+                          as "remove from list," not "delete forever"
+                          (× was too alarming). */}
                       {showRemoveX && (
                         <button
                           onClick={(e) => { e.preventDefault(); e.stopPropagation(); removeDeviceFromWing(activeGroup.groupId, d.deviceCode); }}
                           onMouseDown={(e) => e.stopPropagation()}
-                          className="absolute top-2 right-2 z-10 w-7 h-7 rounded-full bg-red-500 text-white text-sm font-bold flex items-center justify-center shadow hover:bg-red-600"
+                          className="absolute top-1.5 right-1.5 z-10 w-[22px] h-[22px] rounded-full flex items-center justify-center shadow-sm transition-all
+                                     bg-white/80 text-gray-400 ring-1 ring-gray-300 opacity-40
+                                     group-hover:opacity-100
+                                     hover:bg-red-500 hover:text-white hover:ring-red-500"
                           title={`Remove from ${activeGroup.name}`}
                           aria-label={`Remove device from ${activeGroup.name}`}
                         >
-                          ×
+                          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={3}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M20 12H4" />
+                          </svg>
                         </button>
                       )}
                     </div>
