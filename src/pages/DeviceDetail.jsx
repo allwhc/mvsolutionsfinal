@@ -446,7 +446,13 @@ export default function DeviceDetail() {
           <span className="text-gray-500">Class</span>
           <span className="text-gray-900">{DEVICE_CLASS[catalog.deviceClass] || "Unknown"}</span>
           <span className="text-gray-500">Sensor Type</span>
-          <span className="text-gray-900">{SENSOR_TYPE[catalog.sensorType] || "Unknown"}</span>
+          {/* Prefer info.sensorType (fresh from firmware — always
+              matches whatever firmware is actually flashed) over
+              catalog.sensorType (stale — set once at admin
+              registration and never updated after re-flashing to a
+              different sensor type). Matches SensorCard which also
+              reads info first. */}
+          <span className="text-gray-900">{SENSOR_TYPE[info?.sensorType ?? catalog.sensorType] || "Unknown"}</span>
           {tankCapacityLitres > 0 && (
             <>
               <span className="text-gray-500">Tank Capacity</span>

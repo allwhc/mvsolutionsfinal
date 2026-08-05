@@ -27,20 +27,6 @@ function getAlertFlash({ sensorError, sensorOffline, confirmedPct, alertLowPct, 
   return "";
 }
 
-// Convert centimetres to a human "X ft Y in" string. Rounds inches to
-// the nearest whole; overflows into the next foot if inches round to
-// 12. Used for ultrasonic water-depth display on the tile — customers
-// think in ft/in, not cm. Firmware sends distance in cm via live.rawCm
-// (already free — rides existing /live payload).
-function cmToFtIn(cm) {
-  if (cm == null || !isFinite(cm) || cm < 0) return "";
-  const totalInches = cm / 2.54;
-  let ft = Math.floor(totalInches / 12);
-  let inches = Math.round(totalInches - ft * 12);
-  if (inches === 12) { ft += 1; inches = 0; }
-  return `${ft} ft ${inches} in`;
-}
-
 // Compute water column height in cm for an ultrasonic device.
 //
 // Prefer live.rawCm (accurate — actual sensor reading in cm from
@@ -166,7 +152,11 @@ export default function SensorCard({ deviceCode, deviceName, live, info, catalog
         </div>
       </div>
 
-      {/* Tank visualization */}
+      {/* Tank visualization. Depth is computed here (has the live +
+          info + sensorType context) and passed to TankViz so the
+          third stat pill renders alongside LEVEL + VOLUME. Only
+          ultrasonic devices with enough data get a depth value;
+          everything else passes null → pill hidden. */}
       {sensorOffline ? (
         <div className="text-center py-4">
           <p className="text-sm text-red-500 font-medium">Sensor Offline</p>
@@ -179,32 +169,22 @@ export default function SensorCard({ deviceCode, deviceName, live, info, catalog
           sensorError={sensorError}
           sensorType={sensorType}
           tankCapacityLitres={tankCapacityLitres}
+          waterDepthCm={sensorType === 2 && isOnline && !sensorError
+            ? computeWaterDepthCm({
+                rawCm:        live?.rawCm,
+                pct:          confirmedPct,
+                tankHeightCm: info?.tankHeightCm,
+                overflowCm:   info?.overflowCm,
+                suctionCm:    info?.suctionCm,
+              })
+            : null}
         />
       )}
 
-      {/* Sensor type label + water depth (ultrasonic only, when we
-          have enough data). Depth uses live.rawCm when firmware sent
-          it (accurate); falls back to reverse-math from pct + /info
-          geometry for older firmware. Hidden entirely if the device
-          is offline, in error state, or geometry not yet reported. */}
+      {/* Sensor type label */}
       <div className="flex items-center justify-between text-xs text-gray-400">
         <span>{sensorType === 1 ? "DIP" : sensorType === 2 ? "Ultrasonic" : "Sensor"}</span>
         {sensorError && <span className="text-purple-600 font-medium">Sensor Error</span>}
-        {sensorType === 2 && isOnline && !sensorError && !sensorOffline && (() => {
-          const depthCm = computeWaterDepthCm({
-            rawCm:        live?.rawCm,
-            pct:          confirmedPct,
-            tankHeightCm: info?.tankHeightCm,
-            overflowCm:   info?.overflowCm,
-            suctionCm:    info?.suctionCm,
-          });
-          if (depthCm == null) return null;
-          return (
-            <span className="text-blue-600 font-medium tabular-nums">
-              {cmToFtIn(depthCm)}
-            </span>
-          );
-        })()}
       </div>
 
       {/* Footer */}

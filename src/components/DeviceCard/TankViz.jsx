@@ -15,7 +15,25 @@ export function formatTimestamp(ts) {
   return `${date.getDate()} ${date.toLocaleString("default", { month: "short" })}, ${time}`;
 }
 
-export default function TankViz({ confirmedPct, sensorBits, sensorCount, sensorError, sensorType, tankCapacityLitres }) {
+// Format cm → "X ft Y in" — shared with SensorCard callers so both
+// the tile stat pill and any inline label use the same rounding rule.
+function cmToFtIn(cm) {
+  if (cm == null || !isFinite(cm) || cm < 0) return "";
+  const totalInches = cm / 2.54;
+  let ft = Math.floor(totalInches / 12);
+  let inches = Math.round(totalInches - ft * 12);
+  if (inches === 12) { ft += 1; inches = 0; }
+  return `${ft} ft ${inches} in`;
+}
+
+export default function TankViz({
+  confirmedPct, sensorBits, sensorCount, sensorError, sensorType,
+  tankCapacityLitres,
+  // Water column depth in cm — passed from SensorCard when it can
+  // compute a meaningful value (ultrasonic + rawCm/geometry known).
+  // Renders as a third stat pill next to LEVEL + VOLUME. Null → hide.
+  waterDepthCm,
+}) {
   const pct = confirmedPct ?? 0;
   const prevPctRef = useRef(null);
   const [trend, setTrend] = useState(null);
@@ -138,36 +156,69 @@ export default function TankViz({ confirmedPct, sensorBits, sensorCount, sensorE
         </div>
       </div>
 
-      {/* Bottom row: highlighted % + KL chips */}
-      <div className={`flex items-stretch ${litreDisplay ? "gap-2" : ""} w-full max-w-[220px]`}>
-        {/* Percentage chip */}
-        <div
-          className={`flex-1 rounded-lg px-3 py-1.5 text-center shadow-sm ${
-            sensorError
-              ? "bg-gradient-to-br from-purple-50 to-purple-100 ring-1 ring-purple-200"
-              : "bg-gradient-to-br from-blue-50 to-blue-100 ring-1 ring-blue-200"
-          }`}
-        >
-          <div className={`text-[10px] uppercase tracking-wider font-semibold ${sensorError ? "text-purple-600" : "text-blue-600"}`}>
-            Level
-          </div>
-          <div className={`text-2xl font-extrabold leading-tight ${sensorError ? "text-purple-700" : "text-blue-700"}`}>
-            {sensorError ? "ERR" : count === 1 ? (pct > 0 ? "ON" : "OFF") : `${pct}%`}
-          </div>
-        </div>
+      {/* Bottom row: stat pills. Always shows LEVEL; adds VOLUME when
+          tank capacity configured; adds DEPTH for ultrasonic devices
+          when the sensor has reported a real reading + geometry is
+          known. Pills flex-1 so 1/2/3 stats all fill the row cleanly.
+          Max width grows when a third pill appears to keep each pill
+          a comfortable width. */}
+      {(() => {
+        const depthDisplay = (typeof waterDepthCm === "number" && !sensorError)
+          ? cmToFtIn(waterDepthCm)
+          : null;
+        const pillCount = 1 + (litreDisplay ? 1 : 0) + (depthDisplay ? 1 : 0);
+        // Widen the row so each pill stays legible when there are 3.
+        // Two pills ~220px total (existing); three pills ~300px.
+        const maxWidth = pillCount === 3 ? "max-w-[300px]" : "max-w-[220px]";
+        // For 3 pills the DEPTH text ("1 ft 6 in") is wider than
+        // "12%" — shrink font a step so all three align visually.
+        const pctFont = pillCount === 3 ? "text-xl" : "text-2xl";
+        const bigFont = pillCount === 3 ? "text-xl" : "text-2xl";
+        return (
+          <div className={`flex items-stretch gap-2 w-full ${maxWidth}`}>
+            {/* LEVEL — always shown */}
+            <div
+              className={`flex-1 min-w-0 rounded-lg px-2 py-1.5 text-center shadow-sm ${
+                sensorError
+                  ? "bg-gradient-to-br from-purple-50 to-purple-100 ring-1 ring-purple-200"
+                  : "bg-gradient-to-br from-blue-50 to-blue-100 ring-1 ring-blue-200"
+              }`}
+            >
+              <div className={`text-[10px] uppercase tracking-wider font-semibold ${sensorError ? "text-purple-600" : "text-blue-600"}`}>
+                Level
+              </div>
+              <div className={`${pctFont} font-extrabold leading-tight ${sensorError ? "text-purple-700" : "text-blue-700"}`}>
+                {sensorError ? "ERR" : count === 1 ? (pct > 0 ? "ON" : "OFF") : `${pct}%`}
+              </div>
+            </div>
 
-        {/* Litres chip — only when capacity configured */}
-        {litreDisplay && (
-          <div className="flex-1 rounded-lg px-3 py-1.5 text-center bg-gradient-to-br from-cyan-50 to-cyan-100 ring-1 ring-cyan-200 shadow-sm">
-            <div className="text-[10px] uppercase tracking-wider font-semibold text-cyan-700">
-              Volume
-            </div>
-            <div className="text-2xl font-extrabold leading-tight text-cyan-700 whitespace-nowrap">
-              {litreDisplay}
-            </div>
+            {/* VOLUME — when capacity configured */}
+            {litreDisplay && (
+              <div className="flex-1 min-w-0 rounded-lg px-2 py-1.5 text-center bg-gradient-to-br from-cyan-50 to-cyan-100 ring-1 ring-cyan-200 shadow-sm">
+                <div className="text-[10px] uppercase tracking-wider font-semibold text-cyan-700">
+                  Volume
+                </div>
+                <div className={`${bigFont} font-extrabold leading-tight text-cyan-700 whitespace-nowrap`}>
+                  {litreDisplay}
+                </div>
+              </div>
+            )}
+
+            {/* DEPTH — ultrasonic only, when computable. Indigo
+                distinguishes it from LEVEL (blue) + VOLUME (cyan). */}
+            {depthDisplay && (
+              <div className="flex-1 min-w-0 rounded-lg px-2 py-1.5 text-center bg-gradient-to-br from-indigo-50 to-indigo-100 ring-1 ring-indigo-200 shadow-sm">
+                <div className="text-[10px] uppercase tracking-wider font-semibold text-indigo-700">
+                  Depth
+                </div>
+                <div className={`${bigFont} font-extrabold leading-tight text-indigo-700 whitespace-nowrap`}>
+                  {depthDisplay}
+                </div>
+              </div>
+            )}
           </div>
-        )}
-      </div>
+        );
+      })()}
     </div>
   );
 }

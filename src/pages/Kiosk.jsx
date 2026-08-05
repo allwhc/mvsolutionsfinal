@@ -44,6 +44,42 @@ function fmtLitres(v) {
   return v + " L";
 }
 
+// Water depth in cm for ultrasonic — same logic as SensorCard's
+// computeWaterDepthCm. Kept local here so Kiosk doesn't need to
+// import from the DeviceCard tree.
+function computeDepthKiosk({ rawCm, pct, tankHeightCm, overflowCm, suctionCm }) {
+  const tank = Number(tankHeightCm);
+  if (!isFinite(tank) || tank <= 0) return null;
+  const ovfl    = Number(overflowCm) || 0;
+  const suction = Number(suctionCm)  || 0;
+  const suctionCutoffCm = suction > 0 && suction < tank ? tank - suction : tank;
+  const topCutoffCm     = ovfl    > 0 && ovfl    < tank ? ovfl           : 0;
+  const rc = Number(rawCm);
+  if (isFinite(rc) && rc > 0) {
+    let d = suctionCutoffCm - rc;
+    if (d < 0) d = 0;
+    if (d > suctionCutoffCm - topCutoffCm) d = suctionCutoffCm - topCutoffCm;
+    return d;
+  }
+  const p = Number(pct);
+  if (isFinite(p) && p >= 0 && p <= 100) {
+    const usable = suctionCutoffCm - topCutoffCm;
+    if (usable <= 0) return null;
+    return (p / 100) * usable;
+  }
+  return null;
+}
+
+// cm → "X ft Y in", or "" if depth is null.
+function cmToFtInKiosk(cm) {
+  if (cm == null || !isFinite(cm) || cm < 0) return "";
+  const totalInches = cm / 2.54;
+  let ft = Math.floor(totalInches / 12);
+  let inches = Math.round(totalInches - ft * 12);
+  if (inches === 12) { ft += 1; inches = 0; }
+  return `${ft} ft ${inches} in`;
+}
+
 // A tank is "in alert" ONLY when the user has explicitly set a threshold
 // AND the current value crosses it. Purple/grey states (sensor fault,
 // offline) DO NOT push a tank to alert zone — they just tint the tile.
@@ -86,6 +122,21 @@ function TankTile({ d, isOnline, colorByLevel, compact, isAlert }) {
   const litres     = capL > 0 ? Math.round((pct * capL) / 100) : 0;
   const name       = d.deviceName || d.deviceCode;
   const userLabel  = d.info?.userAssignedName || "";
+
+  // Water depth for ultrasonic devices. Same source-of-truth
+  // priority as SensorCard: prefer live.rawCm (exact), fall back to
+  // pct + geometry math. Null when device is DIP, offline, errored,
+  // or geometry not yet reported.
+  const sType = d.info?.sensorType ?? d.catalog?.sensorType;
+  const depthText = (sType === 2 && isOnline && !sensorErr)
+    ? cmToFtInKiosk(computeDepthKiosk({
+        rawCm:        d.live?.rawCm,
+        pct,
+        tankHeightCm: d.info?.tankHeightCm,
+        overflowCm:   d.info?.overflowCm,
+        suctionCm:    d.info?.suctionCm,
+      }))
+    : "";
 
   // Tile-level status color. Alert flashing wins visually via the outer
   // ring; below the ring the tile still shows its band color so a viewer
@@ -164,6 +215,16 @@ function TankTile({ d, isOnline, colorByLevel, compact, isAlert }) {
               </span>
             </div>
           )}
+          {/* Depth pill for ultrasonic — indigo tone to distinguish
+              from the level-band litres pill. Only when we have real
+              geometry data. */}
+          {depthText && (
+            <div className="mt-1 px-2.5 py-1 rounded-full whitespace-nowrap bg-indigo-900/60">
+              <span className="text-sm font-bold text-indigo-200 leading-none">
+                Depth {depthText}
+              </span>
+            </div>
+          )}
         </div>
       ) : (
         // Normal layout: SVG tank on left, readout on right.
@@ -207,6 +268,13 @@ function TankTile({ d, isOnline, colorByLevel, compact, isAlert }) {
             {capL > 0 && (
               <div className="text-[10px] text-neutral-400 truncate">
                 {isOnline ? `${fmtLitres(litres)} / ${fmtLitres(capL)}` : fmtLitres(capL)}
+              </div>
+            )}
+            {/* Ultrasonic-only depth line — matches the compact-mode
+                indigo tone so both layouts read the same. */}
+            {depthText && (
+              <div className="text-[10px] text-indigo-300 truncate font-semibold">
+                Depth {depthText}
               </div>
             )}
           </div>
