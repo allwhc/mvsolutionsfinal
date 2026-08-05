@@ -27,6 +27,61 @@ function getAlertFlash({ sensorError, sensorOffline, confirmedPct, alertLowPct, 
   return "";
 }
 
+// Convert centimetres to a human "X ft Y in" string. Rounds inches to
+// the nearest whole; overflows into the next foot if inches round to
+// 12. Used for ultrasonic water-depth display on the tile — customers
+// think in ft/in, not cm. Firmware sends distance in cm via live.rawCm
+// (already free — rides existing /live payload).
+function cmToFtIn(cm) {
+  if (cm == null || !isFinite(cm) || cm < 0) return "";
+  const totalInches = cm / 2.54;
+  let ft = Math.floor(totalInches / 12);
+  let inches = Math.round(totalInches - ft * 12);
+  if (inches === 12) { ft += 1; inches = 0; }
+  return `${ft} ft ${inches} in`;
+}
+
+// Compute water column height in cm for an ultrasonic device.
+//
+// Prefer live.rawCm (accurate — actual sensor reading in cm from
+// sensor face to water surface). Fall back to reverse-math from
+// confirmedPct + geometry when rawCm is missing (older firmware). The
+// reverse-math variant carries a small quantization error (~2 in)
+// because pct is integer 0-100.
+//
+// Returns null if no meaningful depth can be computed (missing
+// geometry, missing readings, or an offline / sensor-error state
+// that would produce a misleading number).
+function computeWaterDepthCm({ rawCm, pct, tankHeightCm, overflowCm, suctionCm }) {
+  const tank = Number(tankHeightCm);
+  if (!isFinite(tank) || tank <= 0) return null;
+  const ovfl    = Number(overflowCm) || 0;
+  const suction = Number(suctionCm)  || 0;
+  // Effective range: from suction pipe (bottom cutoff) to overflow
+  // pipe (top cutoff). If either is disabled it collapses to
+  // sensor face → tank bottom / tank top.
+  const suctionCutoffCm = suction > 0 && suction < tank ? tank - suction : tank;
+  const topCutoffCm     = ovfl    > 0 && ovfl    < tank ? ovfl           : 0;
+
+  // Preferred path: firmware sent live.rawCm (distance sensor→water).
+  const rc = Number(rawCm);
+  if (isFinite(rc) && rc > 0) {
+    let depth = suctionCutoffCm - rc;
+    if (depth < 0) depth = 0;
+    if (depth > suctionCutoffCm - topCutoffCm) depth = suctionCutoffCm - topCutoffCm;
+    return depth;
+  }
+
+  // Fallback: reverse-compute from pct. Loses ~1 cm per pct step.
+  const p = Number(pct);
+  if (isFinite(p) && p >= 0 && p <= 100) {
+    const usable = suctionCutoffCm - topCutoffCm;
+    if (usable <= 0) return null;
+    return (p / 100) * usable;
+  }
+  return null;
+}
+
 // sensorType: 0=none, 1=DIP, 2=ultrasonic
 // onOpenAnalytics: optional callback. When provided, the chart icon opens
 // the analytics popup via that callback instead of navigating to Device
@@ -127,10 +182,29 @@ export default function SensorCard({ deviceCode, deviceName, live, info, catalog
         />
       )}
 
-      {/* Sensor type label */}
+      {/* Sensor type label + water depth (ultrasonic only, when we
+          have enough data). Depth uses live.rawCm when firmware sent
+          it (accurate); falls back to reverse-math from pct + /info
+          geometry for older firmware. Hidden entirely if the device
+          is offline, in error state, or geometry not yet reported. */}
       <div className="flex items-center justify-between text-xs text-gray-400">
         <span>{sensorType === 1 ? "DIP" : sensorType === 2 ? "Ultrasonic" : "Sensor"}</span>
         {sensorError && <span className="text-purple-600 font-medium">Sensor Error</span>}
+        {sensorType === 2 && isOnline && !sensorError && !sensorOffline && (() => {
+          const depthCm = computeWaterDepthCm({
+            rawCm:        live?.rawCm,
+            pct:          confirmedPct,
+            tankHeightCm: info?.tankHeightCm,
+            overflowCm:   info?.overflowCm,
+            suctionCm:    info?.suctionCm,
+          });
+          if (depthCm == null) return null;
+          return (
+            <span className="text-blue-600 font-medium tabular-nums">
+              {cmToFtIn(depthCm)}
+            </span>
+          );
+        })()}
       </div>
 
       {/* Footer */}
