@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { Link } from "react-router-dom";
 import { useAuth } from "../../context/AuthContext";
 import { getOrg, getOrgMembers, getOrgGroups } from "../../firebase/db";
+import { useDevices } from "../../hooks/useDevices";
 
 export default function OrgDashboard() {
   const { userData } = useAuth();
@@ -10,6 +11,15 @@ export default function OrgDashboard() {
   const [memberCount, setMemberCount] = useState(0);
   const [groupCount, setGroupCount] = useState(0);
   const [loading, setLoading] = useState(true);
+  // Fleet oversight lives on THIS page (not the main dashboard) — org
+  // admin managing devices legitimately wants to see how many are
+  // connected right now. Same 15-min staleness rule as Dashboard.jsx.
+  const { devices } = useDevices();
+  const onlineCount = devices.filter((d) => {
+    const lastSeen = d.info?.lastSeen;
+    const isStale  = lastSeen ? (Date.now() - lastSeen) > 900000 : true;
+    return d.info?.online && !isStale;
+  }).length;
 
   useEffect(() => {
     // Guard: user has orgAdmin role but no orgId attached (happens when
@@ -56,7 +66,7 @@ export default function OrgDashboard() {
       <div className="bg-gradient-to-r from-blue-600 to-blue-700 rounded-xl p-6 mb-6 text-white">
         <h1 className="text-2xl font-bold">{org?.name || orgId}</h1>
         {org?.address && <p className="text-blue-100 text-sm mt-1">{org.address}</p>}
-        <div className="flex gap-4 mt-4">
+        <div className="flex gap-4 mt-4 flex-wrap">
           <div className="bg-white/15 rounded-lg px-4 py-2">
             <p className="text-2xl font-bold">{memberCount}</p>
             <p className="text-xs text-blue-100">Members</p>
@@ -64,6 +74,13 @@ export default function OrgDashboard() {
           <div className="bg-white/15 rounded-lg px-4 py-2">
             <p className="text-2xl font-bold">{groupCount}</p>
             <p className="text-xs text-blue-100">Groups</p>
+          </div>
+          {/* Devices pill — fleet connectivity at a glance. Shows
+              connected/total so an admin can spot when a wing has
+              dropped offline without hunting through the dashboard. */}
+          <div className="bg-white/15 rounded-lg px-4 py-2">
+            <p className="text-2xl font-bold">{onlineCount}<span className="text-blue-100 text-lg font-medium"> / {devices.length}</span></p>
+            <p className="text-xs text-blue-100">Devices online</p>
           </div>
         </div>
       </div>

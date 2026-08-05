@@ -311,14 +311,13 @@ export default function Dashboard() {
               </p>
             )}
             <p className="text-sm text-gray-500 mt-1">
-              {/* Individual accounts see just the total — "offline" text
-                  in the header caused unnecessary panic (usually just
-                  a brief router hiccup, not real device failure).
-                  Org accounts still see connected count so admin
-                  managing a fleet knows at a glance. */}
-              {isOrg
-                ? `${onlineCount} of ${filteredDevices.length} online — ${filteredDevices.length} device${filteredDevices.length !== 1 ? "s" : ""}`
-                : `${filteredDevices.length} device${filteredDevices.length !== 1 ? "s" : ""}`}
+              {/* Dashboard header shows just total — "1 online, 1
+                  offline" wording caused customer panic even when
+                  the offline was a brief router hiccup. Fleet
+                  connectivity oversight lives on the Organisation
+                  page, where an admin managing multiple devices
+                  legitimately wants to see connected count. */}
+              {filteredDevices.length} device{filteredDevices.length !== 1 ? "s" : ""}
             </p>
           </div>
           <div className="flex items-center gap-2">
