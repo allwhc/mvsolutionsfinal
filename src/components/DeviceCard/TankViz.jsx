@@ -167,18 +167,28 @@ export default function TankViz({
           ? cmToFtIn(waterDepthCm)
           : null;
         const pillCount = 1 + (litreDisplay ? 1 : 0) + (depthDisplay ? 1 : 0);
-        // Widen the row so each pill stays legible when there are 3.
-        // Two pills ~220px total (existing); three pills ~300px.
-        const maxWidth = pillCount === 3 ? "max-w-[300px]" : "max-w-[220px]";
-        // For 3 pills the DEPTH text ("1 ft 6 in") is wider than
-        // "12%" — shrink font a step so all three align visually.
-        const pctFont = pillCount === 3 ? "text-xl" : "text-2xl";
-        const bigFont = pillCount === 3 ? "text-xl" : "text-2xl";
+        // Widen the row + shrink fonts when three pills are visible so
+        // wider text like "12 ft 8 in" (10 chars) doesn't overflow the
+        // pill it's rendered in. Two-pill layout keeps the roomier
+        // text-2xl look it always had.
+        //   1 pill → tight LEVEL only, big font, narrow row
+        //   2 pills → LEVEL + VOLUME, big font, standard row
+        //   3 pills → LEVEL + VOLUME + DEPTH, one-step-down font,
+        //             extra-wide row, and DEPTH downshifts further
+        //             when its text is genuinely long
+        const maxWidth = pillCount === 3 ? "max-w-[320px]" : "max-w-[220px]";
+        const numFont  = pillCount === 3 ? "text-base sm:text-lg" : "text-2xl";
+        // Depth text can be 5-11 chars ("1 ft 0 in" through
+        // "12 ft 11 in"). Give it its own downshift if long — better
+        // than clipping.
+        const depthFont = depthDisplay && depthDisplay.length > 9
+          ? "text-sm"
+          : numFont;
         return (
           <div className={`flex items-stretch gap-2 w-full ${maxWidth}`}>
             {/* LEVEL — always shown */}
             <div
-              className={`flex-1 min-w-0 rounded-lg px-2 py-1.5 text-center shadow-sm ${
+              className={`flex-1 min-w-0 overflow-hidden rounded-lg px-2 py-1.5 text-center shadow-sm ${
                 sensorError
                   ? "bg-gradient-to-br from-purple-50 to-purple-100 ring-1 ring-purple-200"
                   : "bg-gradient-to-br from-blue-50 to-blue-100 ring-1 ring-blue-200"
@@ -187,31 +197,33 @@ export default function TankViz({
               <div className={`text-[10px] uppercase tracking-wider font-semibold ${sensorError ? "text-purple-600" : "text-blue-600"}`}>
                 Level
               </div>
-              <div className={`${pctFont} font-extrabold leading-tight ${sensorError ? "text-purple-700" : "text-blue-700"}`}>
+              <div className={`${numFont} font-extrabold leading-tight ${sensorError ? "text-purple-700" : "text-blue-700"}`}>
                 {sensorError ? "ERR" : count === 1 ? (pct > 0 ? "ON" : "OFF") : `${pct}%`}
               </div>
             </div>
 
             {/* VOLUME — when capacity configured */}
             {litreDisplay && (
-              <div className="flex-1 min-w-0 rounded-lg px-2 py-1.5 text-center bg-gradient-to-br from-cyan-50 to-cyan-100 ring-1 ring-cyan-200 shadow-sm">
+              <div className="flex-1 min-w-0 overflow-hidden rounded-lg px-2 py-1.5 text-center bg-gradient-to-br from-cyan-50 to-cyan-100 ring-1 ring-cyan-200 shadow-sm">
                 <div className="text-[10px] uppercase tracking-wider font-semibold text-cyan-700">
                   Volume
                 </div>
-                <div className={`${bigFont} font-extrabold leading-tight text-cyan-700 whitespace-nowrap`}>
+                <div className={`${numFont} font-extrabold leading-tight text-cyan-700 whitespace-nowrap`}>
                   {litreDisplay}
                 </div>
               </div>
             )}
 
             {/* DEPTH — ultrasonic only, when computable. Indigo
-                distinguishes it from LEVEL (blue) + VOLUME (cyan). */}
+                distinguishes it from LEVEL (blue) + VOLUME (cyan).
+                Uses depthFont which auto-shrinks for long values
+                ("12 ft 11 in") so they don't spill out of the pill. */}
             {depthDisplay && (
-              <div className="flex-1 min-w-0 rounded-lg px-2 py-1.5 text-center bg-gradient-to-br from-indigo-50 to-indigo-100 ring-1 ring-indigo-200 shadow-sm">
+              <div className="flex-1 min-w-0 overflow-hidden rounded-lg px-2 py-1.5 text-center bg-gradient-to-br from-indigo-50 to-indigo-100 ring-1 ring-indigo-200 shadow-sm">
                 <div className="text-[10px] uppercase tracking-wider font-semibold text-indigo-700">
                   Depth
                 </div>
-                <div className={`${bigFont} font-extrabold leading-tight text-indigo-700 whitespace-nowrap`}>
+                <div className={`${depthFont} font-extrabold leading-tight text-indigo-700 whitespace-nowrap`}>
                   {depthDisplay}
                 </div>
               </div>
