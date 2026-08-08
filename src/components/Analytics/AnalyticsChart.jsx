@@ -363,8 +363,14 @@ export default function AnalyticsChart({ deviceCode, tankCapacityLitres, sensorT
                         title="Tanker delivery — click for details"
                         aria-label="Tanker delivery marker"
                       >
-                        <svg className="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2.5}>
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M8 17h8m-8 0a2 2 0 11-4 0m4 0a2 2 0 10-4 0m12 0a2 2 0 11-4 0m4 0a2 2 0 10-4 0m1-9V6a1 1 0 00-1-1H4a1 1 0 00-1 1v11a1 1 0 001 1h1m10-1a1 1 0 001-1v-5l-3-4H9" />
+                        <svg className="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M2 17V10h3.5l1.5-2h3v9" />
+                          <rect x="9" y="8.5" width="12" height="8" rx="3.5" />
+                          <line x1="14" y1="8.5" x2="14" y2="6.5" />
+                          <line x1="16" y1="8.5" x2="16" y2="6.5" />
+                          <path d="M2 17h20" />
+                          <circle cx="6.5" cy="19" r="1.4" />
+                          <circle cx="17" cy="19" r="1.4" />
                         </svg>
                       </button>
                       {/* Popover — appears when this marker is clicked.

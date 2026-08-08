@@ -286,8 +286,16 @@ export default function DeviceAnalyticsModal({ deviceCode, deviceName, tankCapac
                               title="Tanker delivery — click for details"
                               aria-label="Tanker delivery marker"
                             >
-                              <svg className="w-2.5 h-2.5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={3}>
-                                <path strokeLinecap="round" strokeLinejoin="round" d="M8 17h8m-8 0a2 2 0 11-4 0m4 0a2 2 0 10-4 0m12 0a2 2 0 11-4 0m4 0a2 2 0 10-4 0m1-9V6a1 1 0 00-1-1H4a1 1 0 00-1 1v11a1 1 0 001 1h1m10-1a1 1 0 001-1v-5l-3-4H9" />
+                              {/* Popup chart is tiny (10px displayed);
+                                  full detail becomes mud. Drop the
+                                  hatch tabs + chassis so cab + tank
+                                  + wheels stay legible. Silhouette
+                                  still reads as tanker. */}
+                              <svg className="w-2.5 h-2.5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round">
+                                <path d="M2 17V10h3.5l1.5-2h3v9" />
+                                <rect x="9" y="8.5" width="12" height="8" rx="3.5" />
+                                <circle cx="6.5" cy="19" r="1.4" />
+                                <circle cx="17" cy="19" r="1.4" />
                               </svg>
                             </button>
                             {isActive && (

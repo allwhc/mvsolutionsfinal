@@ -240,8 +240,17 @@ export default function Tankers() {
           onClick={() => setModal({ mode: "new", seed: {} })}
           className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 flex items-center gap-2"
         >
-          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M8 17h8m-8 0a2 2 0 11-4 0m4 0a2 2 0 10-4 0m12 0a2 2 0 11-4 0m4 0a2 2 0 10-4 0m1-9V6a1 1 0 00-1-1H4a1 1 0 00-1 1v11a1 1 0 001 1h1m10-1a1 1 0 001-1v-5l-3-4H9" />
+          {/* Water tanker — Option D. Cab + cylindrical tank + top
+              hatch tabs + chassis + wheels. Multi-shape SVG so each
+              part scales/strokes cleanly at any size. */}
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
+            <path d="M2 17V10h3.5l1.5-2h3v9" />
+            <rect x="9" y="8.5" width="12" height="8" rx="3.5" />
+            <line x1="14" y1="8.5" x2="14" y2="6.5" />
+            <line x1="16" y1="8.5" x2="16" y2="6.5" />
+            <path d="M2 17h20" />
+            <circle cx="6.5" cy="19" r="1.4" />
+            <circle cx="17" cy="19" r="1.4" />
           </svg>
           <span>Log Delivery</span>
         </button>
@@ -308,8 +317,14 @@ export default function Tankers() {
       {filtered.length === 0 ? (
         <div className="text-center py-16 bg-white rounded-xl border border-gray-200">
           <div className="w-14 h-14 mx-auto mb-3 rounded-full bg-blue-50 flex items-center justify-center">
-            <svg className="w-7 h-7 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M8 17h8m-8 0a2 2 0 11-4 0m4 0a2 2 0 10-4 0m12 0a2 2 0 11-4 0m4 0a2 2 0 10-4 0m1-9V6a1 1 0 00-1-1H4a1 1 0 00-1 1v11a1 1 0 001 1h1m10-1a1 1 0 001-1v-5l-3-4H9" />
+            <svg className="w-7 h-7 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
+              <path d="M2 17V10h3.5l1.5-2h3v9" />
+              <rect x="9" y="8.5" width="12" height="8" rx="3.5" />
+              <line x1="14" y1="8.5" x2="14" y2="6.5" />
+              <line x1="16" y1="8.5" x2="16" y2="6.5" />
+              <path d="M2 17h20" />
+              <circle cx="6.5" cy="19" r="1.4" />
+              <circle cx="17" cy="19" r="1.4" />
             </svg>
           </div>
           <p className="text-gray-500 text-sm">No tanker deliveries logged for this month.</p>
@@ -317,8 +332,14 @@ export default function Tankers() {
             onClick={() => setModal({ mode: "new", seed: {} })}
             className="mt-3 inline-flex items-center gap-1.5 text-blue-600 hover:underline text-sm"
           >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M8 17h8m-8 0a2 2 0 11-4 0m4 0a2 2 0 10-4 0m12 0a2 2 0 11-4 0m4 0a2 2 0 10-4 0m1-9V6a1 1 0 00-1-1H4a1 1 0 00-1 1v11a1 1 0 001 1h1m10-1a1 1 0 001-1v-5l-3-4H9" />
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
+              <path d="M2 17V10h3.5l1.5-2h3v9" />
+              <rect x="9" y="8.5" width="12" height="8" rx="3.5" />
+              <line x1="14" y1="8.5" x2="14" y2="6.5" />
+              <line x1="16" y1="8.5" x2="16" y2="6.5" />
+              <path d="M2 17h20" />
+              <circle cx="6.5" cy="19" r="1.4" />
+              <circle cx="17" cy="19" r="1.4" />
             </svg>
             Log the first delivery
           </button>
