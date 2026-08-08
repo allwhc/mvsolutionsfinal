@@ -1,5 +1,5 @@
 import {
-  doc, setDoc, getDoc, getDocs, updateDoc, deleteDoc,
+  doc, setDoc, getDoc, getDocs, updateDoc, deleteDoc, addDoc,
   collection, query, where, serverTimestamp, writeBatch,
 } from "firebase/firestore";
 import { db } from "./config";
@@ -542,4 +542,115 @@ export async function validateDeviceInvite(deviceCode, inviteId) {
 export async function getDeviceInvites(deviceCode) {
   const snap = await getDocs(collection(db, "deviceInvites", deviceCode, "invites"));
   return snap.docs.map((d) => ({ inviteId: d.id, ...d.data() }));
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Water tanker order log
+// ─────────────────────────────────────────────────────────────────
+// One document = one tanker delivery event. Can fill a single tank
+// (95% case) or split across multiple tanks (multi-flat / multi-wing).
+// Scoped by ownerScope + scopeId so the same collection serves both
+// individual users and org accounts. Rules enforce access; helpers
+// here just query + write.
+//
+// Document shape:
+//   ownerScope:    "user" | "org"
+//   scopeId:       <uid> | <orgId>
+//   deliveredAt:   Firestore timestamp (defaults to now, editable)
+//   supplier:      string (optional)
+//   cost:          number ₹ (optional)
+//   notes:         string (optional)
+//   deliveries: [                            (>=1 entry, required)
+//     { tankCode, tankName, volumeL }
+//   ]
+//   totalVolumeL:  derived sum for quick queries
+//   createdBy:     uid of user who logged it
+//   createdAt:     serverTimestamp
+//   updatedAt:     serverTimestamp
+export async function addTankerOrder(data) {
+  const ref = await addDoc(collection(db, "tankerOrders"), {
+    ...data,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  });
+  return ref.id;
+}
+
+export async function updateTankerOrder(orderId, patch) {
+  await updateDoc(doc(db, "tankerOrders", orderId), {
+    ...patch,
+    updatedAt: serverTimestamp(),
+  });
+}
+
+export async function deleteTankerOrder(orderId) {
+  await deleteDoc(doc(db, "tankerOrders", orderId));
+}
+
+// List tanker orders for a scope, sorted newest first. Client filters
+// further by date/supplier/tank as needed — Firestore query indexes
+// aren't worth setting up at expected volumes (<100 docs/month).
+export async function listTankerOrders(ownerScope, scopeId) {
+  const q = query(
+    collection(db, "tankerOrders"),
+    where("ownerScope", "==", ownerScope),
+    where("scopeId",    "==", scopeId),
+  );
+  const snap = await getDocs(q);
+  const rows = snap.docs.map((d) => ({ orderId: d.id, ...d.data() }));
+  // Sort by deliveredAt descending — most recent first for the log
+  // table. Some legacy docs may not have deliveredAt; fall back to
+  // createdAt to keep those visible.
+  rows.sort((a, b) => {
+    const ta = (a.deliveredAt?.toMillis?.() ?? a.createdAt?.toMillis?.() ?? 0);
+    const tb = (b.deliveredAt?.toMillis?.() ?? b.createdAt?.toMillis?.() ?? 0);
+    return tb - ta;
+  });
+  return rows;
+}
+
+// Fetch tanker deliveries that touched a specific device, within a
+// timestamp range. Used by AnalyticsChart to render vertical
+// markers on the tank's history chart at each delivery time.
+//
+// Client-side filter over the scope's full order set — cheap at
+// expected volumes. Returns entries in shape:
+//   [{ orderId, deliveredAt (ms), supplier, supplierPhone, cost,
+//      totalVolumeL, myVolumeL, otherTanks: [{tankName}], notes }]
+// where `myVolumeL` is this device's slice of a split, and
+// `otherTanks` lists the sibling tanks in a split order.
+export async function getTankerDeliveriesForDevice(ownerScope, scopeId, deviceCode, startTsMs, endTsMs) {
+  const all = await listTankerOrders(ownerScope, scopeId);
+  const results = [];
+  for (const o of all) {
+    const ts = (o.deliveredAt?.toMillis?.() ?? o.createdAt?.toMillis?.() ?? 0);
+    if (!ts) continue;
+    if (startTsMs && ts < startTsMs) continue;
+    if (endTsMs   && ts > endTsMs)   continue;
+    const myLeg = (o.deliveries || []).find((d) => d.tankCode === deviceCode);
+    if (!myLeg) continue;
+    const others = (o.deliveries || [])
+      .filter((d) => d.tankCode !== deviceCode)
+      .map((d) => ({ tankName: d.tankName || d.tankCode }));
+    results.push({
+      orderId:       o.orderId,
+      deliveredAt:   ts,
+      supplier:      o.supplier || null,
+      supplierPhone: o.supplierPhone || null,
+      vehicleNo:     o.vehicleNo || null,
+      driverName:    o.driverName || null,
+      driverPhone:   o.driverPhone || null,
+      waterType:     o.waterType || null,
+      receivedBy:    o.receivedBy || null,
+      paymentStatus: o.paymentStatus || null,
+      paymentMode:   o.paymentMode || null,
+      cost:          o.cost ?? null,
+      volumeL:       o.volumeL ?? o.totalVolumeL ?? null,
+      otherTanks:    others,
+      notes:         o.notes || null,
+    });
+  }
+  // Ascending by time — Recharts references lay out best in order.
+  results.sort((a, b) => a.deliveredAt - b.deliveredAt);
+  return results;
 }

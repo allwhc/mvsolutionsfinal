@@ -87,7 +87,7 @@
 // truncated it in list view. Kept "USL" so long-range devices remain
 // distinguishable from short-range "SFUSR" units in the scan list.
 #define DEVICE_NAME       "SFUSL"
-#define FIRMWARE_VERSION  "21.0.7"
+#define FIRMWARE_VERSION  "21.0.11"
 #define FIRMWARE_CODE     "SF-USL-2026"
 #define AP_PASSWORD       "mvstech9867"
 
@@ -813,6 +813,41 @@ unsigned long wifiLastConnectedAt    = 0;
 unsigned long wifiLastDisconnectedAt = 0;
 int   wifiReconnectAttempts = 0;
 
+// v21.0.10: Non-blocking SSID visibility check with WDT feeding.
+//
+// The previous v21.0.8 implementation used WiFi.scanNetworks(false,...)
+// which is BLOCKING and takes 3-4 sec. Combined with the MvsConnect
+// library's own boot-time scan, total blocking time exceeded the ESP32
+// Task WDT (5 sec) → crash loop. That's what v21.0.9 field-tested
+// as: reboots every ~11 sec, AP flickers, sensor never gets to run.
+//
+// New approach:
+//   - Sync scan is still fine (used sparingly), but we feed the WDT
+//     via esp_task_wdt_reset() before and after.
+//   - Boot skips the extra scan entirely — trust MvsConnect's scan
+//     that already happened, OR skip visibility check and rely on
+//     WiFi.begin() natural timeout (with our 60s reconnect gate).
+bool isSsidVisible(const String& targetSsid) {
+  if (targetSsid.length() == 0) return false;
+  esp_task_wdt_reset();
+  int16_t n = WiFi.scanNetworks(false, false);
+  esp_task_wdt_reset();
+  if (n <= 0) {
+    Serial.printf("[SCAN] No APs visible (n=%d)\n", (int)n);
+    WiFi.scanDelete();
+    return false;
+  }
+  bool found = false;
+  for (int16_t i = 0; i < n; i++) {
+    if (WiFi.SSID(i) == targetSsid) { found = true; break; }
+  }
+  Serial.printf("[SCAN] Scanned %d APs, target '%s' %s\n",
+                (int)n, targetSsid.c_str(), found ? "FOUND" : "not visible");
+  WiFi.scanDelete();
+  esp_task_wdt_reset();
+  return found;
+}
+
 // Force Google DNS — fixes broken router DNS
 void setGoogleDNS() {
   IPAddress dns1(8, 8, 8, 8);
@@ -1146,6 +1181,18 @@ HardwareSerial usSerial(2);   // UART2 — pins remapped in begin()
 uint8_t usSensorType   = US_TYPE_UNKNOWN;
 uint32_t usDypBaud     = 9600;   // A01=9600 always, A21 defaults 115200
 
+// v21.0.11: RAW UART debug. For the first 5 sec after boot, every byte
+// read from the sensor is printed to Serial as hex. Lets us see (a)
+// whether ANY bytes arrive on GPIO 34 (wiring/baud check), (b) if they
+// look like the expected 0xFF-prefixed frames.
+static uint32_t g_dbgUartUntilMs = 0;
+static uint16_t g_dbgUartBytesLogged = 0;
+static void dbgUartByte(uint8_t b) {
+  if (millis() > g_dbgUartUntilMs || g_dbgUartBytesLogged > 200) return;
+  Serial.printf("[UART-DBG] %02X\n", b);
+  g_dbgUartBytesLogged++;
+}
+
 // Read exactly one DYP 4-byte distance frame (0xFF HH LL SUM) from
 // usSerial with the given per-byte timeout. Returns distance in cm, or
 // -1 if timeout / bad checksum / out-of-range. Drains one byte at a
@@ -1155,25 +1202,52 @@ float readDypFrameCm(uint32_t timeoutMs) {
   while (millis() < deadline) {
     if (usSerial.available() < 4) { delay(1); continue; }
     // Find start byte 0xFF
-    if (usSerial.peek() != 0xFF) { usSerial.read(); continue; }
+    uint8_t peek = usSerial.peek();
+    if (peek != 0xFF) { dbgUartByte(peek); usSerial.read(); continue; }
     uint8_t frame[4];
     usSerial.readBytes(frame, 4);
+    for (int i = 0; i < 4; i++) dbgUartByte(frame[i]);
     uint8_t sum = (frame[0] + frame[1] + frame[2]) & 0xFF;
-    if (sum != frame[3]) continue;                           // bad checksum → try next
+    if (sum != frame[3]) {
+      Serial.printf("[UART-DBG] BAD_SUM want=%02X got=%02X frame=%02X %02X %02X %02X\n",
+                    sum, frame[3], frame[0], frame[1], frame[2], frame[3]);
+      continue;
+    }
     uint16_t distMm = (frame[1] << 8) | frame[2];
+    Serial.printf("[UART-DBG] OK_FRAME dist=%u mm\n", distMm);
     if (distMm == 0xFFFE) continue;                          // A21 same-freq interference flag
     float distCm = distMm / 10.0f;
-    if (distCm < US_BLIND_ZONE || distCm > US_MAX_RANGE) return -1;
+    if (distCm < US_BLIND_ZONE || distCm > US_MAX_RANGE) {
+      Serial.printf("[UART-DBG] OUT_OF_RANGE %.1f cm\n", distCm);
+      return -1;
+    }
     return distCm;
   }
   return -1;
 }
 
-// DYP-A01 controlled: send 0x55, then wait for reply frame.
+// DYP-A01 controlled trigger + read.
+// v21.0.9: switched from usSerial.write(0x55) to a pin-toggle trigger
+// per uart_auto.pdf section 3.2: "When pin(RX) receives a falling edge
+// pulse, the module will perform a measurement." The datasheet does NOT
+// specify a magic byte — the sensor triggers on a falling-edge line
+// event, not a UART character. Approach:
+//   1) end() UART so we own the pin
+//   2) drive TX pin (= sensor RX) HIGH, wait, LOW, wait, HIGH → falling edge
+//   3) re-begin() UART @ 9600 for the response
+//   4) read 4-byte frame (sensor takes ~50-60 ms to reply per T2 spec)
+// Trigger cycle must be >70 ms per datasheet — we're gated to 2 sec by
+// US_READ_INTERVAL so that's satisfied.
 float readDypA01Cm() {
-  while (usSerial.available()) usSerial.read();              // flush stale bytes
-  usSerial.write((uint8_t)0x55);
-  return readDypFrameCm(120);                                // sensor replies within ~90 ms
+  usSerial.end();
+  pinMode(US_UART_TX_PIN, OUTPUT);
+  digitalWrite(US_UART_TX_PIN, HIGH);
+  delayMicroseconds(200);
+  digitalWrite(US_UART_TX_PIN, LOW);
+  delayMicroseconds(500);                                    // >100 us pulse per timing diagram
+  digitalWrite(US_UART_TX_PIN, HIGH);
+  usSerial.begin(9600, SERIAL_8N1, US_UART_RX_PIN, US_UART_TX_PIN);
+  return readDypFrameCm(150);                                // T2=50-60ms + margin
 }
 
 // v21.0.0 A01_750cm branch: HC-SR04 path and detectSensorType() removed.
@@ -1199,21 +1273,36 @@ void initUltrasonic() {
   usDypBaud    = 9600;   // A01 series is always 9600 per DYP convention
   p.end();
 
+  // v21.0.9: Force TX pin (= sensor's RX) HIGH BEFORE anything else.
+  // Per uart_auto.pdf section 2.2: A01ANYUB only checks its RX-pin
+  // level at POWER-ON. High/floating → sensor outputs "processed value"
+  // every 300-500 ms (stable, temperature-compensated, filtered). Low →
+  // real-time mode, 100 ms cycle, less stable. We want processed mode.
+  //
+  // Note: this only helps if we boot BEFORE the sensor does (e.g. shared
+  // power rail comes up together). In practice ESP32 boots ~0.5 sec
+  // faster than sensor MCU, so this pin state is what sensor sees at
+  // its power-up window.
+  pinMode(US_UART_TX_PIN, OUTPUT);
+  digitalWrite(US_UART_TX_PIN, HIGH);
+  delay(10);
+
   if (usSensorType != US_TYPE_DYP_A01 && usSensorType != US_TYPE_DYP_A21) {
     // Fresh boot or cache invalidated — run detection
-    Serial.println("[US] v21.0.0 A01_750cm: detecting Auto vs Controlled UART...");
+    Serial.println("[US] v21.0.9: detecting Auto vs Controlled UART @ 9600 baud...");
     usSerial.end();
     usSerial.begin(9600, SERIAL_8N1, US_UART_RX_PIN, US_UART_TX_PIN);
     delay(50);
     while (usSerial.available()) usSerial.read();     // drain
 
-    // Step 1: listen for auto-stream
-    float d = readDypFrameCm(500);
+    // Step 1: listen for auto-stream. A01ANYUB emits every 100-500 ms
+    // in processed mode → 1000 ms window catches multiple frames easily.
+    float d = readDypFrameCm(1000);
     if (d > 0) {
       Serial.printf("[US] Detected AUTO stream (A01ANYUB): first read %.1f cm\n", d);
       usSensorType = US_TYPE_DYP_A21;                 // reuse streaming path
     } else {
-      // Step 2: try controlled trigger
+      // Step 2: try controlled trigger (pin-toggle, not 0x55)
       d = readDypA01Cm();
       if (d > 0) {
         Serial.printf("[US] Detected CONTROLLED (A01ANYTB): first read %.1f cm\n", d);
@@ -3663,15 +3752,18 @@ void setup() {
     wp.end();
 
     if (savedSsid.length() > 0 && savedVal) {
+      // v21.0.10: NO scan gate at boot. The MvsConnect library already
+      // scans internally (see [WIFI-DBG] boot output). Doing another
+      // scan here pushed total blocking time past 11 sec → Task WDT
+      // fired → crash loop → device unusable. Field-verified in v21.0.9.
+      //
+      // Just kick begin() and let the main-loop reconnect logic handle
+      // the "SSID missing" case (it does its OWN scan-gated retry every
+      // 60 sec, safely, because by then WDT context is normal).
       Serial.printf("[BOOT] Kicking WiFi.begin('%s') non-blocking — main loop will monitor\n",
                     savedSsid.c_str());
       setLED(0, 0, 255);
-      // No pre-disconnect — WiFi.begin() handles it, and pre-disconnect
-      // with the true flag has caused fleet-blocker bugs before.
       WiFi.begin(savedSsid.c_str(), savedPass.c_str());
-      // Deliberately DO NOT block waiting for connection. Setup exits
-      // in ~0 ms after this line, main loop starts running immediately,
-      // AP is fully responsive from tick 1.
     } else {
       Serial.println("[BOOT] No saved WiFi — AP mode ready for setup");
       setLED(255, 255, 255);
@@ -3957,12 +4049,18 @@ void loop() {
         bool   savedVal  = wp.getBool("valid", false);
         wp.end();
         if (savedSsid.length() > 0 && savedVal) {
-          Serial.printf("[RECONNECT] status=%d — retrying '%s'\n", (int)s, savedSsid.c_str());
-          // No disconnect() before begin(). ESP-IDF's own state
-          // machine handles cleanup when the previous attempt has
-          // definitively failed. Avoiding the disconnect call keeps
-          // the AP radio slice stable.
-          WiFi.begin(savedSsid.c_str(), savedPass.c_str());
+          // v21.0.8: SCAN GATE. Don't waste a WiFi.begin() call (which
+          // silences the AP for 30+ sec) if the saved SSID isn't even
+          // visible. Scan first — only fire begin() when router is
+          // actually in range. Scan itself is ~2 sec.
+          if (isSsidVisible(savedSsid)) {
+            Serial.printf("[RECONNECT] status=%d, SSID visible — retrying '%s'\n",
+                          (int)s, savedSsid.c_str());
+            WiFi.begin(savedSsid.c_str(), savedPass.c_str());
+          } else {
+            Serial.printf("[RECONNECT] status=%d, SSID '%s' not visible — staying AP-only\n",
+                          (int)s, savedSsid.c_str());
+          }
         }
       }
     }

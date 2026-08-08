@@ -10,6 +10,7 @@ import Dashboard from "./pages/Dashboard";
 import DeviceDetail from "./pages/DeviceDetail";
 import Kiosk from "./pages/Kiosk";
 import Subscribe from "./pages/Subscribe";
+import Tankers from "./pages/Tankers";
 import Profile from "./pages/Profile";
 import JoinOrg from "./pages/JoinOrg";
 import PendingApproval from "./pages/PendingApproval";
@@ -73,6 +74,7 @@ export default function App() {
             <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/device/:code" element={<DeviceDetail />} />
             <Route path="/subscribe" element={<Subscribe />} />
+            <Route path="/tankers" element={<Tankers />} />
             <Route path="/profile" element={<Profile />} />
 
             {/* Admin routes */}

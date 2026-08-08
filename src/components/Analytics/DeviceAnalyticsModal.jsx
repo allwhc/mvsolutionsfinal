@@ -2,6 +2,8 @@ import { useState, useEffect, useMemo } from "react";
 import { Link } from "react-router-dom";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 import { getHistoryByRange } from "../../firebase/rtdb";
+import { getTankerDeliveriesForDevice } from "../../firebase/db";
+import { useAuth } from "../../context/AuthContext";
 import { RANGES, generateInsights } from "../../utils/analyticsInsights";
 import { useDebugMode } from "../../context/DebugModeContext";
 import { resolveLevel } from "../../utils/resolveLevel";
@@ -46,6 +48,15 @@ function interpolate(history, startTs, endTs, stepMs) {
 
 export default function DeviceAnalyticsModal({ deviceCode, deviceName, tankCapacityLitres, currentPct, currentBits, sensorType = 1, sensorCount = 4, onClose }) {
   const { debugMode } = useDebugMode();
+  const { user, userData, isOrgAdmin, isOrgMember } = useAuth();
+  const isOrg = isOrgAdmin || isOrgMember;
+  const tankerScope   = isOrg ? "org" : "user";
+  const tankerScopeId = isOrg ? (userData?.orgId || null) : user?.uid;
+  // Tanker deliveries for this tank within the current range. Same
+  // source as the DeviceDetail chart; popup shows a tiny truck icon
+  // + minimal tooltip (no delete — popup is a quick-glance view).
+  const [tankerMarkers, setTankerMarkers] = useState([]);
+  const [activeMarkerId, setActiveMarkerId] = useState(null);
   const [range, setRange] = useState("24h");
   // Per-range cache so switching tabs back to a previously-loaded range
   // doesn't re-hit Firebase. Cleared when the modal unmounts.
@@ -99,6 +110,19 @@ export default function DeviceAnalyticsModal({ deviceCode, deviceName, tankCapac
       });
     return () => { cancelled = true; };
   }, [deviceCode, range, cache]);
+
+  // Tanker markers fetch — separate from history. Runs when range or
+  // scope changes; results feed the overlay on top of the mini chart.
+  useEffect(() => {
+    if (!tankerScopeId) { setTankerMarkers([]); return; }
+    let cancelled = false;
+    const endTs = Date.now();
+    const startTs = endTs - RANGES[range].ms;
+    getTankerDeliveriesForDevice(tankerScope, tankerScopeId, deviceCode, startTs, endTs)
+      .then((rows) => { if (!cancelled) setTankerMarkers(rows); })
+      .catch(() => { if (!cancelled) setTankerMarkers([]); });
+    return () => { cancelled = true; };
+  }, [deviceCode, range, tankerScope, tankerScopeId]);
 
   // Dismiss on Escape so admins can flick through devices keyboard-only.
   useEffect(() => {
@@ -177,8 +201,12 @@ export default function DeviceAnalyticsModal({ deviceCode, deviceName, tankCapac
           ))}
         </div>
 
-        {/* Mini chart */}
-        <div className="px-5 pt-3" style={{ height: 180 }}>
+        {/* Mini chart — with tanker markers overlay for ultrasonic +
+            DIP alike. Same source + logic as DeviceDetail's full
+            chart, just smaller. No delete button (quick-glance
+            popup); user opens full Device Detail to manage. */}
+        <div className="px-5 pt-3 relative" style={{ height: 180 }}
+             onClick={() => setActiveMarkerId(null)}>
           {loading ? (
             <div className="h-full flex items-center justify-center">
               <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-600" />
@@ -192,36 +220,111 @@ export default function DeviceAnalyticsModal({ deviceCode, deviceName, tankCapac
               No level changes in this window yet — chart will fill as your tank refills or drains.
             </div>
           ) : (
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={chartData} margin={{ top: 5, right: 8, left: 0, bottom: 5 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                <XAxis dataKey="time" tick={{ fontSize: 10 }} interval="preserveStartEnd" angle={-30} textAnchor="end" height={40} />
-                <YAxis domain={[0, 100]} tick={{ fontSize: 10 }} tickFormatter={(v) => `${v}%`} />
-                <Tooltip contentStyle={{ fontSize: 12 }} formatter={(v) => [`${v}%`, "Level"]} />
-                <Line
-                  type="stepAfter"
-                  dataKey="pct"
-                  stroke="#2563eb"
-                  strokeWidth={2}
-                  dot={(props) => {
-                    if (!props.payload?.isActual) return null;
-                    return (
-                      <circle
-                        key={`dot-${props.index}`}
-                        cx={props.cx}
-                        cy={props.cy}
-                        r={3}
-                        fill="#2563eb"
-                        stroke="#fff"
-                        strokeWidth={1}
-                      />
-                    );
-                  }}
-                  isAnimationActive={false}
-                  connectNulls={false}
-                />
-              </LineChart>
-            </ResponsiveContainer>
+            <>
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={chartData} margin={{ top: 5, right: 8, left: 0, bottom: 5 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                  <XAxis dataKey="time" tick={{ fontSize: 10 }} interval="preserveStartEnd" angle={-30} textAnchor="end" height={40} />
+                  <YAxis domain={[0, 100]} tick={{ fontSize: 10 }} tickFormatter={(v) => `${v}%`} />
+                  <Tooltip contentStyle={{ fontSize: 12 }} formatter={(v) => [`${v}%`, "Level"]} />
+                  <Line
+                    type="stepAfter"
+                    dataKey="pct"
+                    stroke="#2563eb"
+                    strokeWidth={2}
+                    dot={(props) => {
+                      if (!props.payload?.isActual) return null;
+                      return (
+                        <circle
+                          key={`dot-${props.index}`}
+                          cx={props.cx}
+                          cy={props.cy}
+                          r={3}
+                          fill="#2563eb"
+                          stroke="#fff"
+                          strokeWidth={1}
+                        />
+                      );
+                    }}
+                    isAnimationActive={false}
+                    connectNulls={false}
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+
+              {/* Tanker markers overlay — same positioning strategy
+                  as DeviceDetail's full chart. Reduced padding since
+                  this chart is smaller (XAxis height 40 vs 60). */}
+              {tankerMarkers.length > 0 && (() => {
+                const endTs = Date.now();
+                const startTs = endTs - RANGES[range].ms;
+                const totalMs = endTs - startTs;
+                if (totalMs <= 0) return null;
+                const padLeft = 48, padRight = 12, padTop = 6, padBottom = 45;
+                return (
+                  <div
+                    className="absolute inset-0 pointer-events-none"
+                    style={{ paddingLeft: padLeft, paddingRight: padRight, paddingTop: padTop, paddingBottom: padBottom, marginTop: 12 }}
+                  >
+                    <div className="relative w-full h-full">
+                      {tankerMarkers.map((m) => {
+                        const pctAcross = ((m.deliveredAt - startTs) / totalMs) * 100;
+                        if (pctAcross < 0 || pctAcross > 100) return null;
+                        const isActive = activeMarkerId === m.orderId;
+                        return (
+                          <div
+                            key={m.orderId}
+                            className="absolute top-0 bottom-0"
+                            style={{ left: `${pctAcross}%`, transform: "translateX(-50%)" }}
+                          >
+                            <div className="absolute inset-y-0 left-1/2 -translate-x-1/2 w-0.5 bg-cyan-500/70" />
+                            <button
+                              onClick={(e) => { e.stopPropagation(); setActiveMarkerId(isActive ? null : m.orderId); }}
+                              className={`absolute -top-2 left-1/2 -translate-x-1/2 pointer-events-auto rounded-full p-1 shadow ring-2 ring-white transition-colors ${
+                                isActive ? "bg-cyan-600" : "bg-cyan-500 hover:bg-cyan-600"
+                              }`}
+                              title="Tanker delivery — click for details"
+                              aria-label="Tanker delivery marker"
+                            >
+                              <svg className="w-2.5 h-2.5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={3}>
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M8 17h8m-8 0a2 2 0 11-4 0m4 0a2 2 0 10-4 0m12 0a2 2 0 11-4 0m4 0a2 2 0 10-4 0m1-9V6a1 1 0 00-1-1H4a1 1 0 00-1 1v11a1 1 0 001 1h1m10-1a1 1 0 001-1v-5l-3-4H9" />
+                              </svg>
+                            </button>
+                            {isActive && (
+                              <div
+                                onClick={(e) => e.stopPropagation()}
+                                className="absolute pointer-events-auto z-20 bg-white rounded-lg shadow-lg ring-1 ring-gray-200 p-2.5 w-52 text-xs"
+                                style={{ top: 16, [pctAcross > 60 ? "right" : "left"]: 6 }}
+                              >
+                                <div className="flex items-center justify-between mb-1">
+                                  <span className="text-cyan-700 font-semibold uppercase tracking-wider text-[10px]">Tanker</span>
+                                  <button onClick={() => setActiveMarkerId(null)} className="text-gray-400 hover:text-gray-600 text-base leading-none">×</button>
+                                </div>
+                                <p className="text-gray-900 font-medium">
+                                  {new Date(m.deliveredAt).toLocaleString([], { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
+                                </p>
+                                {(m.volumeL != null || m.waterType) && (
+                                  <p className="text-gray-800 mt-1">
+                                    {m.volumeL != null && (m.volumeL >= 1000 ? `${(m.volumeL/1000).toFixed(m.volumeL%1000===0?0:1)} KL` : `${m.volumeL} L`)}
+                                    {m.waterType && <span className="ml-1 text-[10px] text-gray-500 capitalize">({m.waterType})</span>}
+                                  </p>
+                                )}
+                                {m.supplier && <p className="text-gray-700 mt-0.5">{m.supplier}</p>}
+                                {m.otherTanks.length > 0 && (
+                                  <p className="text-gray-500 text-[11px] mt-1 pt-1 border-t border-gray-100">
+                                    Also: {m.otherTanks.map((t) => t.tankName).join(", ")}
+                                  </p>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })()}
+            </>
           )}
         </div>
 

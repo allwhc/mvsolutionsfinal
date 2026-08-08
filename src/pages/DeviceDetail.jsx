@@ -1192,6 +1192,11 @@ export default function DeviceDetail() {
             className="px-4 py-2 bg-green-50 text-green-600 rounded-lg text-sm hover:bg-green-100">Test LED</button>
           <button onClick={() => { if (confirm("Restart this device? It will go offline for a few seconds.")) sendRestartCommand(code); }}
             className="px-4 py-2 bg-yellow-50 text-yellow-600 rounded-lg text-sm hover:bg-yellow-100">Restart</button>
+          {/* Quick-jump to the tanker log with THIS tank pre-selected.
+              Watchman filling up? One click from here → modal opens
+              with correct tank + time defaulted to now. */}
+          <button onClick={() => navigate(`/tankers?new=1&tank=${code}`)}
+            className="px-4 py-2 bg-cyan-50 text-cyan-700 rounded-lg text-sm hover:bg-cyan-100">Log Tanker</button>
           {/* Removal button — path differs by account type:
               • Individual account → Unsubscribe (may transfer ownership)
               • Org account, orgAdmin → Remove from Organisation (deletes

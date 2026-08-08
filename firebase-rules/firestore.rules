@@ -107,6 +107,35 @@ service cloud.firestore {
       allow read, write: if request.auth != null;
     }
 
+    // Water tanker order log. Each doc represents ONE tanker delivery
+    // (or split delivery across multiple tanks). Scoped either to an
+    // individual user or an entire org:
+    //   ownerScope = "user"  → scopeId = uid, only that user + superadmin
+    //   ownerScope = "org"   → scopeId = orgId, any org member reads,
+    //                          any org member creates, orgAdmin edits/deletes
+    // Free-tier — no bandwidth concerns at expected volumes (< 100
+    // deliveries/month per household). Field validation done client-
+    // side; rules only enforce access boundaries.
+    match /tankerOrders/{orderId} {
+      allow read: if request.auth != null && (
+        isSuperAdmin() ||
+        (resource.data.ownerScope == "user" && resource.data.scopeId == request.auth.uid) ||
+        (resource.data.ownerScope == "org"  && isOrgMember(resource.data.scopeId))
+      );
+      allow create: if request.auth != null && (
+        isSuperAdmin() ||
+        (request.resource.data.ownerScope == "user" && request.resource.data.scopeId == request.auth.uid) ||
+        (request.resource.data.ownerScope == "org"  && isOrgMember(request.resource.data.scopeId))
+      );
+      // Edit/delete: individual owners on their own records; orgAdmin
+      // (not regular members) on org records; superadmin always.
+      allow update, delete: if request.auth != null && (
+        isSuperAdmin() ||
+        (resource.data.ownerScope == "user" && resource.data.scopeId == request.auth.uid) ||
+        (resource.data.ownerScope == "org"  && isOrgAdmin(resource.data.scopeId))
+      );
+    }
+
     // Helper functions
     function isSuperAdmin() {
       return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == "superadmin";

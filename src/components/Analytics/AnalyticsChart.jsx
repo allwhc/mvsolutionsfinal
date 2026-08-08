@@ -2,6 +2,11 @@ import { useState, useEffect, useMemo } from "react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 import { getHistoryByRange } from "../../firebase/rtdb";
 import {
+  getTankerDeliveriesForDevice,
+  deleteTankerOrder,
+} from "../../firebase/db";
+import { useAuth } from "../../context/AuthContext";
+import {
   RANGES,
   calcLitres,
   generateInsights,
@@ -69,8 +74,28 @@ function interpolate(history, startTs, endTs, stepMs) {
 
 export default function AnalyticsChart({ deviceCode, tankCapacityLitres, sensorType = 1, sensorCount = 4, onHistoryLoaded }) {
   const { debugMode } = useDebugMode();
+  const { user, userData, isSuperAdmin, isOrgAdmin, isOrgMember } = useAuth();
   const [range, setRange] = useState("24h");
   const [rawHistory, setRawHistory] = useState([]);
+  // Tanker deliveries that touched THIS device within the chart's
+  // current time range. Rendered as vertical markers. Fetched
+  // separately from history since it lives in Firestore, not RTDB.
+  const [tankerMarkers, setTankerMarkers] = useState([]);
+  // Which marker's popover is open. Null when nothing focused.
+  const [activeMarkerId, setActiveMarkerId] = useState(null);
+
+  // Scope used to query tanker orders. Individual accounts read from
+  // their own scope; org members/admin from the org's shared list.
+  // Superadmin sees whichever scope owns THIS device — best-effort:
+  // if the device is in a subscription for them, "user"; if they've
+  // clicked into an org's device via /admin, we still show the org's
+  // deliveries (superadmin has permission via rules).
+  const isOrg = isOrgAdmin || isOrgMember;
+  const tankerScope   = isOrg ? "org" : "user";
+  const tankerScopeId = isOrg ? (userData?.orgId || null) : user?.uid;
+  // Delete permission mirrors the Tankers log page: individual owner
+  // OR orgAdmin OR superadmin.
+  const canDeleteTanker = isSuperAdmin || (!isOrg) || isOrgAdmin;
   // Apply resolved-level transform for DIP sensors when not in debug mode.
   // Ultrasonic sensors + debug mode fall through with raw pct so the
   // installer / admin can see the true firmware output.
@@ -110,6 +135,36 @@ export default function AnalyticsChart({ deviceCode, tankCapacityLitres, sensorT
     });
     return () => { cancelled = true; };
   }, [deviceCode, startTs, endTs]);
+
+  // Load tanker deliveries that touched this device within range.
+  // Separate effect from history (different data source, different
+  // update cadence). Refetches when range or scope changes; also
+  // re-runs after a marker delete via bumping loadKey.
+  const [tankerLoadKey, setTankerLoadKey] = useState(0);
+  useEffect(() => {
+    if (!tankerScopeId) { setTankerMarkers([]); return; }
+    let cancelled = false;
+    getTankerDeliveriesForDevice(tankerScope, tankerScopeId, deviceCode, startTs, endTs)
+      .then((rows) => { if (!cancelled) setTankerMarkers(rows); })
+      .catch((e) => {
+        // Non-fatal — chart still renders history without markers.
+        console.warn("Tanker markers fetch failed:", e);
+        if (!cancelled) setTankerMarkers([]);
+      });
+    return () => { cancelled = true; };
+  }, [deviceCode, startTs, endTs, tankerScope, tankerScopeId, tankerLoadKey]);
+
+  async function handleDeleteMarker(orderId) {
+    if (!confirm("Delete this tanker delivery from the log?\n\nThis removes the entry for every tank it filled — deletes the entire event.")) return;
+    try {
+      await deleteTankerOrder(orderId);
+      setActiveMarkerId(null);
+      setTankerLoadKey((k) => k + 1);
+    } catch (e) {
+      console.error("Delete tanker marker failed:", e);
+      alert("Delete failed — try again");
+    }
+  }
 
   const chartData = useMemo(() => {
     const interp = interpolate(history, startTs, endTs, stepMs);
@@ -210,8 +265,17 @@ export default function AnalyticsChart({ deviceCode, tankCapacityLitres, sensorT
         </div>
       )}
 
-      {/* Chart */}
-      <div className="bg-white rounded-lg relative" style={{ height: 320 }}>
+      {/* Chart. Wrapping div holds the Recharts SVG plus an overlay
+          for tanker delivery markers — vertical bars positioned by
+          time percentage across the visible range. Recharts'
+          ReferenceLine anchors to data-point labels which don't
+          always exist at the marker's exact millis, so an
+          absolute-positioned overlay is more reliable. */}
+      <div
+        className="bg-white rounded-lg relative"
+        style={{ height: 320 }}
+        onClick={() => setActiveMarkerId(null)}
+      >
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={chartData} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
@@ -255,6 +319,190 @@ export default function AnalyticsChart({ deviceCode, tankCapacityLitres, sensorT
             />
           </LineChart>
         </ResponsiveContainer>
+
+        {/* Tanker markers overlay. Positions are computed as a %
+            across the plot area accounting for Recharts' YAxis
+            (~48px on the left) and its right/top/bottom margins.
+            Each marker is a vertical bar + a small truck icon at
+            top; click to open the popover with delivery details. */}
+        {tankerMarkers.length > 0 && (() => {
+          const totalMs = endTs - startTs;
+          if (totalMs <= 0) return null;
+          // Chart plot area padding — YAxis reserves ~48px on the
+          // left, right margin ~10px, top 5, bottom ~65 (X-axis
+          // labels rotated). Tuned by eye — Recharts doesn't expose
+          // internal chart dimensions publicly.
+          const padLeft   = 48;
+          const padRight  = 12;
+          const padTop    = 6;
+          const padBottom = 65;
+          return (
+            <div
+              className="absolute inset-0 pointer-events-none"
+              style={{ paddingLeft: padLeft, paddingRight: padRight, paddingTop: padTop, paddingBottom: padBottom }}
+            >
+              <div className="relative w-full h-full">
+                {tankerMarkers.map((m) => {
+                  const pctAcross = ((m.deliveredAt - startTs) / totalMs) * 100;
+                  if (pctAcross < 0 || pctAcross > 100) return null;
+                  const isActive = activeMarkerId === m.orderId;
+                  return (
+                    <div
+                      key={m.orderId}
+                      className="absolute top-0 bottom-0"
+                      style={{ left: `${pctAcross}%`, transform: "translateX(-50%)" }}
+                    >
+                      {/* Vertical marker line */}
+                      <div className="absolute inset-y-0 left-1/2 -translate-x-1/2 w-0.5 bg-cyan-500/70" />
+                      {/* Truck icon button — clickable */}
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setActiveMarkerId(isActive ? null : m.orderId); }}
+                        className={`absolute -top-1 left-1/2 -translate-x-1/2 pointer-events-auto rounded-full p-1 shadow ring-2 ring-white transition-colors ${
+                          isActive ? "bg-cyan-600" : "bg-cyan-500 hover:bg-cyan-600"
+                        }`}
+                        title="Tanker delivery — click for details"
+                        aria-label="Tanker delivery marker"
+                      >
+                        <svg className="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2.5}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M8 17h8m-8 0a2 2 0 11-4 0m4 0a2 2 0 10-4 0m12 0a2 2 0 11-4 0m4 0a2 2 0 10-4 0m1-9V6a1 1 0 00-1-1H4a1 1 0 00-1 1v11a1 1 0 001 1h1m10-1a1 1 0 001-1v-5l-3-4H9" />
+                        </svg>
+                      </button>
+                      {/* Popover — appears when this marker is clicked.
+                          Auto-positions above the line. Delete button
+                          only for those with permission. */}
+                      {isActive && (
+                        <div
+                          onClick={(e) => e.stopPropagation()}
+                          className="absolute pointer-events-auto z-20 bg-white rounded-lg shadow-lg ring-1 ring-gray-200 p-3 w-56 text-xs"
+                          style={{
+                            // Try to keep popover on-screen: if
+                            // marker is on the right half, anchor
+                            // popover to the right so it doesn't
+                            // overflow the chart area.
+                            top: 20,
+                            [pctAcross > 60 ? "right" : "left"]: pctAcross > 60 ? 8 : 8,
+                            transform: pctAcross > 60 ? "translateX(0)" : "translateX(0)",
+                          }}
+                        >
+                          <div className="flex items-center justify-between mb-2">
+                            <span className="text-cyan-700 font-semibold uppercase tracking-wider text-[10px]">
+                              Tanker delivery
+                            </span>
+                            <button
+                              onClick={() => setActiveMarkerId(null)}
+                              className="text-gray-400 hover:text-gray-600 text-lg leading-none"
+                              aria-label="Close"
+                            >
+                              ×
+                            </button>
+                          </div>
+                          <p className="text-gray-900 font-medium">
+                            {new Date(m.deliveredAt).toLocaleString([], {
+                              day: "numeric", month: "short",
+                              hour: "2-digit", minute: "2-digit",
+                            })}
+                          </p>
+                          {/* Volume + water type on one line — the
+                              headline stat. Property manager doesn't
+                              know per-tank split, so we only show the
+                              total tanker volume. */}
+                          {(m.volumeL != null || m.waterType) && (
+                            <p className="text-gray-800 font-medium mt-1">
+                              {m.volumeL != null && (
+                                m.volumeL >= 1000
+                                  ? `${(m.volumeL / 1000).toFixed(m.volumeL % 1000 === 0 ? 0 : 1)} KL`
+                                  : `${m.volumeL} L`
+                              )}
+                              {m.waterType && (
+                                <span className="ml-1 text-[10px] text-gray-500 capitalize">
+                                  ({m.waterType})
+                                </span>
+                              )}
+                            </p>
+                          )}
+                          {/* Cost + payment status */}
+                          {(m.cost != null || m.paymentStatus) && (
+                            <div className="flex items-center gap-2 mt-1">
+                              {m.cost != null && (
+                                <span className="text-blue-700 font-medium">
+                                  ₹{Number(m.cost).toLocaleString("en-IN")}
+                                </span>
+                              )}
+                              {m.paymentStatus === "paid" && (
+                                <span className="text-[10px] font-semibold text-green-700 bg-green-50 border border-green-200 px-1.5 py-0.5 rounded-full">
+                                  ✓ Paid{m.paymentMode ? ` · ${m.paymentMode}` : ""}
+                                </span>
+                              )}
+                              {m.paymentStatus === "pending" && (
+                                <span className="text-[10px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded-full">
+                                  Pending
+                                </span>
+                              )}
+                            </div>
+                          )}
+                          {/* Supplier + phone */}
+                          {m.supplier && (
+                            <p className="text-gray-700 mt-1.5">
+                              <span className="text-gray-500">Supplier:</span> {m.supplier}
+                              {m.supplierPhone && (
+                                <a href={`tel:${m.supplierPhone}`} className="text-blue-600 hover:underline block">
+                                  {m.supplierPhone}
+                                </a>
+                              )}
+                            </p>
+                          )}
+                          {/* Vehicle + driver */}
+                          {m.vehicleNo && (
+                            <p className="text-gray-700 mt-1">
+                              <span className="text-gray-500">Vehicle:</span>{" "}
+                              <span className="font-mono">{m.vehicleNo}</span>
+                            </p>
+                          )}
+                          {m.driverName && (
+                            <p className="text-gray-700">
+                              <span className="text-gray-500">Driver:</span> {m.driverName}
+                              {m.driverPhone && (
+                                <a href={`tel:${m.driverPhone}`} className="text-blue-600 hover:underline ml-1">
+                                  · {m.driverPhone}
+                                </a>
+                              )}
+                            </p>
+                          )}
+                          {m.receivedBy && (
+                            <p className="text-gray-700 mt-1">
+                              <span className="text-gray-500">Received by:</span> {m.receivedBy}
+                            </p>
+                          )}
+                          {m.otherTanks.length > 0 && (
+                            <div className="mt-1.5 pt-1.5 border-t border-gray-100">
+                              <span className="text-gray-500">Also filled:</span>{" "}
+                              <span className="text-gray-700">
+                                {m.otherTanks.map((t) => t.tankName).join(", ")}
+                              </span>
+                            </div>
+                          )}
+                          {m.notes && (
+                            <p className="text-gray-500 mt-1.5 italic truncate" title={m.notes}>
+                              {m.notes}
+                            </p>
+                          )}
+                          {canDeleteTanker && (
+                            <button
+                              onClick={() => handleDeleteMarker(m.orderId)}
+                              className="mt-2 w-full text-xs text-red-600 hover:bg-red-50 py-1.5 rounded border border-red-200"
+                            >
+                              Delete this delivery
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })()}
 
         {/* Empty-state overlay — covers the chart grid when there's literally
             nothing to draw. Stops "Actual values only" from looking like the
