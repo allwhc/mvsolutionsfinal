@@ -64,7 +64,10 @@ export default function Navbar() {
         {/* Desktop nav */}
         <div className="hidden md:flex items-center gap-1">
           {navLink("/dashboard", "Dashboard")}
-          {navLink("/subscribe", "Add Device")}
+          {/* "Add Device" removed from top nav — already exposed as a
+              prominent blue button on the dashboard header, having
+              it in both places was redundant. Route still works if
+              anything deep-links to /subscribe. */}
           {navLink("/tankers", "Water Tankers")}
           {(isOrgAdmin || isOrgMember) && navLink("/org", "Organisation")}
           {isSuperAdmin && navLink("/admin", "Admin")}
@@ -99,7 +102,10 @@ export default function Navbar() {
       {menuOpen && (
         <div className="md:hidden border-t border-gray-100 px-4 py-3 flex flex-col gap-1 bg-white">
           {navLink("/dashboard", "Dashboard")}
-          {navLink("/subscribe", "Add Device")}
+          {/* "Add Device" removed from top nav — already exposed as a
+              prominent blue button on the dashboard header, having
+              it in both places was redundant. Route still works if
+              anything deep-links to /subscribe. */}
           {navLink("/tankers", "Water Tankers")}
           {(isOrgAdmin || isOrgMember) && navLink("/org", "Organisation")}
           {isSuperAdmin && navLink("/admin", "Admin")}
