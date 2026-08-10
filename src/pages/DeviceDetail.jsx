@@ -9,7 +9,7 @@ import {
 } from "../firebase/db";
 import { doc, updateDoc } from "firebase/firestore";
 import { db } from "../firebase/config";
-import { sendRefreshCommand, sendRestartCommand, sendTestCommand, sendValveCommand, listenToValveConfig, setValveConfig, sfsSetAutoMode, sfsForcePumpRun, listenToSfsLogs, getDeviceBootLog, getDeviceDiagnosticsNow, requestDiagnosticsRefresh, requestDiagnosticsClear } from "../firebase/rtdb";
+import { sendRefreshCommand, sendRestartCommand, sendTestCommand, sendValveCommand, listenToValveConfig, setValveConfig, sfsSetAutoMode, sfsForcePumpRun, listenToSfsLogs, getDeviceBootLog, getDeviceDiagnosticsNow, requestDiagnosticsRefresh, requestDiagnosticsClear, sendUpdateGeometry } from "../firebase/rtdb";
 import DeviceCard from "../components/DeviceCard/DeviceCard";
 import AnalyticsChart, { generateCSV, downloadCSV } from "../components/Analytics/AnalyticsChart";
 import { useDebugMode } from "../context/DebugModeContext";
@@ -157,6 +157,18 @@ export default function DeviceDetail() {
   const [deviceName, setDeviceName] = useState("");
   const [editingName, setEditingName] = useState(false);
   const [nameInput, setNameInput] = useState("");
+  // Tank Geometry edit state — ultrasonic only. When editing, fields
+  // become inputs; on Send we write a command to /commands/updateGeometry
+  // and the device applies it within ~30 sec (existing commands poll).
+  // The device pushes new geometry to /info after applying, so the
+  // read-only rows in this same section auto-update — that's the ACK.
+  // Admin re-sends if the values don't change.
+  const [editingGeometry, setEditingGeometry] = useState(false);
+  const [geoTankInput,     setGeoTankInput]     = useState("");
+  const [geoOverflowInput, setGeoOverflowInput] = useState("");
+  const [geoSuctionInput,  setGeoSuctionInput]  = useState("");
+  const [geoSending,       setGeoSending]       = useState(false);
+  const [geoError,         setGeoError]         = useState("");
   const [valveAlertOpenHours, setValveAlertOpenHours] = useState("");
   const [valveAlertClosedHours, setValveAlertClosedHours] = useState("");
   const [sfsLogs, setSfsLogs] = useState([]);
@@ -346,6 +358,70 @@ export default function DeviceDetail() {
     navigate("/dashboard");
   }
 
+  // Push geometry values to the device. Uses the existing commands
+  // poll — firmware picks up within ~30 sec. Values validated on
+  // firmware side (same rules as AP page); anything out of range is
+  // silently rejected (Serial log shows "[GEOM] Rejected ..."). Cloud
+  // sees the /info values update via existing WebSocket listener —
+  // that's the visible ACK.
+  async function handleSendGeometry() {
+    setGeoError("");
+    // Basic front-side validation matching firmware bounds so the
+    // admin isn't confused when firmware silently rejects.
+    const tank = geoTankInput === "" ? null : Number(geoTankInput);
+    const ovfl = geoOverflowInput === "" ? null : Number(geoOverflowInput);
+    const suct = geoSuctionInput === "" ? null : Number(geoSuctionInput);
+    if (tank != null && (!isFinite(tank) || tank < 36 || tank > 750)) {
+      setGeoError("Tank height must be 36-750 cm.");
+      return;
+    }
+    // Use edited tank or current /info value for overflow/suction
+    // bounds check (whichever the device will end up with).
+    const effectiveTank = tank ?? Number(info?.tankHeightCm) ?? 100;
+    if (ovfl != null && ovfl !== 0 && (ovfl < 35 || ovfl >= effectiveTank - 10)) {
+      setGeoError(`Overflow must be 0 or between 35 and ${Math.floor(effectiveTank - 10)} cm.`);
+      return;
+    }
+    if (suct != null && suct !== 0 && (suct <= 0 || suct >= effectiveTank - 35)) {
+      setGeoError(`Suction must be 0 or between 1 and ${Math.floor(effectiveTank - 36)} cm.`);
+      return;
+    }
+    setGeoSending(true);
+    try {
+      await sendUpdateGeometry(code, {
+        tankHeight: tank,
+        overflow:   ovfl,
+        suction:    suct,
+      });
+      // Exit edit mode — device applies within ~30 sec, and the /info
+      // WebSocket listener will refresh the read-only rows when the
+      // new values land. If nothing changes, admin can click Edit
+      // again and re-Send.
+      setEditingGeometry(false);
+    } catch (e) {
+      console.error("sendUpdateGeometry failed:", e);
+      setGeoError("Send failed — try again.");
+    } finally {
+      setGeoSending(false);
+    }
+  }
+
+  // Parse firmware version string like "21.1.2" or "21.0.7-HIGH" into
+  // a comparable tuple. Returns null if unparseable. Used to gate the
+  // geometry-edit UI — only firmware v21.1.2+ supports the
+  // updateGeometry command; older firmware would ignore it silently.
+  function fwSupportsGeometryPush(versionStr) {
+    if (!versionStr) return false;
+    const m = /^(\d+)\.(\d+)\.(\d+)/.exec(versionStr);
+    if (!m) return false;
+    const [maj, min, patch] = [Number(m[1]), Number(m[2]), Number(m[3])];
+    if (maj > 21) return true;
+    if (maj < 21) return false;
+    if (min > 1) return true;
+    if (min < 1) return false;
+    return patch >= 2;
+  }
+
   async function handleSaveAccess() {
     if (accessMode === "pin" && (!accessPin || accessPin.length < 4)) {
       alert("PIN must be at least 4 characters");
@@ -466,19 +542,15 @@ export default function DeviceDetail() {
           <span className="text-gray-900">{SENSOR_TYPE[info?.sensorType ?? catalog.sensorType] || "Unknown"}</span>
 
           {/* Tank Geometry — ultrasonic only. Firmware (v21.0.7+) pushes
-              tankHeightCm / overflowCm / suctionCm to /info; we show them
-              here so the installer/owner can verify what got saved on the
-              device. Read-only for now (edited via AP page). Old firmware
-              without these fields → rows show "—" so we don't lie about
-              a missing value. */}
+              tankHeightCm / overflowCm / suctionCm to /info so this
+              section auto-refreshes when the device applies a change.
+              orgAdmin/superadmin can Edit + Send on firmware v21.1.2+;
+              older firmware shows read-only + a tooltip. */}
           {(info?.sensorType ?? catalog.sensorType) === 2 && (() => {
             const tankH = Number(info?.tankHeightCm);
             const ovfl  = Number(info?.overflowCm);
             const suct  = Number(info?.suctionCm);
             const hasTank = isFinite(tankH) && tankH > 0;
-            // Usable range = from suction cutoff up to overflow.
-            //   suction disabled (0) → floor is tank bottom
-            //   overflow disabled (0) → ceiling is sensor face
             const suctionCutoff = hasTank && suct > 0 && suct < tankH ? tankH - suct : tankH;
             const topCutoff     = ovfl > 0 && (!hasTank || ovfl < tankH) ? ovfl : 0;
             const usable = hasTank ? Math.max(0, suctionCutoff - topCutoff) : null;
@@ -486,10 +558,96 @@ export default function DeviceDetail() {
               if (!isFinite(cm) || cm < 0) return <span className="text-gray-400">—</span>;
               return <span>{cmToFtIn(cm)} <span className="text-gray-400 text-xs">({Math.round(cm)} cm)</span></span>;
             };
+            const canEditGeo   = isEffectiveOwner;
+            const fwSupports   = fwSupportsGeometryPush(info?.firmwareVersion);
+            const cmInput = (val, setVal, placeholder) => (
+              <input
+                type="number"
+                min="0"
+                value={val}
+                onChange={(e) => setVal(e.target.value)}
+                placeholder={placeholder}
+                className="w-20 px-1.5 py-0.5 border border-gray-200 rounded text-xs"
+              />
+            );
+
+            if (editingGeometry) {
+              return (
+                <>
+                  <span className="text-gray-500">Tank Height</span>
+                  <span className="flex items-center gap-1">
+                    {cmInput(geoTankInput, setGeoTankInput, `${Math.round(tankH) || "cm"}`)}
+                    <span className="text-gray-400 text-xs">cm</span>
+                  </span>
+                  <span className="text-gray-500">Overflow Pipe</span>
+                  <span className="flex items-center gap-1">
+                    {cmInput(geoOverflowInput, setGeoOverflowInput, `${Math.round(ovfl) || "0=off"}`)}
+                    <span className="text-gray-400 text-xs">cm from sensor</span>
+                  </span>
+                  <span className="text-gray-500">Suction Cutoff</span>
+                  <span className="flex items-center gap-1">
+                    {cmInput(geoSuctionInput, setGeoSuctionInput, `${Math.round(suct) || "0=off"}`)}
+                    <span className="text-gray-400 text-xs">cm from bottom</span>
+                  </span>
+                  <span className="text-gray-500"></span>
+                  <span className="flex flex-col gap-1 text-xs">
+                    {geoError && <span className="text-red-600">{geoError}</span>}
+                    <span className="text-gray-400">
+                      Leave blank to keep current value. Applies to device within ~30 sec.
+                      {!isOnline && " Device is offline — will apply on next reconnect."}
+                    </span>
+                    <span className="flex gap-2 mt-1">
+                      <button
+                        onClick={handleSendGeometry}
+                        disabled={geoSending}
+                        className="bg-blue-600 text-white px-3 py-1 rounded text-xs font-medium hover:bg-blue-700 disabled:opacity-50"
+                      >
+                        {geoSending ? "Sending…" : "Send to Device"}
+                      </button>
+                      <button
+                        onClick={() => { setEditingGeometry(false); setGeoError(""); }}
+                        className="text-gray-500 hover:text-gray-700 text-xs"
+                      >
+                        Cancel
+                      </button>
+                    </span>
+                  </span>
+                </>
+              );
+            }
+
             return (
               <>
                 <span className="text-gray-500">Tank Height</span>
-                <span className="text-gray-900">{hasTank ? fmtRow(tankH) : <span className="text-gray-400">Not configured</span>}</span>
+                <span className="text-gray-900 flex items-center gap-2">
+                  {hasTank ? fmtRow(tankH) : <span className="text-gray-400">Not configured</span>}
+                  {/* Edit toggle — only visible to effective owner.
+                      Older firmware without geometry push support
+                      shows a tooltip explaining why it's greyed. */}
+                  {canEditGeo && (
+                    fwSupports ? (
+                      <button
+                        onClick={() => {
+                          // Pre-fill inputs from current values so admin
+                          // sees what's saved and only overwrites what
+                          // they want to change.
+                          setGeoTankInput(hasTank ? Math.round(tankH).toString() : "");
+                          setGeoOverflowInput(ovfl > 0 ? Math.round(ovfl).toString() : "");
+                          setGeoSuctionInput(suct > 0 ? Math.round(suct).toString() : "");
+                          setGeoError("");
+                          setEditingGeometry(true);
+                        }}
+                        className="text-xs text-blue-600 hover:underline"
+                      >
+                        Edit
+                      </button>
+                    ) : (
+                      <span className="text-[10px] text-gray-400 italic" title={`Requires firmware v21.1.2+. Current: ${info?.firmwareVersion || "unknown"}`}>
+                        (edit needs firmware v21.1.2+)
+                      </span>
+                    )
+                  )}
+                </span>
                 <span className="text-gray-500">Overflow Pipe</span>
                 <span className="text-gray-900">
                   {ovfl > 0 ? <><span className="text-gray-500 text-xs">from sensor</span> {fmtRow(ovfl)}</> : <span className="text-gray-400">Not set (no overflow limit)</span>}

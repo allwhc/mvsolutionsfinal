@@ -87,7 +87,7 @@
 // truncated it in list view. Kept "USL" so long-range devices remain
 // distinguishable from short-range "SFUSR" units in the scan list.
 #define DEVICE_NAME       "SFUSL"
-#define FIRMWARE_VERSION  "21.0.11"
+#define FIRMWARE_VERSION  "21.1.2"
 #define FIRMWARE_CODE     "SF-USL-2026"
 #define AP_PASSWORD       "mvstech9867"
 
@@ -344,6 +344,33 @@ const int DIP_PINS[] = {34, 35, 32, 33};
 // entry (via US_HYST_HISTORY_PCT) so the analytics chart stays clean.
 #define US_LIVE_PUSH_MIN_GAP_MS   20000UL   // 20 sec between /live pushes
 #define US_HISTORY_PUSH_MIN_GAP_MS 20000UL  // 20 sec between /history pushes
+
+// v21.1.1: Layer 4 — JUMP-LIMIT FILTER
+// Field CSV analysis (Aug 6-10) showed the sensor occasionally producing
+// spikes 40-50% higher than actual water level, lasting 1-3 minutes then
+// snapping back. Root cause is likely intermittent reflections from a
+// fixed structure ~60 cm from sensor (support beam, ladder, pipe) OR
+// splash / steam / brief obstruction. Layers 1-3 miss these because the
+// spike lasts long enough that an entire burst reads the wrong value
+// consistently, so histogram-mode + hysteresis both accept it.
+//
+// Layer 4: any jump larger than US_JUMP_LIMIT_PCT must persist for
+// US_JUMP_SUSTAIN_STRIKES bursts (each burst = US_READ_INTERVAL) before
+// we accept it as real. Rejected spikes fall back to last committed pct.
+//
+// Real refills in the CSV take hours (43% -> 87% overnight), so a
+// 60-sec sustain requirement never rejects genuine changes.
+#define US_JUMP_LIMIT_PCT         15    // % delta that triggers the check
+#define US_JUMP_SUSTAIN_STRIKES   30    // 30 × 2 sec = 60 sec sustained
+
+// v21.1.2: Boot warmup gate. For the first BOOT_WARMUP_MS after power-on,
+// don't publish anything to /live. Collect BOOT_WARMUP_SAMPLES bursts,
+// then publish the MEDIAN as the first stable reading. Prevents user
+// from seeing the initial 20-30 sec of settling values dance on the app.
+// Device still shows ONLINE (heartbeat updates devices/{code}/info) —
+// only /live is held back.
+#define US_BOOT_WARMUP_MS         60000UL   // 60 sec warmup after boot
+#define US_BOOT_WARMUP_SAMPLES    30        // 30 bursts × 2 sec = ~60 sec
 
 // v21.0.6: US_STEP_SIZE removed — was dead code, never referenced.
 // Percentages are NOT snapped to 5% steps. distanceToIntegerPct() returns
@@ -604,6 +631,19 @@ unsigned long lastUsRead = 0;
 uint8_t usLastZone = US_ZONE_NONE;
 uint8_t usLastValidPct = 0;          // last cleanly-computed integer pct
 bool    usHaveValidHistory = false;  // false until first successful read
+
+// v21.1.1: Layer 4 jump-limit filter state
+uint8_t  usLastCommittedPct = 0;     // last pct actually published
+bool     usHaveCommittedPct = false; // false at boot until first commit
+uint16_t usJumpCandidatePct = 0;     // pct we're currently considering
+uint16_t usJumpStrikes      = 0;     // how many consecutive bursts said the same jump
+uint32_t usSpikesRejected   = 0;     // diag counter — visible on AP page
+
+// v21.1.2: Boot warmup gate state
+uint32_t usBootStartMs      = 0;     // millis() at boot (initUltrasonic)
+uint8_t  usBootPctRing[US_BOOT_WARMUP_SAMPLES] = {0};
+uint8_t  usBootPctCount     = 0;     // how many bursts collected so far
+bool     usBootWarmupDone   = false; // true once first stable value published
 
 // Three-strike hysteresis state (only active in MIDDLE zone).
 float   usHystLastGood = 0.0f;
@@ -1254,6 +1294,12 @@ float readDypA01Cm() {
 // initUltrasonic() runs its own Auto-vs-Controlled detection inline.
 
 void initUltrasonic() {
+  // v21.1.2: mark boot start for warmup gate — used to hold /live
+  // pushes for US_BOOT_WARMUP_MS while we collect stable samples.
+  usBootStartMs    = millis();
+  usBootPctCount   = 0;
+  usBootWarmupDone = false;
+
   // v21.0.0 A01_750cm branch: DYP-only firmware. HC-SR04 not supported.
   // Detects whether the connected DYP horn sensor is Auto-output
   // (A01ANYUB — streams frames every 100 ms) or Controlled-output
@@ -1270,8 +1316,25 @@ void initUltrasonic() {
   Preferences p;
   p.begin("senseflow", true);
   usSensorType = p.getUChar("usType", US_TYPE_UNKNOWN);
-  usDypBaud    = 9600;   // A01 series is always 9600 per DYP convention
+  usDypBaud    = p.getUInt("usBaud", 9600);
+  uint8_t detectVer = p.getUChar("usDetV", 0);
   p.end();
+
+  // v21.0.13: force fresh detection ONE more time. v21.0.12 wrote
+  // usDetV=12 during test runs even when the "detection" was actually
+  // using stale AUTO cache, so version 12 cache is untrustworthy.
+  if (detectVer < 13) {
+    Serial.printf("[US] Cache detectVer=%u < 13 — clearing to force fresh baud detection\n", detectVer);
+    usSensorType = US_TYPE_UNKNOWN;
+    Preferences pw;
+    pw.begin("senseflow", false);
+    pw.putUChar("usDetV", 13);
+    pw.end();
+  }
+
+  // v21.0.11: Enable raw UART byte debug for first 15 sec after boot
+  g_dbgUartUntilMs = millis() + 15000;
+  Serial.println("[UART-DBG] Byte logging enabled for 15 sec");
 
   // v21.0.9: Force TX pin (= sensor's RX) HIGH BEFORE anything else.
   // Per uart_auto.pdf section 2.2: A01ANYUB only checks its RX-pin
@@ -1287,44 +1350,72 @@ void initUltrasonic() {
   digitalWrite(US_UART_TX_PIN, HIGH);
   delay(10);
 
-  if (usSensorType != US_TYPE_DYP_A01 && usSensorType != US_TYPE_DYP_A21) {
-    // Fresh boot or cache invalidated — run detection
-    Serial.println("[US] v21.0.9: detecting Auto vs Controlled UART @ 9600 baud...");
+  // v21.0.12: try BOTH baud rates. v21.0.11 diagnostic showed sensor
+  // emitting only 0xFE bytes at 9600 baud — classic wrong-baud signature.
+  // A21 twoEyes datasheet says default is 115200 (modifiable). A01 auto
+  // datasheet says 9600. Since we can't be sure which sensor is wired
+  // (A21 vs A01), try 115200 first (more likely for the auto-stream
+  // sensor the user has), then fall back to 9600.
+  //
+  // Detection order:
+  //   1. 115200 baud, listen for auto-stream (1 sec)
+  //   2. 9600 baud, listen for auto-stream (1 sec)
+  //   3. 9600 baud, try controlled trigger
+  // First to produce a valid frame wins, and we cache the baud.
+
+  bool fromCache = (usSensorType == US_TYPE_DYP_A01 || usSensorType == US_TYPE_DYP_A21);
+  if (fromCache) {
+    const char* modeName = (usSensorType == US_TYPE_DYP_A21) ? "AUTO stream" : "CONTROLLED";
+    Serial.printf("[US] Using cached DYP mode: %s @ %u baud\n", modeName, usDypBaud);
+    usSerial.end();
+    usSerial.begin(usDypBaud, SERIAL_8N1, US_UART_RX_PIN, US_UART_TX_PIN);
+    return;
+  }
+
+  Serial.println("[US] v21.0.12: detecting sensor + baud rate...");
+  uint32_t candidates[] = { 115200, 9600 };
+  float d = -1.0f;
+  uint32_t winningBaud = 0;
+
+  // Try each baud for AUTO-STREAM detection
+  for (uint32_t baud : candidates) {
+    Serial.printf("[US] Trying AUTO @ %u baud...\n", baud);
+    usSerial.end();
+    usSerial.begin(baud, SERIAL_8N1, US_UART_RX_PIN, US_UART_TX_PIN);
+    delay(50);
+    while (usSerial.available()) usSerial.read();
+    d = readDypFrameCm(1200);
+    if (d > 0) {
+      Serial.printf("[US] Detected AUTO stream @ %u baud: %.1f cm\n", baud, d);
+      usSensorType = US_TYPE_DYP_A21;
+      winningBaud = baud;
+      break;
+    }
+  }
+
+  // Try controlled trigger only at 9600 (A01 controlled always 9600)
+  if (usSensorType == US_TYPE_UNKNOWN) {
+    Serial.println("[US] Trying CONTROLLED @ 9600 baud...");
     usSerial.end();
     usSerial.begin(9600, SERIAL_8N1, US_UART_RX_PIN, US_UART_TX_PIN);
     delay(50);
-    while (usSerial.available()) usSerial.read();     // drain
-
-    // Step 1: listen for auto-stream. A01ANYUB emits every 100-500 ms
-    // in processed mode → 1000 ms window catches multiple frames easily.
-    float d = readDypFrameCm(1000);
+    d = readDypA01Cm();
     if (d > 0) {
-      Serial.printf("[US] Detected AUTO stream (A01ANYUB): first read %.1f cm\n", d);
-      usSensorType = US_TYPE_DYP_A21;                 // reuse streaming path
-    } else {
-      // Step 2: try controlled trigger (pin-toggle, not 0x55)
-      d = readDypA01Cm();
-      if (d > 0) {
-        Serial.printf("[US] Detected CONTROLLED (A01ANYTB): first read %.1f cm\n", d);
-        usSensorType = US_TYPE_DYP_A01;               // reuse controlled path
-      } else {
-        Serial.println("[US] No DYP sensor detected — will retry on next boot");
-        usSensorType = US_TYPE_UNKNOWN;
-      }
+      Serial.printf("[US] Detected CONTROLLED: %.1f cm\n", d);
+      usSensorType = US_TYPE_DYP_A01;
+      winningBaud = 9600;
     }
+  }
 
-    if (usSensorType != US_TYPE_UNKNOWN) {
-      Preferences pw;
-      pw.begin("senseflow", false);
-      pw.putUChar("usType", usSensorType);
-      pw.putUInt("usBaud",  9600);
-      pw.end();
-    }
+  if (usSensorType != US_TYPE_UNKNOWN && winningBaud > 0) {
+    usDypBaud = winningBaud;
+    Preferences pw;
+    pw.begin("senseflow", false);
+    pw.putUChar("usType", usSensorType);
+    pw.putUInt("usBaud",  usDypBaud);
+    pw.end();
   } else {
-    const char* modeName = (usSensorType == US_TYPE_DYP_A21) ? "AUTO stream" : "CONTROLLED";
-    Serial.printf("[US] Using cached DYP mode: %s\n", modeName);
-    usSerial.end();
-    usSerial.begin(9600, SERIAL_8N1, US_UART_RX_PIN, US_UART_TX_PIN);
+    Serial.println("[US] No DYP sensor detected on any baud rate");
   }
 }
 
@@ -1660,9 +1751,87 @@ void processUltrasonic() {
     saveZoneMemory(zone, newPct);
   }
 
+  // ── Layer 4: Jump-limit filter (v21.1.1) ────────────────────────────
+  // Detects transient spikes that pass Layers 1-3 by requiring big jumps
+  // to persist for US_JUMP_SUSTAIN_STRIKES bursts before commit.
+  uint8_t publishPct = newPct;
+  if (usHaveCommittedPct) {
+    int8_t delta = (int8_t)newPct - (int8_t)usLastCommittedPct;
+    if (delta < 0) delta = -delta;
+    if (delta >= US_JUMP_LIMIT_PCT) {
+      // Big jump — needs sustained confirmation. Check if this burst
+      // matches the pending candidate (within JUMP_LIMIT/2 = 7% wobble).
+      int8_t candDelta = (int8_t)newPct - (int8_t)usJumpCandidatePct;
+      if (candDelta < 0) candDelta = -candDelta;
+      if (usJumpStrikes == 0 || candDelta > (US_JUMP_LIMIT_PCT / 2)) {
+        // New candidate (or previous candidate broken)
+        usJumpCandidatePct = newPct;
+        usJumpStrikes      = 1;
+      } else {
+        usJumpStrikes++;
+      }
+      if (usJumpStrikes < US_JUMP_SUSTAIN_STRIKES) {
+        // Not sustained long enough — REJECT this burst, keep last commit
+        usSpikesRejected++;
+        Serial.printf("[US] Layer4 REJECT jump %u%%->%u%% (strike %u/%u, spikes=%u)\n",
+                      usLastCommittedPct, newPct, usJumpStrikes,
+                      US_JUMP_SUSTAIN_STRIKES, usSpikesRejected);
+        publishPct = usLastCommittedPct;
+      } else {
+        // Sustained! Accept and reset strike counter.
+        Serial.printf("[US] Layer4 ACCEPT sustained jump %u%%->%u%% after %u strikes\n",
+                      usLastCommittedPct, newPct, usJumpStrikes);
+        usJumpStrikes = 0;
+      }
+    } else {
+      // Small change — normal path, reset strike counter
+      usJumpStrikes = 0;
+    }
+  }
+  usLastCommittedPct = publishPct;
+  usHaveCommittedPct = true;
+
+  // v21.1.2: BOOT WARMUP GATE.
+  // For the first US_BOOT_WARMUP_MS after boot, do NOT publish to
+  // confirmedPct/instantPct. Instead collect each burst's pct into a
+  // ring, and once we have US_BOOT_WARMUP_SAMPLES entries, publish the
+  // MEDIAN as the first stable value. This gives the app a rock-solid
+  // first reading instead of the settling values dancing 0-30% during
+  // the first minute after power-on.
+  if (!usBootWarmupDone) {
+    if (usBootPctCount < US_BOOT_WARMUP_SAMPLES) {
+      usBootPctRing[usBootPctCount++] = publishPct;
+      Serial.printf("[US] Warmup %u/%u: pct=%u (holding /live)\n",
+                    usBootPctCount, US_BOOT_WARMUP_SAMPLES, publishPct);
+      // Update instantPct so the AP page shows current reading — only
+      // /live to cloud is held back.
+      instantPct  = publishPct;
+      instantBits = 0;
+      sensorBits  = 0;
+      return;
+    }
+    // Ring full — compute median of the 30 samples
+    uint8_t sorted[US_BOOT_WARMUP_SAMPLES];
+    memcpy(sorted, usBootPctRing, sizeof(sorted));
+    for (int i = 0; i < US_BOOT_WARMUP_SAMPLES - 1; i++) {
+      for (int j = i + 1; j < US_BOOT_WARMUP_SAMPLES; j++) {
+        if (sorted[j] < sorted[i]) {
+          uint8_t t = sorted[i]; sorted[i] = sorted[j]; sorted[j] = t;
+        }
+      }
+    }
+    uint8_t medianPct = sorted[US_BOOT_WARMUP_SAMPLES / 2];
+    Serial.printf("[US] Warmup DONE: median=%u%% of %u samples → first /live\n",
+                  medianPct, US_BOOT_WARMUP_SAMPLES);
+    usBootWarmupDone = true;
+    // Also reset Layer 4 anchor so the median is the new baseline
+    usLastCommittedPct = medianPct;
+    publishPct = medianPct;
+  }
+
   // Publish to /live via the standard change-detection path
-  confirmedPct = newPct;
-  instantPct   = newPct;
+  confirmedPct = publishPct;
+  instantPct   = publishPct;
   instantBits  = 0;
   sensorBits   = 0;
 }
@@ -1958,6 +2127,88 @@ void checkCommands() {
       Serial.println("[DIAG] Boot log cleared (NVS + RTDB)");
     }
   }
+
+  // Cloud-side geometry update (ultrasonic only — DIP has no
+  // geometry). OrgAdmin edits Tank Height / Overflow / Suction on
+  // the cloud dashboard and hits Send → cloud writes a JSON at
+  //   /devices/<code>/commands/updateGeometry = {tankHeight, overflow, suction}
+  // We pick it up on the next commands poll (up to 30 sec), validate,
+  // write NVS, update in-memory, push /info (so cloud sees the new
+  // values reflected — no separate ACK needed), then delete the
+  // command node so we don't re-apply on the next poll.
+  //
+  // NO_QUEUE_ON_MISUSE: any field out of range → whole update is
+  // rejected as a group. Partial application (e.g. tank height ok
+  // but suction bad) would leave geometry in an inconsistent state.
+  //
+  // Idempotent — admin re-sending the same values is safe (NVS write
+  // is cheap, /info push is one write, command deletion always runs).
+  #if USE_ULTRASONIC
+  esp_task_wdt_reset();
+  if (Firebase.RTDB.getJSON(&fbdo, (basePath + "updateGeometry").c_str())) {
+    FirebaseJson &json = fbdo.jsonObject();
+    FirebaseJsonData jd;
+    // Missing fields → keep current NVS value (partial updates
+    // legitimate — admin might only want to change overflow). Absent
+    // fields simply aren't touched.
+    float   newTank    = usTankHeight;
+    int     newOverflow = usOverflow;
+    int     newSuction  = usSuction;
+    bool    hasAny = false;
+    bool    valid  = true;
+
+    if (json.get(jd, "tankHeight") && jd.typeNum != FirebaseJson::JSON_NULL) {
+      float v = jd.floatValue;
+      if (v >= 36 && v <= 750) { newTank = v; hasAny = true; }
+      else { valid = false; Serial.printf("[GEOM] Rejected tankHeight=%.1f (must be 36-750 cm)\n", v); }
+    }
+    if (valid && json.get(jd, "overflow") && jd.typeNum != FirebaseJson::JSON_NULL) {
+      int v = jd.intValue;
+      // Same validation rules as /setoverflow AP-page handler.
+      if (v == 0 || (v >= 35 && v < (int)newTank - 10)) {
+        newOverflow = v;
+        hasAny = true;
+      } else {
+        valid = false;
+        Serial.printf("[GEOM] Rejected overflow=%d (must be 0 or 35..tank-10)\n", v);
+      }
+    }
+    if (valid && json.get(jd, "suction") && jd.typeNum != FirebaseJson::JSON_NULL) {
+      int v = jd.intValue;
+      // Same validation as /setsuction AP-page handler.
+      if (v == 0 || (v > 0 && v < (int)newTank - 35)) {
+        newSuction = v;
+        hasAny = true;
+      } else {
+        valid = false;
+        Serial.printf("[GEOM] Rejected suction=%d (must be 0 or 1..tank-35)\n", v);
+      }
+    }
+
+    if (valid && hasAny) {
+      usTankHeight = newTank;
+      usOverflow   = (uint16_t)newOverflow;
+      usSuction    = (uint16_t)newSuction;
+      Preferences p;
+      p.begin("senseflow", false);
+      p.putFloat("tankh",  usTankHeight);
+      p.putUShort("usOvfl", usOverflow);
+      p.putUShort("usSuct", usSuction);
+      p.end();
+      Serial.printf("[GEOM] Cloud-applied: tank=%.0f overflow=%u suction=%u\n",
+                    usTankHeight, usOverflow, usSuction);
+      // Mirror new geometry to /info. Cloud dashboard's live listener
+      // sees the change and its Tank Geometry rows auto-refresh — this
+      // is the implicit ACK, no separate confirmation channel needed.
+      updateDeviceInfo(true);
+    }
+
+    // Always delete the command node so it doesn't re-apply next poll.
+    // Applies whether the values were valid, invalid, or empty — the
+    // command has been "handled" either way.
+    Firebase.RTDB.deleteNode(&fbdo, (basePath + "updateGeometry").c_str());
+  }
+  #endif
 }
 
 // Internal: write a history entry with explicit values + tag.
@@ -2483,6 +2734,15 @@ h2{font-size:14px;font-weight:600;color:#666;margin-bottom:8px}
     html += "<div class='row'><span class='label'>Zone</span><span class='val'>" + String(zoneName) + "</span></div>";
     html += "<div class='row'><span class='label'>Hysteresis</span><span class='val'>" + String((int)US_HYST_TOLERANCE_CM) + " cm / " + String(US_HYST_LIVE_STRIKES) + " strikes</span></div>";
     html += "<div class='row'><span class='label'>History push</span><span class='val'>&ge; " + String(US_HYST_HISTORY_PCT) + "% change</span></div>";
+    // v21.1.1: Layer 4 jump-limit spike counter
+    html += "<div class='row'><span class='label'>Jump filter</span><span class='val'>&gt;" + String(US_JUMP_LIMIT_PCT) + "% needs " + String(US_JUMP_SUSTAIN_STRIKES * 2) + "s sustain</span></div>";
+    html += "<div class='row'><span class='label'>Spikes rejected</span><span class='val'>" + String(usSpikesRejected) + " since boot</span></div>";
+    // v21.1.2: boot warmup status
+    if (!usBootWarmupDone) {
+      html += "<div class='row'><span class='label'>Warmup</span><span class='val' style='color:#f59e0b'>" + String(usBootPctCount) + "/" + String(US_BOOT_WARMUP_SAMPLES) + " samples (holding /live)</span></div>";
+    } else {
+      html += "<div class='row'><span class='label'>Warmup</span><span class='val' style='color:#16a34a'>DONE</span></div>";
+    }
     // v20.0.0: sensor type + manual override + on-demand refresh.
     const char* usTypeName;
     switch (usSensorType) {

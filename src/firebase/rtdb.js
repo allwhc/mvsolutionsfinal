@@ -242,6 +242,26 @@ export async function sendTestCommand(deviceCode) {
   });
 }
 
+// Ultrasonic geometry push. Firmware v21.1.2+ picks this up on its
+// next commands poll (~30 sec), validates, writes NVS, updates its
+// in-memory values, and pushes new geometry to /info. Cloud sees
+// the /info change via existing WebSocket listener — no separate
+// ACK. Admin re-sends if the /info values don't change.
+//
+// Pass `null` for any field to leave that field untouched on device
+// (e.g. only updating overflow keeps tank height + suction as-is).
+// Firmware validates ranges; invalid values are dropped silently
+// (see [GEOM] Serial log on device).
+export async function sendUpdateGeometry(deviceCode, { tankHeight, overflow, suction }) {
+  const payload = {};
+  if (tankHeight != null && tankHeight !== "") payload.tankHeight = Number(tankHeight);
+  if (overflow   != null && overflow   !== "") payload.overflow   = Number(overflow);
+  if (suction    != null && suction    !== "") payload.suction    = Number(suction);
+  await update(ref(rtdb, `devices/${deviceCode}/commands`), {
+    updateGeometry: payload,
+  });
+}
+
 // ── Read commands state ──
 export async function getDeviceCommands(deviceCode) {
   const snap = await get(ref(rtdb, `devices/${deviceCode}/commands`));
