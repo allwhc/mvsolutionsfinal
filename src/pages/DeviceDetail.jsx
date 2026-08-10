@@ -91,6 +91,17 @@ function fmtLitres(L) {
   return `${L} L`;
 }
 
+// Convert cm → "X ft Y in" for the Tank Geometry rows. Same rounding
+// rule as SensorCard's depth display so all views agree.
+function cmToFtIn(cm) {
+  if (cm == null || !isFinite(cm) || cm < 0) return "";
+  const totalInches = cm / 2.54;
+  let ft = Math.floor(totalInches / 12);
+  let inches = Math.round(totalInches - ft * 12);
+  if (inches === 12) { ft += 1; inches = 0; }
+  return `${ft} ft ${inches} in`;
+}
+
 export default function DeviceDetail() {
   const { code } = useParams();
   const { user, userData, isSuperAdmin, isOrgAdmin, isOrgMember } = useAuth();
@@ -453,6 +464,47 @@ export default function DeviceDetail() {
               different sensor type). Matches SensorCard which also
               reads info first. */}
           <span className="text-gray-900">{SENSOR_TYPE[info?.sensorType ?? catalog.sensorType] || "Unknown"}</span>
+
+          {/* Tank Geometry — ultrasonic only. Firmware (v21.0.7+) pushes
+              tankHeightCm / overflowCm / suctionCm to /info; we show them
+              here so the installer/owner can verify what got saved on the
+              device. Read-only for now (edited via AP page). Old firmware
+              without these fields → rows show "—" so we don't lie about
+              a missing value. */}
+          {(info?.sensorType ?? catalog.sensorType) === 2 && (() => {
+            const tankH = Number(info?.tankHeightCm);
+            const ovfl  = Number(info?.overflowCm);
+            const suct  = Number(info?.suctionCm);
+            const hasTank = isFinite(tankH) && tankH > 0;
+            // Usable range = from suction cutoff up to overflow.
+            //   suction disabled (0) → floor is tank bottom
+            //   overflow disabled (0) → ceiling is sensor face
+            const suctionCutoff = hasTank && suct > 0 && suct < tankH ? tankH - suct : tankH;
+            const topCutoff     = ovfl > 0 && (!hasTank || ovfl < tankH) ? ovfl : 0;
+            const usable = hasTank ? Math.max(0, suctionCutoff - topCutoff) : null;
+            const fmtRow = (cm) => {
+              if (!isFinite(cm) || cm < 0) return <span className="text-gray-400">—</span>;
+              return <span>{cmToFtIn(cm)} <span className="text-gray-400 text-xs">({Math.round(cm)} cm)</span></span>;
+            };
+            return (
+              <>
+                <span className="text-gray-500">Tank Height</span>
+                <span className="text-gray-900">{hasTank ? fmtRow(tankH) : <span className="text-gray-400">Not configured</span>}</span>
+                <span className="text-gray-500">Overflow Pipe</span>
+                <span className="text-gray-900">
+                  {ovfl > 0 ? <><span className="text-gray-500 text-xs">from sensor</span> {fmtRow(ovfl)}</> : <span className="text-gray-400">Not set (no overflow limit)</span>}
+                </span>
+                <span className="text-gray-500">Suction Cutoff</span>
+                <span className="text-gray-900">
+                  {suct > 0 ? <><span className="text-gray-500 text-xs">from tank bottom</span> {fmtRow(suct)}</> : <span className="text-gray-400">Not set (uses tank floor)</span>}
+                </span>
+                <span className="text-gray-500">Usable Range</span>
+                <span className="text-gray-900">
+                  {usable != null ? fmtRow(usable) : <span className="text-gray-400">—</span>}
+                </span>
+              </>
+            );
+          })()}
           {tankCapacityLitres > 0 && (
             <>
               <span className="text-gray-500">Tank Capacity</span>
