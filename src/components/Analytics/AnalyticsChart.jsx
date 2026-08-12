@@ -9,6 +9,8 @@ import { useAuth } from "../../context/AuthContext";
 import {
   RANGES,
   calcLitres,
+  detectSpikes,
+  formatLitres,
   generateInsights,
   MIN_POINTS_FOR_INSIGHTS,
 } from "../../utils/analyticsInsights";
@@ -114,8 +116,8 @@ export default function AnalyticsChart({ deviceCode, tankCapacityLitres, sensorT
 
   // Generate insights on demand (lazy — only computed when expanded)
   const insights = useMemo(
-    () => (showInsights ? generateInsights(history, tankCapacityLitres) : null),
-    [showInsights, history, tankCapacityLitres]
+    () => (showInsights ? generateInsights(history, tankCapacityLitres, null, sensorType) : null),
+    [showInsights, history, tankCapacityLitres, sensorType]
   );
 
   const { startTs, endTs, stepMs } = useMemo(() => {
@@ -166,11 +168,36 @@ export default function AnalyticsChart({ deviceCode, tankCapacityLitres, sensorT
     }
   }
 
+  // Spike-flagged timestamps for orange-dot marking in "Actual
+  // values only" mode. Ultrasonic only — detectSpikes returns
+  // empty for DIP (probe transitions are real).
+  const spikeTimestamps = useMemo(() => {
+    const { spikeIndices } = detectSpikes(history, sensorType);
+    const s = new Set();
+    for (const idx of spikeIndices) if (history[idx]) s.add(history[idx].ts);
+    return s;
+  }, [history, sensorType]);
+
+  // For the default view (actualsOnly = false), we DROP spike rows
+  // from the history before interpolation so the smooth line reads
+  // as if the spikes never happened. Customer sees a clean tank
+  // story. Toggling "Actual values only" brings the raw history
+  // back — spikes visible as orange dots — for anyone who wants
+  // to verify the underlying sensor output.
+  const historyForChart = useMemo(() => {
+    if (actualsOnly) return history;
+    if (spikeTimestamps.size === 0) return history;
+    return history.filter((h) => !spikeTimestamps.has(h.ts));
+  }, [history, actualsOnly, spikeTimestamps]);
+
   const chartData = useMemo(() => {
-    const interp = interpolate(history, startTs, endTs, stepMs);
+    const interp = interpolate(historyForChart, startTs, endTs, stepMs);
     return interp.map((p) => {
       const isActual = p.source === "actual";
       const pct = actualsOnly ? (isActual ? p.pct : null) : p.pct;
+      // Spike coloring only relevant in "actual values only" mode —
+      // default view has spikes filtered out entirely.
+      const isSpike = actualsOnly && isActual && spikeTimestamps.has(p.ts);
       return {
         time: new Date(p.ts).toLocaleString([], {
           month: range === "24h" ? undefined : "short",
@@ -180,12 +207,19 @@ export default function AnalyticsChart({ deviceCode, tankCapacityLitres, sensorT
         }),
         pct,
         isActual,
+        isSpike,
         litres: (pct != null && tankCapacityLitres) ? Math.round((pct / 100) * tankCapacityLitres) : null,
       };
     });
-  }, [history, startTs, endTs, stepMs, range, tankCapacityLitres, actualsOnly]);
+  }, [historyForChart, startTs, endTs, stepMs, range, tankCapacityLitres, actualsOnly, spikeTimestamps]);
 
-  const litres = useMemo(() => calcLitres(history, tankCapacityLitres), [history, tankCapacityLitres]);
+  // Spike-filtered totals — ultrasonic only. DIP sensor probes are
+  // discrete (50→75 is a real probe transition, not a glitch) so
+  // detectSpikes returns empty for DIP and math runs on raw data.
+  const litres = useMemo(
+    () => calcLitres(history, tankCapacityLitres, { sensorType }),
+    [history, tankCapacityLitres, sensorType],
+  );
 
   const hasChartData = chartData.some((p) => p.pct != null);
 
@@ -256,11 +290,11 @@ export default function AnalyticsChart({ deviceCode, tankCapacityLitres, sensorT
         <div className="grid grid-cols-2 gap-3 mb-4">
           <div className="bg-blue-50 rounded-lg p-4 text-center">
             <p className="text-sm text-blue-600 font-semibold">Water Filled</p>
-            <p className="text-4xl font-extrabold text-blue-700">{litres.filled.toLocaleString()}L</p>
+            <p className="text-4xl font-extrabold text-blue-700">{formatLitres(litres.filled)}</p>
           </div>
           <div className="bg-orange-50 rounded-lg p-4 text-center">
             <p className="text-sm text-orange-600 font-semibold">Water Consumed</p>
-            <p className="text-4xl font-extrabold text-orange-700">{litres.consumed.toLocaleString()}L</p>
+            <p className="text-4xl font-extrabold text-orange-700">{formatLitres(litres.consumed)}</p>
           </div>
         </div>
       )}
@@ -302,13 +336,17 @@ export default function AnalyticsChart({ deviceCode, tankCapacityLitres, sensorT
               strokeWidth={2}
               dot={(props) => {
                 if (!props.payload?.isActual) return null;
+                // Spike rows get an orange dot so the customer can
+                // spot which raw readings were flagged as unphysical.
+                // Normal actuals stay blue.
+                const isSpike = props.payload?.isSpike;
                 return (
                   <circle
                     key={`dot-${props.index}`}
                     cx={props.cx}
                     cy={props.cy}
-                    r={3}
-                    fill="#2563eb"
+                    r={isSpike ? 4 : 3}
+                    fill={isSpike ? "#f97316" : "#2563eb"}
                     stroke="#fff"
                     strokeWidth={1}
                   />
@@ -538,11 +576,19 @@ export default function AnalyticsChart({ deviceCode, tankCapacityLitres, sensorT
           <span className="text-xs text-gray-400">{showInsights ? "▲ Hide" : "▼ Show"}</span>
         </button>
         {showInsights && insights && (
-          <div className="mt-3 bg-gradient-to-br from-blue-50 to-indigo-50 border border-blue-100 rounded-lg p-3">
+          <div className="mt-3 rounded-lg p-3 border bg-gradient-to-br from-blue-50 to-indigo-50 border-blue-100">
             <ul className="space-y-1.5 text-sm text-gray-800">
               {insights.bullets.map((b, i) => (
                 <li key={i} className="leading-snug">{b}</li>
               ))}
+              {/* Honesty disclaimer + SenseFlow flowmeter nudge —
+                  always shown. Applies to both ultrasonic and DIP.
+                  (Spike-count footnote intentionally omitted per
+                  Vishal — customer doesn't need to see the internal
+                  filtering count.) */}
+              <li className="leading-snug text-xs text-gray-400 italic pt-1 border-t border-gray-200 mt-2">
+                This is an approximation. For highly accurate data, install SenseFlow flowmeters.
+              </li>
             </ul>
           </div>
         )}

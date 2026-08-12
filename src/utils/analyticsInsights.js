@@ -18,16 +18,115 @@ export const DRAIN_PCT_THRESHOLD    = 10;
 export const DRAIN_MAX_DURATION_MS  = 2 * 60 * 60 * 1000;
 export const MIN_POINTS_FOR_INSIGHTS = 5;
 
+// Spike-detection thresholds. A "spike" is an unphysical short-lived
+// sensor glitch that snaps up and back down (or vice versa) within a
+// small time window — a real fill wouldn't drain again in 5 minutes.
+// Firmware v21.1.0+ has its own rate-limiter (physically-impossible
+// jump rejection), so these are the belt-and-suspenders cloud layer:
+// catches spikes from older firmware AND any that squeak past the
+// device filter.
+//
+// Detection rule: a value that jumps by SPIKE_JUMP_PCT or more,
+// and returns to within SPIKE_RETURN_PCT of the pre-jump baseline
+// within SPIKE_RETURN_ROWS subsequent rows, is a spike. Both the
+// jump and the return are dropped from consumption/fill math.
+export const SPIKE_JUMP_PCT       = 15;
+export const SPIKE_RETURN_PCT     = 5;
+export const SPIKE_RETURN_ROWS    = 5;
+// If more than this fraction of rows are spikes, treat the sensor
+// as too noisy to safely say "N KL consumed" or "tank fills at 4 AM"
+// — we still show min/max and current level, but skip the
+// consumption/refill event math entirely. Chose 50% so we degrade
+// gracefully only when the sensor is genuinely broken; a normal
+// stream of 5-10 spikes stays inside "normal" mode.
+export const NOISY_RATIO_THRESHOLD = 0.5;
+
+// Walk the history and identify spike indices. Each spike is a
+// (startIdx, endIdx) pair — the rows from startIdx to endIdx-1
+// inclusive are the "bad" ones (both the jump AND the return).
+// Math should skip these rows and pretend the tank went directly
+// from `startIdx - 1` to `endIdx` (the naturally-continuing value).
+//
+// Returns { spikeIndices: Set<int> } where Set contains every row
+// index that should be dropped from math. Callers can also count
+// `spikeIndices.size` to decide "too noisy?".
+//
+// sensorType: 2 = ultrasonic (continuous readings, spikes are
+// real glitches). 1 = DIP (discrete probe steps — a 50→75 jump
+// is one probe transition, NOT a spike). Anything other than
+// ultrasonic returns an empty set — math runs unchanged.
+export function detectSpikes(history, sensorType = 2) {
+  const spikeIndices = new Set();
+  if (sensorType !== 2) return { spikeIndices };   // DIP passes through
+  if (history.length < 3) return { spikeIndices };
+
+  let i = 0;
+  while (i < history.length - 2) {
+    const cur  = history[i].pct;
+    if (cur == null) { i++; continue; }
+
+    // Look ahead for a big jump within the next 1-2 rows.
+    const next = history[i + 1].pct;
+    if (next == null) { i++; continue; }
+    const jumpDelta = next - cur;
+    if (Math.abs(jumpDelta) < SPIKE_JUMP_PCT) { i++; continue; }
+
+    // Big jump found. Look ahead SPIKE_RETURN_ROWS rows for a
+    // return to the pre-jump baseline. If the value snaps back
+    // → whole cluster (jump + intermediate rows + return row)
+    // are marked as spike.
+    let returnIdx = -1;
+    for (let k = i + 2; k <= i + 1 + SPIKE_RETURN_ROWS && k < history.length; k++) {
+      const v = history[k].pct;
+      if (v == null) continue;
+      if (Math.abs(v - cur) <= SPIKE_RETURN_PCT) {
+        returnIdx = k;
+        break;
+      }
+    }
+
+    if (returnIdx !== -1) {
+      // Confirmed spike — mark every row from i+1 to returnIdx-1
+      // as bad. The `cur` (i) and the return row (returnIdx) are
+      // treated as neighbours in downstream math.
+      for (let k = i + 1; k < returnIdx; k++) {
+        spikeIndices.add(k);
+      }
+      i = returnIdx;
+      continue;
+    }
+    i++;
+  }
+  return { spikeIndices };
+}
+
+// Convenience — returns a new array with spike rows filtered out,
+// preserving order. Used by calcLitres / generateInsights so the
+// math sees a "physically plausible" version of the history.
+// Same sensorType semantics as detectSpikes (DIP = no-op).
+export function filterSpikesFromHistory(history, sensorType = 2) {
+  const { spikeIndices } = detectSpikes(history, sensorType);
+  if (spikeIndices.size === 0) return history;
+  return history.filter((_, idx) => !spikeIndices.has(idx));
+}
+
 // Sum of all upward and downward swings, scaled to tank capacity. Different
 // from "net change" because a 75 → 100 → 50 day is 25% filled + 50% drained
 // even though net is -25%.
-export function calcLitres(history, tankCapacity) {
+//
+// Ultrasonic history is spike-filtered by default so the headline
+// Water Filled / Water Consumed pills stop reflecting sensor glitches
+// as real water motion. DIP history passes through unchanged (probe
+// step transitions are real, not glitches). Pass filterSpikes=false
+// to force raw sum (debugging / admin only).
+export function calcLitres(history, tankCapacity, { filterSpikes = true, sensorType = 2 } = {}) {
   if (!tankCapacity || history.length < 2) return { filled: 0, consumed: 0 };
+  const rows = filterSpikes ? filterSpikesFromHistory(history, sensorType) : history;
   let filled = 0;
   let consumed = 0;
-  for (let i = 1; i < history.length; i++) {
-    const prev = history[i - 1].pct ?? 0;
-    const curr = history[i].pct ?? 0;
+  for (let i = 1; i < rows.length; i++) {
+    const prev = rows[i - 1].pct ?? 0;
+    const curr = rows[i].pct ?? 0;
     const delta = curr - prev;
     const litres = (Math.abs(delta) / 100) * tankCapacity;
     if (delta > 0) filled   += litres;
@@ -116,11 +215,57 @@ function mode(arr) {
 // Natural-language bullets summarising the history in the chosen range.
 // Used both by the AnalyticsChart insights panel (Device Detail) and by
 // the dashboard chart-icon popup.
-export function generateInsights(history, tankCapacity, currentPct = null) {
+//
+// Now spike-aware: math runs on a filtered copy of history, and if
+// too many spikes are detected the language is suppressed entirely
+// (chart still shows raw truth so user can see the anomalies).
+// Returns { bullets, noisy, spikeCount } — callers render the
+// appropriate variant. Older callers using .bullets keep working.
+export function generateInsights(history, tankCapacity, currentPct = null, sensorType = 2) {
+  // Spike-detection pass — the "too noisy" gate. We compute this
+  // BEFORE the sparse-data branch so even short spike-riddled
+  // histories get the noisy warning instead of pretending things
+  // were steady. For DIP (sensorType !== 2) detectSpikes returns
+  // an empty set — probe transitions aren't glitches.
+  const { spikeIndices } = detectSpikes(history, sensorType);
+  const spikeCount = spikeIndices.size;
+  const noisy = history.length > 0 && (spikeCount / history.length) > NOISY_RATIO_THRESHOLD;
+
+  if (noisy) {
+    // Heavy-spike mode — sensor is unreliable. Don't panic the
+    // customer with warning banners; just quietly degrade to the
+    // handful of facts we CAN still state honestly (extremes +
+    // current). Refill/consumption math would be nonsense so it's
+    // skipped. Disclaimer at the bottom (rendered by the caller)
+    // still nudges toward flowmeters for accurate metering.
+    const cleanRows = filterSpikesFromHistory(history, sensorType);
+    const bullets = [];
+    if (cleanRows.length > 0) {
+      const pcts = cleanRows.map((h) => h.pct ?? 0);
+      const lowest  = Math.min(...pcts);
+      const highest = Math.max(...pcts);
+      bullets.push(`📉 Lowest level: ${lowest}%   |   📈 Highest: ${highest}%`);
+    }
+    if (currentPct != null) {
+      bullets.push(`✓ Current tank level: ${currentPct}%`);
+      if (tankCapacity > 0) {
+        bullets.push(`💧 Volume held right now: ${formatLitres((currentPct / 100) * tankCapacity)}`);
+      }
+    }
+    if (bullets.length === 0) {
+      bullets.push("Tank status unavailable right now.");
+    }
+    return { enough: true, bullets, noisy: true, spikeCount };
+  }
+
+  // Use spike-filtered history for all downstream math + language.
+  // The raw `history` array stays intact for the chart itself.
+  const cleanHistory = filterSpikesFromHistory(history, sensorType);
+
   // Sparse-data path — a range with 0-4 entries means the tank stayed
   // mostly steady. Frame it as tank status — never expose "N readings"
   // or "sparse history" to the customer.
-  if (history.length < MIN_POINTS_FOR_INSIGHTS) {
+  if (cleanHistory.length < MIN_POINTS_FOR_INSIGHTS) {
     const bullets = [];
     if (history.length === 0) {
       // Zero entries in this window — could be a brand new device, or
@@ -144,10 +289,10 @@ export function generateInsights(history, tankCapacity, currentPct = null) {
       bullets.push("ℹ No refills or heavy usage detected in this window");
     } else {
       // 2-4 changes — partial story. Show what we DO know.
-      const pcts = history.map((h) => h.pct ?? 0);
+      const pcts = cleanHistory.map((h) => h.pct ?? 0);
       const lowest = Math.min(...pcts);
       const highest = Math.max(...pcts);
-      const totals = calcLitres(history, tankCapacity);
+      const totals = calcLitres(cleanHistory, tankCapacity, { filterSpikes: false });
       if (tankCapacity > 0) {
         if (totals.filled > 0)   bullets.push(`💧 Refilled ${formatLitres(totals.filled)} in this period`);
         if (totals.consumed > 0) bullets.push(`🚰 Consumed ${formatLitres(totals.consumed)} in this period`);
@@ -155,11 +300,13 @@ export function generateInsights(history, tankCapacity, currentPct = null) {
       bullets.push(`📉 Lowest level: ${lowest}%   |   📈 Highest: ${highest}%`);
       bullets.push("ℹ Tank was mostly steady during this period");
     }
-    return { enough: true, bullets };
+    return { enough: true, bullets, noisy: false, spikeCount };
   }
 
   const bullets = [];
-  const totals = calcLitres(history, tankCapacity);
+  // `cleanHistory` already has spikes removed — pass filterSpikes:false
+  // to avoid a second (redundant) filter pass inside calcLitres.
+  const totals = calcLitres(cleanHistory, tankCapacity, { filterSpikes: false });
 
   if (tankCapacity > 0) {
     bullets.push(`💧 Refilled ${formatLitres(totals.filled)} in this period`);
@@ -169,13 +316,13 @@ export function generateInsights(history, tankCapacity, currentPct = null) {
     bullets.push(`🚰 Drained ${totals.consumed}% worth of tank levels`);
   }
 
-  const spanMs = history[history.length - 1].ts - history[0].ts;
+  const spanMs = cleanHistory[cleanHistory.length - 1].ts - cleanHistory[0].ts;
   const days = Math.max(1, spanMs / 86400000);
   if (tankCapacity > 0 && days >= 1) {
     bullets.push(`📅 Daily average consumption: ${formatLitres(totals.consumed / days)}`);
   }
 
-  const events = detectEvents(history);
+  const events = detectEvents(cleanHistory);
   const refills = events.filter((e) => e.type === "refill");
   const drains  = events.filter((e) => e.type === "drain");
 
@@ -194,14 +341,14 @@ export function generateInsights(history, tankCapacity, currentPct = null) {
     if (drainPeak != null) bullets.push(`🔥 Heaviest use around ${formatHour(drainPeak)}`);
   }
 
-  const pcts = history.map((h) => h.pct ?? 0);
+  const pcts = cleanHistory.map((h) => h.pct ?? 0);
   const lowest  = Math.min(...pcts);
   const highest = Math.max(...pcts);
   bullets.push(`📉 Lowest level reached: ${lowest}%   |   📈 Highest: ${highest}%`);
 
   let longestDry = 0;
   let dryStart = null;
-  for (const h of history) {
+  for (const h of cleanHistory) {
     if ((h.pct ?? 100) === 0) {
       if (dryStart == null) dryStart = h.ts;
       longestDry = Math.max(longestDry, h.ts - dryStart);
@@ -214,5 +361,5 @@ export function generateInsights(history, tankCapacity, currentPct = null) {
     bullets.push(`⚠ Longest dry stretch: ${dryHrs} hours at 0%`);
   }
 
-  return { enough: true, bullets };
+  return { enough: true, bullets, noisy: false, spikeCount };
 }

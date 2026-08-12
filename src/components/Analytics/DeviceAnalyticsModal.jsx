@@ -4,7 +4,7 @@ import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianG
 import { getHistoryByRange } from "../../firebase/rtdb";
 import { getTankerDeliveriesForDevice } from "../../firebase/db";
 import { useAuth } from "../../context/AuthContext";
-import { RANGES, generateInsights } from "../../utils/analyticsInsights";
+import { RANGES, generateInsights, detectSpikes } from "../../utils/analyticsInsights";
 import { useDebugMode } from "../../context/DebugModeContext";
 import { resolveLevel } from "../../utils/resolveLevel";
 
@@ -135,8 +135,8 @@ export default function DeviceAnalyticsModal({ deviceCode, deviceName, tankCapac
     // Pass the resolved seedPct so sparse-history windows still get a
     // "tank at X%" message with the same resolved level the dashboard
     // shows — never the raw firmware pct that would confuse the customer.
-    () => (history != null ? generateInsights(history, tankCapacityLitres, seedPct) : null),
-    [history, tankCapacityLitres, seedPct]
+    () => (history != null ? generateInsights(history, tankCapacityLitres, seedPct, sensorType) : null),
+    [history, tankCapacityLitres, seedPct, sensorType]
   );
 
   // Interpolated chart data — matches Device Detail chart behaviour.
@@ -147,7 +147,17 @@ export default function DeviceAnalyticsModal({ deviceCode, deviceName, tankCapac
     const endTs = Date.now();
     const r = RANGES[range];
     const startTs = endTs - r.ms;
-    const interp = interpolate(history, startTs, endTs, r.stepMs);
+    // Popup chart has no "Actual values only" toggle — always the
+    // smooth default view. Drop spike rows entirely so the mini
+    // chart reads clean, matching the primary DeviceDetail chart's
+    // default view. Ultrasonic-only (detectSpikes no-ops for DIP).
+    const { spikeIndices } = detectSpikes(history || [], sensorType);
+    const spikeTs = new Set();
+    for (const idx of spikeIndices) if ((history || [])[idx]) spikeTs.add(history[idx].ts);
+    const rows = spikeTs.size === 0
+      ? (history || [])
+      : (history || []).filter((h) => !spikeTs.has(h.ts));
+    const interp = interpolate(rows, startTs, endTs, r.stepMs);
     return interp.map((p) => ({
       time: new Date(p.ts).toLocaleString([], {
         month: range === "24h" ? undefined : "short",
@@ -157,8 +167,10 @@ export default function DeviceAnalyticsModal({ deviceCode, deviceName, tankCapac
       }),
       pct: p.pct,
       isActual: p.source === "actual",
+      // isSpike never true in popup — spikes filtered out entirely.
+      isSpike: false,
     }));
-  }, [history, range]);
+  }, [history, range, sensorType]);
 
   const hasChartData = chartData.some((p) => p.pct != null);
 
@@ -234,13 +246,14 @@ export default function DeviceAnalyticsModal({ deviceCode, deviceName, tankCapac
                     strokeWidth={2}
                     dot={(props) => {
                       if (!props.payload?.isActual) return null;
+                      const isSpike = props.payload?.isSpike;
                       return (
                         <circle
                           key={`dot-${props.index}`}
                           cx={props.cx}
                           cy={props.cy}
-                          r={3}
-                          fill="#2563eb"
+                          r={isSpike ? 4 : 3}
+                          fill={isSpike ? "#f97316" : "#2563eb"}
                           stroke="#fff"
                           strokeWidth={1}
                         />
@@ -346,12 +359,20 @@ export default function DeviceAnalyticsModal({ deviceCode, deviceName, tankCapac
           ) : !insights ? (
             <p className="text-xs text-gray-500">Tank has been steady.</p>
           ) : !insights.enough ? (
-            <p className="text-xs text-gray-500">{insights.bullets[0]}</p>
+            <>
+              <p className="text-xs text-gray-500">{insights.bullets[0]}</p>
+              <p className="text-[10px] text-gray-400 italic mt-2 pt-2 border-t border-gray-200">
+                This is an approximation. For highly accurate data, install SenseFlow flowmeters.
+              </p>
+            </>
           ) : (
             <ul className="space-y-1 text-sm text-gray-700">
               {insights.bullets.map((b, i) => (
                 <li key={i} className="leading-snug">{b}</li>
               ))}
+              <li className="leading-snug text-[10px] text-gray-400 italic pt-1 border-t border-gray-200 mt-1">
+                This is an approximation. For highly accurate data, install SenseFlow flowmeters.
+              </li>
             </ul>
           )}
         </div>
