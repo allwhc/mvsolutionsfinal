@@ -16,6 +16,32 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 
+// Unlocked-mode tile wrapper — requires DOUBLE-tap to open the device
+// detail page. Single tap does nothing on its own so a stray touch while
+// rearranging tiles doesn't accidentally leave the dashboard. Second tap
+// must land within 400 ms of the first. touch-action: manipulation
+// disables the browser's built-in double-tap-to-zoom on mobile so the
+// second tap always reaches us. Locked mode uses its own path (no click
+// handler at all) and is unaffected.
+function DoubleTapNavigate({ to, children }) {
+  const navigate = useNavigate();
+  const lastTapRef = useRef(0);
+  const handleClick = (e) => {
+    const now = Date.now();
+    if (now - lastTapRef.current < 400) {
+      lastTapRef.current = 0;
+      navigate(to);
+    } else {
+      lastTapRef.current = now;
+    }
+  };
+  return (
+    <div onClick={handleClick} style={{ touchAction: "manipulation", cursor: "pointer" }}>
+      {children}
+    </div>
+  );
+}
+
 // One sortable cell — wraps each dashboard tile. Picks up dnd-kit's listeners
 // only when the parent decides drag is allowed (locked=false, desktop, no
 // search). When `enabled` is false this is a plain pass-through wrapper so
@@ -534,16 +560,12 @@ export default function Dashboard() {
                 const inner = locked ? (
                   <div className="cursor-default">{card}</div>
                 ) : (
-                  // When unlocked AND drag is on, the Link can't be the
-                  // drag target — clicks would race with drag listeners.
-                  // We keep the navigation as a separate explicit click
-                  // (drag activates only after 6 px movement, so a plain
-                  // tap still navigates).
-                  dragEnabled ? (
-                    <Link to={`/device/${d.deviceCode}`} draggable={false}>{card}</Link>
-                  ) : (
-                    <Link to={`/device/${d.deviceCode}`}>{card}</Link>
-                  )
+                  // Unlocked mode: require DOUBLE-tap to open detail. A
+                  // single tap while rearranging tiles used to sometimes
+                  // navigate away mid-slide; requiring two quick taps
+                  // filters those out. Drag still activates on 6 px
+                  // movement so intentional rearranging is unchanged.
+                  <DoubleTapNavigate to={`/device/${d.deviceCode}`}>{card}</DoubleTapNavigate>
                 );
                 // Wing X button — only rendered when viewing a specific
                 // wing tab AND the user is orgAdmin AND the dashboard is

@@ -80,11 +80,22 @@ export default function TankViz({
   const litres = !sensorError && tankCapacityLitres > 0
     ? Math.round((pct / 100) * tankCapacityLitres)
     : null;
-  const litreDisplay = litres == null
-    ? null
-    : litres >= 1000
-      ? `${(litres / 1000).toFixed(litres % 1000 === 0 ? 0 : 1)} KL`
-      : `${litres} L`;
+  // "present/total" shares the same unit, so we drop it from the left
+  // side to keep the pill string short. Compact form ("18.4/68KL") fits
+  // in the same font size as LEVEL and DEPTH, preserving the visual
+  // hierarchy of the pill row. Scale rule: if either value is ≥1000,
+  // both render in KL; otherwise both in L.
+  const litreDisplay = (() => {
+    if (litres == null) return null;
+    const total = tankCapacityLitres;
+    const useKL = litres >= 1000 || total >= 1000;
+    if (useKL) {
+      const p = (litres / 1000).toFixed(litres % 1000 === 0 ? 0 : 1);
+      const t = (total  / 1000).toFixed(total  % 1000 === 0 ? 0 : 1);
+      return `${p}/${t}KL`;
+    }
+    return `${litres}/${total}L`;
+  })();
 
   return (
     <div className="flex flex-col items-center gap-3 my-2">
@@ -184,6 +195,14 @@ export default function TankViz({
         const depthFont = depthDisplay && depthDisplay.length > 9
           ? "text-sm"
           : numFont;
+        // Volume text is compact ("18.4/68KL", "800/1000L") but always
+        // longer than LEVEL ("27%") and often longer than DEPTH. In the
+        // 3-pill layout the pill is narrow — so volume always renders
+        // one step smaller than LEVEL/DEPTH to keep the trailing unit
+        // ("L"/"KL") from clipping. In 2-pill it can match the big font.
+        const volFont = pillCount === 3
+          ? "text-xs sm:text-sm"
+          : (litreDisplay && litreDisplay.length > 9 ? "text-sm" : numFont);
         return (
           <div className={`flex items-stretch gap-2 w-full ${maxWidth}`}>
             {/* LEVEL — always shown */}
@@ -202,13 +221,15 @@ export default function TankViz({
               </div>
             </div>
 
-            {/* VOLUME — when capacity configured */}
+            {/* VOLUME — when capacity configured. px-1.5 (tighter than
+                LEVEL/DEPTH's px-2) gives the "X / Y KL" string more
+                room since it's the longest label on the row. */}
             {litreDisplay && (
-              <div className="flex-1 min-w-0 overflow-hidden rounded-lg px-2 py-1.5 text-center bg-gradient-to-br from-cyan-50 to-cyan-100 ring-1 ring-cyan-200 shadow-sm">
+              <div className="flex-1 min-w-0 overflow-hidden rounded-lg px-1.5 py-1.5 text-center bg-gradient-to-br from-cyan-50 to-cyan-100 ring-1 ring-cyan-200 shadow-sm">
                 <div className="text-[10px] uppercase tracking-wider font-semibold text-cyan-700">
                   Volume
                 </div>
-                <div className={`${numFont} font-extrabold leading-tight text-cyan-700 whitespace-nowrap`}>
+                <div className={`${volFont} font-extrabold leading-tight text-cyan-700 whitespace-nowrap`}>
                   {litreDisplay}
                 </div>
               </div>
