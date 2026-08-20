@@ -81,10 +81,10 @@ export default function TankViz({
     ? Math.round((pct / 100) * tankCapacityLitres)
     : null;
   // "present/total" shares the same unit, so we drop it from the left
-  // side to keep the pill string short. Compact form ("18.4/68KL") fits
-  // in the same font size as LEVEL and DEPTH, preserving the visual
-  // hierarchy of the pill row. Scale rule: if either value is ≥1000,
-  // both render in KL; otherwise both in L.
+  // side to keep the pill string short. Returned as two parts so the
+  // total renders one step smaller than the present value — present is
+  // the primary reading, total is context. Scale rule: if either value
+  // is ≥1000, both render in KL; otherwise both in L.
   const litreDisplay = (() => {
     if (litres == null) return null;
     const total = tankCapacityLitres;
@@ -92,9 +92,9 @@ export default function TankViz({
     if (useKL) {
       const p = (litres / 1000).toFixed(litres % 1000 === 0 ? 0 : 1);
       const t = (total  / 1000).toFixed(total  % 1000 === 0 ? 0 : 1);
-      return `${p}/${t}KL`;
+      return { present: p, total: `/${t}KL` };
     }
-    return `${litres}/${total}L`;
+    return { present: String(litres), total: `/${total}L` };
   })();
 
   return (
@@ -232,7 +232,8 @@ export default function TankViz({
                   Volume
                 </div>
                 <div className={`${volFont} font-extrabold leading-tight text-cyan-700 whitespace-nowrap`}>
-                  {litreDisplay}
+                  <span>{litreDisplay.present}</span>
+                  <span className="text-[70%] opacity-80 font-bold">{litreDisplay.total}</span>
                 </div>
               </div>
             )}
