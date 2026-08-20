@@ -195,14 +195,16 @@ export default function TankViz({
         const depthFont = depthDisplay && depthDisplay.length > 9
           ? "text-sm"
           : numFont;
-        // Volume text is compact ("18.4/68KL", "800/1000L") but always
-        // longer than LEVEL ("27%") and often longer than DEPTH. In the
-        // 3-pill layout the pill is narrow — so volume always renders
-        // one step smaller than LEVEL/DEPTH to keep the trailing unit
-        // ("L"/"KL") from clipping. In 2-pill it can match the big font.
+        // Volume text ("34/34KL", "30.8/41KL") is always longer than
+        // LEVEL ("27%") and often longer than DEPTH. It always renders
+        // smaller than LEVEL/DEPTH — at text-2xl the trailing unit
+        // ("KL"/"L") gets clipped in both 2- and 3-pill layouts.
+        //   3-pill (narrowest per-pill) → smallest
+        //   2-pill (roomier)            → one step larger but still
+        //                                  smaller than LEVEL's big font
         const volFont = pillCount === 3
           ? "text-xs sm:text-sm"
-          : (litreDisplay && litreDisplay.length > 9 ? "text-sm" : numFont);
+          : "text-base sm:text-lg";
         return (
           <div className={`flex items-stretch gap-2 w-full ${maxWidth}`}>
             {/* LEVEL — always shown */}
