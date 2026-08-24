@@ -10,6 +10,81 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#2563eb" />
     <title>SenseFlow</title>
+    <!-- RTDB bandwidth diagnostic — activates only when the URL contains
+         ?rtdbdebug=1. Runs BEFORE the app bundle so it can patch
+         window.WebSocket ahead of Firebase's SDK, which snapshots the
+         constructor at import time. Console: __rtdb.report() to see
+         totals + top paths. Zero cost when the param is absent. -->
+    <script>
+      (function () {
+        try {
+          if (new URLSearchParams(location.search).get("rtdbdebug") !== "1") return;
+          var orig = window.WebSocket;
+          var totals = { total: 0 };
+          var perPath = {};
+          var msgCount = 0;
+          var start = Date.now();
+          function Patched(url) {
+            console.log("%c[rtdbdebug] WS opened:", "color: lime; font-weight: bold", url);
+            var ws = arguments.length > 1
+              ? new orig(url, arguments[1])
+              : new orig(url);
+            ws.addEventListener("message", function (e) {
+              msgCount++;
+              var bytes = typeof e.data === "string" ? e.data.length : (e.data.byteLength || 0);
+              totals.total += bytes;
+              try {
+                var msg = JSON.parse(e.data);
+                var path = (msg && msg.d && msg.d.b && msg.d.b.p)
+                  || (msg && msg.d && msg.d.b && msg.d.b.d && msg.d.b.d.p)
+                  || (msg && msg.t === "c" ? "(control)" : "(other)");
+                perPath[path] = (perPath[path] || 0) + bytes;
+              } catch (_) {
+                perPath["(non-json)"] = (perPath["(non-json)"] || 0) + bytes;
+              }
+            });
+            return ws;
+          }
+          Patched.prototype = orig.prototype;
+          Patched.CONNECTING = orig.CONNECTING;
+          Patched.OPEN = orig.OPEN;
+          Patched.CLOSING = orig.CLOSING;
+          Patched.CLOSED = orig.CLOSED;
+          window.WebSocket = Patched;
+          window.__rtdb = {
+            totals: totals, perPath: perPath,
+            msgCount: function () { return msgCount; },
+            reset: function () {
+              totals.total = 0;
+              Object.keys(perPath).forEach(function (k) { delete perPath[k]; });
+              msgCount = 0; start = Date.now();
+              console.log("[rtdbdebug] reset");
+            },
+            report: function () {
+              var secs = (Date.now() - start) / 1000;
+              var perSec = totals.total / secs;
+              console.log("=== RTDB WebSocket Report ===");
+              console.log("Elapsed: " + secs.toFixed(1) + " sec");
+              console.log("Messages: " + msgCount);
+              console.log("Total: " + totals.total.toLocaleString() + " B (" + (totals.total / 1024).toFixed(1) + " KB)");
+              console.log("Rate: " + (perSec / 1024).toFixed(2) + " KB/sec");
+              console.log("Extrapolated: " + ((perSec * 86400) / 1024 / 1024).toFixed(1) + " MB/day per tab");
+              var sorted = Object.entries(perPath).sort(function (a, b) { return b[1] - a[1]; });
+              console.table(sorted.slice(0, 20).map(function (row) {
+                return {
+                  path: row[0],
+                  bytes: row[1].toLocaleString(),
+                  pct: (100 * row[1] / totals.total).toFixed(1) + "%"
+                };
+              }));
+            }
+          };
+          console.log("%c[rtdbdebug] ✅ ARMED — will count every RTDB WebSocket frame. Type __rtdb.report() any time.", "color: lime; font-size: 13px");
+        } catch (err) {
+          console.warn("[rtdbdebug] init failed:", err);
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>
