@@ -110,18 +110,85 @@ export function filterSpikesFromHistory(history, sensorType = 2) {
   return history.filter((_, idx) => !spikeIndices.has(idx));
 }
 
+// Moving-average smoothing to hide fast sensor oscillation. Runs AFTER
+// spike removal — the two filters are layered: spikes catch big-and-fast
+// glitches (15%+ snap-back), smoothing catches the persistent low-amp
+// bounce (e.g. 92↔100 flipping every 20 sec when tank sits at overflow).
+//
+// Uses a centered ±halfWindow average for every point that has neighbours
+// on both sides. Points near the ends of the series fall back to a
+// one-sided trailing average so the last N minutes of the chart don't
+// look weird ("no future to average with" case). The output preserves
+// the same length + timestamps as the input; only the `pct` value is
+// replaced. Original values kept as `_rawPct` for optional overlay.
+//
+// Default 10-min window matches ultrasonic push cadence: fast enough
+// that real refill events (usually 5+ min) still look sharp, wide
+// enough to average out ~20-second oscillation. Both sensor types get
+// this — DIP rarely oscillates but occasional adjacent-level jitter
+// benefits too, and it's a no-op when the input is already smooth.
+export const SMOOTHING_WINDOW_MS = 10 * 60 * 1000;
+
+export function smoothHistory(history, windowMs = SMOOTHING_WINDOW_MS) {
+  if (history.length < 3) return history;
+  const halfWindow = windowMs / 2;
+  const out = new Array(history.length);
+  for (let i = 0; i < history.length; i++) {
+    const t = history[i].ts;
+    // Try centered window first
+    let sum = 0, count = 0;
+    for (let j = 0; j < history.length; j++) {
+      const dt = history[j].ts - t;
+      if (dt < -halfWindow) continue;
+      if (dt >  halfWindow) break;
+      const v = history[j].pct;
+      if (v == null) continue;
+      sum += v; count++;
+    }
+    // Fallback: if the window is one-sided (near start/end of series)
+    // and produced <3 samples, widen to a trailing full-window average
+    // so smoothed value still reflects a real trend, not just 1 point.
+    if (count < 3) {
+      sum = 0; count = 0;
+      for (let j = 0; j < history.length; j++) {
+        const dt = history[j].ts - t;
+        if (dt > 0 || dt < -windowMs) continue;
+        const v = history[j].pct;
+        if (v == null) continue;
+        sum += v; count++;
+      }
+    }
+    const smoothed = count > 0 ? Math.round(sum / count) : history[i].pct;
+    out[i] = { ...history[i], pct: smoothed, _rawPct: history[i].pct };
+  }
+  return out;
+}
+
+// One-call convenience: spike filter → smoothing. This is what
+// analytics math and the default chart line should use. Raw view
+// toggle bypasses this entirely and reads the untouched history.
+export function cleanHistoryForAnalytics(history, sensorType = 2) {
+  const spikeFree = filterSpikesFromHistory(history, sensorType);
+  return smoothHistory(spikeFree);
+}
+
 // Sum of all upward and downward swings, scaled to tank capacity. Different
 // from "net change" because a 75 → 100 → 50 day is 25% filled + 50% drained
 // even though net is -25%.
 //
-// Ultrasonic history is spike-filtered by default so the headline
-// Water Filled / Water Consumed pills stop reflecting sensor glitches
-// as real water motion. DIP history passes through unchanged (probe
-// step transitions are real, not glitches). Pass filterSpikes=false
-// to force raw sum (debugging / admin only).
-export function calcLitres(history, tankCapacity, { filterSpikes = true, sensorType = 2 } = {}) {
+// Applies BOTH cleaning layers by default: spike removal + moving-average
+// smoothing. Spikes catch big-and-fast glitches; smoothing catches the
+// persistent low-amplitude oscillation (e.g. 92↔100 flipping every 20 sec
+// at overflow). Without smoothing this loop would double-count each bounce
+// as ~2,720 L "refill" + "consumption" — a 20-min oscillation could log
+// hundreds of KL that never actually moved.
+//
+// filterSpikes / smooth flags exist for debugging + admin only; default
+// production path always cleans on both layers.
+export function calcLitres(history, tankCapacity, { filterSpikes = true, smooth = true, sensorType = 2 } = {}) {
   if (!tankCapacity || history.length < 2) return { filled: 0, consumed: 0 };
-  const rows = filterSpikes ? filterSpikesFromHistory(history, sensorType) : history;
+  let rows = filterSpikes ? filterSpikesFromHistory(history, sensorType) : history;
+  if (smooth) rows = smoothHistory(rows);
   let filled = 0;
   let consumed = 0;
   for (let i = 1; i < rows.length; i++) {
@@ -238,7 +305,7 @@ export function generateInsights(history, tankCapacity, currentPct = null, senso
     // current). Refill/consumption math would be nonsense so it's
     // skipped. Disclaimer at the bottom (rendered by the caller)
     // still nudges toward flowmeters for accurate metering.
-    const cleanRows = filterSpikesFromHistory(history, sensorType);
+    const cleanRows = cleanHistoryForAnalytics(history, sensorType);
     const bullets = [];
     if (cleanRows.length > 0) {
       const pcts = cleanRows.map((h) => h.pct ?? 0);
@@ -258,9 +325,12 @@ export function generateInsights(history, tankCapacity, currentPct = null, senso
     return { enough: true, bullets, noisy: true, spikeCount };
   }
 
-  // Use spike-filtered history for all downstream math + language.
-  // The raw `history` array stays intact for the chart itself.
-  const cleanHistory = filterSpikesFromHistory(history, sensorType);
+  // Use spike-filtered + smoothed history for all downstream math and
+  // language. Raw `history` stays intact for the chart itself when the
+  // user toggles "Actual values". Smoothing hides sensor oscillation
+  // (e.g. 92↔100 flipping at overflow) that would otherwise double-count
+  // as fake refills + consumption in the KL totals.
+  const cleanHistory = cleanHistoryForAnalytics(history, sensorType);
 
   // Sparse-data path — a range with 0-4 entries means the tank stayed
   // mostly steady. Frame it as tank status — never expose "N readings"
@@ -292,7 +362,7 @@ export function generateInsights(history, tankCapacity, currentPct = null, senso
       const pcts = cleanHistory.map((h) => h.pct ?? 0);
       const lowest = Math.min(...pcts);
       const highest = Math.max(...pcts);
-      const totals = calcLitres(cleanHistory, tankCapacity, { filterSpikes: false });
+      const totals = calcLitres(cleanHistory, tankCapacity, { filterSpikes: false, smooth: false });
       if (tankCapacity > 0) {
         if (totals.filled > 0)   bullets.push(`💧 Refilled ${formatLitres(totals.filled)} in this period`);
         if (totals.consumed > 0) bullets.push(`🚰 Consumed ${formatLitres(totals.consumed)} in this period`);
@@ -306,7 +376,7 @@ export function generateInsights(history, tankCapacity, currentPct = null, senso
   const bullets = [];
   // `cleanHistory` already has spikes removed — pass filterSpikes:false
   // to avoid a second (redundant) filter pass inside calcLitres.
-  const totals = calcLitres(cleanHistory, tankCapacity, { filterSpikes: false });
+  const totals = calcLitres(cleanHistory, tankCapacity, { filterSpikes: false, smooth: false });
 
   if (tankCapacity > 0) {
     bullets.push(`💧 Refilled ${formatLitres(totals.filled)} in this period`);

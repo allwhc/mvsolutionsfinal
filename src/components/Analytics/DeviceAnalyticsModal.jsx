@@ -4,7 +4,7 @@ import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianG
 import { getHistoryByRange } from "../../firebase/rtdb";
 import { getTankerDeliveriesForDevice } from "../../firebase/db";
 import { useAuth } from "../../context/AuthContext";
-import { RANGES, generateInsights, detectSpikes } from "../../utils/analyticsInsights";
+import { RANGES, generateInsights, detectSpikes, smoothHistory } from "../../utils/analyticsInsights";
 import { useDebugMode } from "../../context/DebugModeContext";
 import { resolveLevel } from "../../utils/resolveLevel";
 
@@ -148,15 +148,18 @@ export default function DeviceAnalyticsModal({ deviceCode, deviceName, tankCapac
     const r = RANGES[range];
     const startTs = endTs - r.ms;
     // Popup chart has no "Actual values only" toggle — always the
-    // smooth default view. Drop spike rows entirely so the mini
-    // chart reads clean, matching the primary DeviceDetail chart's
-    // default view. Ultrasonic-only (detectSpikes no-ops for DIP).
+    // smooth default view. Two-layer clean: drop spike rows, then
+    // moving-average smooth so persistent low-amp oscillation (e.g.
+    // 92↔100 flipping at overflow) reads as a steady line, matching
+    // the primary DeviceDetail chart's default view. Both layers are
+    // no-ops when they find nothing to filter.
     const { spikeIndices } = detectSpikes(history || [], sensorType);
     const spikeTs = new Set();
     for (const idx of spikeIndices) if ((history || [])[idx]) spikeTs.add(history[idx].ts);
-    const rows = spikeTs.size === 0
+    const spikeFree = spikeTs.size === 0
       ? (history || [])
       : (history || []).filter((h) => !spikeTs.has(h.ts));
+    const rows = smoothHistory(spikeFree);
     const interp = interpolate(rows, startTs, endTs, r.stepMs);
     return interp.map((p) => ({
       time: new Date(p.ts).toLocaleString([], {
@@ -240,25 +243,14 @@ export default function DeviceAnalyticsModal({ deviceCode, deviceName, tankCapac
                   <YAxis domain={[0, 100]} tick={{ fontSize: 10 }} tickFormatter={(v) => `${v}%`} />
                   <Tooltip contentStyle={{ fontSize: 12 }} formatter={(v) => [`${v}%`, "Level"]} />
                   <Line
-                    type="stepAfter"
+                    // Popup chart is always smoothed (no toggle) — use
+                    // monotone curve + no dots for a clean single line
+                    // instead of dozens of blue circles on top.
+                    type="monotone"
                     dataKey="pct"
                     stroke="#2563eb"
                     strokeWidth={2}
-                    dot={(props) => {
-                      if (!props.payload?.isActual) return null;
-                      const isSpike = props.payload?.isSpike;
-                      return (
-                        <circle
-                          key={`dot-${props.index}`}
-                          cx={props.cx}
-                          cy={props.cy}
-                          r={isSpike ? 4 : 3}
-                          fill={isSpike ? "#f97316" : "#2563eb"}
-                          stroke="#fff"
-                          strokeWidth={1}
-                        />
-                      );
-                    }}
+                    dot={false}
                     isAnimationActive={false}
                     connectNulls={false}
                   />

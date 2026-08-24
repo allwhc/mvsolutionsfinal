@@ -10,6 +10,7 @@ import {
   RANGES,
   calcLitres,
   detectSpikes,
+  smoothHistory,
   formatLitres,
   generateInsights,
   MIN_POINTS_FOR_INSIGHTS,
@@ -113,18 +114,35 @@ export default function AnalyticsChart({ deviceCode, tankCapacityLitres, sensorT
   const [loading, setLoading] = useState(true);
   const [actualsOnly, setActualsOnly] = useState(false);
   const [showInsights, setShowInsights] = useState(false);
+  // Zoom window inside the loaded range. Only surfaced when range === "30d".
+  // Null = no zoom applied → full loaded range renders. Set by either the
+  // <Brush> below the chart or the datetime-local inputs above it. Clamped
+  // to [startTs, endTs] so users can't request data outside what we fetched.
+  const [zoomStartTs, setZoomStartTs] = useState(null);
+  const [zoomEndTs,   setZoomEndTs]   = useState(null);
 
-  // Generate insights on demand (lazy — only computed when expanded)
-  const insights = useMemo(
-    () => (showInsights ? generateInsights(history, tankCapacityLitres, null, sensorType) : null),
-    [showInsights, history, tankCapacityLitres, sensorType]
-  );
+  // Insights are declared AFTER historyForMath below (needs it as input).
 
   const { startTs, endTs, stepMs } = useMemo(() => {
     const end = Date.now();
     const r = RANGES[range];
     return { startTs: end - r.ms, endTs: end, stepMs: r.stepMs };
   }, [range]);
+
+  // Reset zoom whenever the range or device changes — user is asking for
+  // a fresh view, not for the previous zoom to persist across a range
+  // switch. Also reset when leaving 30d since zoom UI is only shown then.
+  useEffect(() => {
+    setZoomStartTs(null);
+    setZoomEndTs(null);
+  }, [range, deviceCode]);
+
+  // Effective window used by all downstream math + chart rendering.
+  // Falls back to the full loaded range when no zoom is active. Zoom
+  // is only exposed to the user on the 30d preset (see Brush + inputs
+  // below the chart); on 24h/7d these stay null → nothing changes.
+  const effStartTs = zoomStartTs ?? startTs;
+  const effEndTs   = zoomEndTs   ?? endTs;
 
   useEffect(() => {
     let cancelled = false;
@@ -178,20 +196,29 @@ export default function AnalyticsChart({ deviceCode, tankCapacityLitres, sensorT
     return s;
   }, [history, sensorType]);
 
-  // For the default view (actualsOnly = false), we DROP spike rows
-  // from the history before interpolation so the smooth line reads
-  // as if the spikes never happened. Customer sees a clean tank
-  // story. Toggling "Actual values only" brings the raw history
-  // back — spikes visible as orange dots — for anyone who wants
-  // to verify the underlying sensor output.
+  // Default view (actualsOnly = false): two-layer clean — first drop
+  // spike rows, then apply moving-average smoothing so persistent
+  // low-amplitude oscillation (e.g. 92↔100 flipping every 20 sec at
+  // overflow) shows as a single steady line instead of a zigzag that
+  // fake-inflates refill/consumption math.
+  // "Actual values only" toggle bypasses BOTH layers — user sees the
+  // truly raw sensor stream with spikes AND oscillation intact. This
+  // is the diagnostic view for anyone wanting to verify the sensor.
   const historyForChart = useMemo(() => {
     if (actualsOnly) return history;
-    if (spikeTimestamps.size === 0) return history;
-    return history.filter((h) => !spikeTimestamps.has(h.ts));
+    const spikeFree = spikeTimestamps.size === 0
+      ? history
+      : history.filter((h) => !spikeTimestamps.has(h.ts));
+    return smoothHistory(spikeFree);
   }, [history, actualsOnly, spikeTimestamps]);
 
   const chartData = useMemo(() => {
-    const interp = interpolate(historyForChart, startTs, endTs, stepMs);
+    // Interpolate over the effective (zoom-aware) window so the chart
+    // X-axis actually zooms in when the user narrows the range via the
+    // datetime-local inputs above the chart. On 24h/7d and un-zoomed
+    // 30d, effStartTs/effEndTs equal startTs/endTs so behavior is
+    // identical to before.
+    const interp = interpolate(historyForChart, effStartTs, effEndTs, stepMs);
     return interp.map((p) => {
       const isActual = p.source === "actual";
       const pct = actualsOnly ? (isActual ? p.pct : null) : p.pct;
@@ -199,6 +226,7 @@ export default function AnalyticsChart({ deviceCode, tankCapacityLitres, sensorT
       // default view has spikes filtered out entirely.
       const isSpike = actualsOnly && isActual && spikeTimestamps.has(p.ts);
       return {
+        ts: p.ts,
         time: new Date(p.ts).toLocaleString([], {
           month: range === "24h" ? undefined : "short",
           day: range === "24h" ? undefined : "numeric",
@@ -211,14 +239,31 @@ export default function AnalyticsChart({ deviceCode, tankCapacityLitres, sensorT
         litres: (pct != null && tankCapacityLitres) ? Math.round((pct / 100) * tankCapacityLitres) : null,
       };
     });
-  }, [historyForChart, startTs, endTs, stepMs, range, tankCapacityLitres, actualsOnly, spikeTimestamps]);
+  }, [historyForChart, effStartTs, effEndTs, stepMs, range, tankCapacityLitres, actualsOnly, spikeTimestamps]);
+
+  // History subset for math (calcLitres + insights) when zoom is active.
+  // Filters the RAW history by effective range so all downstream
+  // spike/smoothing logic sees only the zoomed window. When zoom is
+  // inactive (24h/7d preset, or 30d with brush at full extents), returns
+  // the full history unchanged so behavior is identical to before.
+  const historyForMath = useMemo(() => {
+    if (zoomStartTs == null && zoomEndTs == null) return history;
+    return history.filter((h) => h.ts >= effStartTs && h.ts <= effEndTs);
+  }, [history, effStartTs, effEndTs, zoomStartTs, zoomEndTs]);
 
   // Spike-filtered totals — ultrasonic only. DIP sensor probes are
   // discrete (50→75 is a real probe transition, not a glitch) so
   // detectSpikes returns empty for DIP and math runs on raw data.
   const litres = useMemo(
-    () => calcLitres(history, tankCapacityLitres, { sensorType }),
-    [history, tankCapacityLitres, sensorType],
+    () => calcLitres(historyForMath, tankCapacityLitres, { sensorType }),
+    [historyForMath, tankCapacityLitres, sensorType],
+  );
+
+  // Insights use the zoomed window too so the "Tell me about my tank"
+  // paragraph narrates the visible slice, not the whole 30 days.
+  const insights = useMemo(
+    () => (showInsights ? generateInsights(historyForMath, tankCapacityLitres, null, sensorType) : null),
+    [showInsights, historyForMath, tankCapacityLitres, sensorType]
   );
 
   const hasChartData = chartData.some((p) => p.pct != null);
@@ -285,6 +330,68 @@ export default function AnalyticsChart({ deviceCode, tankCapacityLitres, sensorT
         </label>
       </div>
 
+      {/* Custom date-range picker — only on 30d preset. Clamps to the
+          loaded window [startTs, endTs]; picking anything outside just
+          snaps to the boundary. Two-way bound with the Brush below the
+          chart, so dragging the brush updates these fields and vice
+          versa. "Reset" clears zoom back to full 30 days. */}
+      {range === "30d" && (
+        <div className="flex flex-wrap items-center gap-2 mb-3 -mt-2">
+          <span className="text-[11px] text-gray-500 font-medium">Zoom to:</span>
+          <input
+            type="datetime-local"
+            className="text-[11px] px-2 py-1 rounded border border-gray-300 bg-white text-gray-700"
+            value={new Date((effStartTs) - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16)}
+            min={new Date(startTs - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16)}
+            max={new Date(endTs   - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16)}
+            onChange={(e) => {
+              const t = new Date(e.target.value).getTime();
+              if (isNaN(t)) return;
+              const clamped = Math.max(startTs, Math.min(endTs, t));
+              setZoomStartTs(clamped);
+              // Keep end >= start
+              if (zoomEndTs != null && clamped >= zoomEndTs) {
+                setZoomEndTs(Math.min(endTs, clamped + 60 * 60 * 1000));
+              }
+            }}
+          />
+          <span className="text-[11px] text-gray-500">→</span>
+          <input
+            type="datetime-local"
+            className="text-[11px] px-2 py-1 rounded border border-gray-300 bg-white text-gray-700"
+            value={new Date((effEndTs) - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16)}
+            min={new Date(startTs - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16)}
+            max={new Date(endTs   - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16)}
+            onChange={(e) => {
+              const t = new Date(e.target.value).getTime();
+              if (isNaN(t)) return;
+              const clamped = Math.max(startTs, Math.min(endTs, t));
+              setZoomEndTs(clamped);
+              if (zoomStartTs != null && clamped <= zoomStartTs) {
+                setZoomStartTs(Math.max(startTs, clamped - 60 * 60 * 1000));
+              }
+            }}
+          />
+          {(zoomStartTs != null || zoomEndTs != null) && (
+            <button
+              onClick={() => { setZoomStartTs(null); setZoomEndTs(null); }}
+              className="text-[11px] text-blue-600 hover:text-blue-800 underline ml-1"
+            >
+              Reset
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* When raw view is on, flag that the insights below still run on
+          the cleaned series — so users don't wonder why the chart shows
+          40 zigzags but "Consumed X KL" doesn't spike accordingly. */}
+      {actualsOnly && (
+        <p className="text-[11px] text-gray-500 italic -mt-2 mb-3">
+          Chart shows raw sensor readings — insights and totals below are based on smoothed data.
+        </p>
+      )}
+
       {/* Summary */}
       {tankCapacityLitres > 0 && (
         <div className="grid grid-cols-2 gap-3 mb-4">
@@ -311,7 +418,10 @@ export default function AnalyticsChart({ deviceCode, tankCapacityLitres, sensorT
         onClick={() => setActiveMarkerId(null)}
       >
         <ResponsiveContainer width="100%" height="100%">
-          <LineChart data={chartData} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
+          <LineChart
+            data={chartData}
+            margin={{ top: 5, right: 10, left: 0, bottom: 5 }}
+          >
             <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
             <XAxis
               dataKey="time"
@@ -330,15 +440,21 @@ export default function AnalyticsChart({ deviceCode, tankCapacityLitres, sensorT
               }}
             />
             <Line
-              type="stepAfter"
+              // Smoothed mode uses monotone curve for a truly clean
+              // line; raw ("Actual values only") keeps stepAfter so
+              // sensor snap-transitions read faithfully.
+              type={actualsOnly ? "stepAfter" : "monotone"}
               dataKey="pct"
               stroke="#2563eb"
               strokeWidth={2}
               dot={(props) => {
+                // In smoothed mode, hide dots entirely — the line IS
+                // the story. Dozens of blue circles on top of the line
+                // just make the chart look noisy. In raw mode, keep
+                // dots so users can see individual sensor readings
+                // (spikes get an orange dot for emphasis).
+                if (!actualsOnly) return null;
                 if (!props.payload?.isActual) return null;
-                // Spike rows get an orange dot so the customer can
-                // spot which raw readings were flagged as unphysical.
-                // Normal actuals stay blue.
                 const isSpike = props.payload?.isSpike;
                 return (
                   <circle
@@ -362,14 +478,18 @@ export default function AnalyticsChart({ deviceCode, tankCapacityLitres, sensorT
             across the plot area accounting for Recharts' YAxis
             (~48px on the left) and its right/top/bottom margins.
             Each marker is a vertical bar + a small truck icon at
-            top; click to open the popover with delivery details. */}
+            top; click to open the popover with delivery details.
+            Uses effStartTs/effEndTs so markers stay aligned when
+            the 30d brush zooms into a sub-window. Markers outside
+            the effective window are hidden (pctAcross > 100). */}
         {tankerMarkers.length > 0 && (() => {
-          const totalMs = endTs - startTs;
+          const totalMs = effEndTs - effStartTs;
           if (totalMs <= 0) return null;
           // Chart plot area padding — YAxis reserves ~48px on the
           // left, right margin ~10px, top 5, bottom ~65 (X-axis
-          // labels rotated). Tuned by eye — Recharts doesn't expose
-          // internal chart dimensions publicly.
+          // labels rotated). When Brush is rendered (30d only) it
+          // adds ~40px more at the bottom — extend padBottom to
+          // keep markers from overlapping the brush strip.
           const padLeft   = 48;
           const padRight  = 12;
           const padTop    = 6;
@@ -381,7 +501,7 @@ export default function AnalyticsChart({ deviceCode, tankCapacityLitres, sensorT
             >
               <div className="relative w-full h-full">
                 {tankerMarkers.map((m) => {
-                  const pctAcross = ((m.deliveredAt - startTs) / totalMs) * 100;
+                  const pctAcross = ((m.deliveredAt - effStartTs) / totalMs) * 100;
                   if (pctAcross < 0 || pctAcross > 100) return null;
                   const isActive = activeMarkerId === m.orderId;
                   return (
