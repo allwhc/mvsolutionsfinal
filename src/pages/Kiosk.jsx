@@ -120,8 +120,14 @@ function TankTile({ d, isOnline, colorByLevel, compact, isAlert }) {
   const band       = bandFor(pct);
   const capL       = d.tankCapacityLitres || d.catalog?.tankCapacityLitres || 0;
   const litres     = capL > 0 ? Math.round((pct * capL) / 100) : 0;
-  const name       = d.deviceName || d.deviceCode;
-  const userLabel  = d.info?.userAssignedName || "";
+  // Name hierarchy: cloud-side deviceName wins because that's what the
+  // customer/admin curated on the DeviceDetail page knowing it appears
+  // on kiosk + dashboard. Installer's AP-page userAssignedName is only
+  // a bootstrap default — fall back to it only if the cloud name is
+  // missing, then to the raw device code as the last resort. Matches
+  // SensorCard on the Dashboard so both surfaces show the same name
+  // for the same tank.
+  const displayName = d.deviceName || d.info?.userAssignedName || d.deviceCode;
 
   // Water depth for ultrasonic devices. Same source-of-truth
   // priority as SensorCard: prefer live.rawCm (exact), fall back to
@@ -141,9 +147,16 @@ function TankTile({ d, isOnline, colorByLevel, compact, isAlert }) {
   // Tile-level status color. Alert flashing wins visually via the outer
   // ring; below the ring the tile still shows its band color so a viewer
   // can tell WHICH kind of alert (empty vs low-25 vs high-90).
+  //
+  // Offline tiles keep the band color (green/amber/orange/red) so the
+  // customer at the kiosk still sees the last-known level at a glance
+  // — a grey "OFFLINE" wall would panic them into thinking the tank
+  // itself is gone. Only sensor faults get the purple flag (that IS a
+  // real hardware problem worth surfacing). Never-reported devices are
+  // filtered out entirely upstream in filteredDevices, so we never
+  // reach this branch with no data.
   let tileTint = band.fill;
-  if (sensorErr)   tileTint = "#7e22ce";     // purple
-  if (!isOnline)   tileTint = "#6b7280";     // grey
+  if (sensorErr) tileTint = "#7e22ce";     // purple
 
   // Water fill color for the SVG. Off → traditional blue. On → level band.
   const waterFill = colorByLevel ? band.fill : "#2563eb";
@@ -166,50 +179,60 @@ function TankTile({ d, isOnline, colorByLevel, compact, isAlert }) {
         borderColor: tileTint,
       }}
     >
-      {/* Top band with band color + label */}
+      {/* Top band with band color + label. Offline devices keep the
+          band label (FULL/HALF/etc) with a clock icon in the corner —
+          the customer sees the last-known state was normal, and the
+          clock signals "this is a snapshot, not live". No duration
+          text (deliberate — invites less panic than "OFFLINE 3 hr").
+          Device code moved to the bottom-right, tiny grey — visible
+          for a technician standing at the kiosk but doesn't clutter
+          the customer view. */}
       <div
         className="px-2 py-1 flex items-center justify-between text-[10px] font-bold uppercase tracking-wider"
         style={{ background: tileTint, color: band.text }}
       >
-        <span>
-          {!isOnline ? "Offline" : sensorErr ? "Sensor Fault" : band.label}
-        </span>
-        <span>{d.deviceCode.split("-")[1]}</span>
+        <span>{sensorErr ? "Sensor Fault" : band.label}</span>
+        {!isOnline && !sensorErr && (
+          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-label="Last-known snapshot — device is offline">
+            <circle cx="12" cy="12" r="9" />
+            <polyline points="12 7 12 12 15 14" />
+          </svg>
+        )}
       </div>
 
       {compact ? (
         // Compact: name on top, big pct, then litres as two harmonised
         // tones of the same hue — deep (used) + soft badge (of total)
-        // so both numbers stay legible + visually connected.
+        // so both numbers stay legible + visually connected. Offline
+        // tiles still render the last-known pct + litres in full color
+        // — the clock icon in the top band is the only offline signal.
         <div className="flex-1 flex flex-col justify-center items-center py-4 px-2 gap-1.5">
           <div className="text-sm text-neutral-200 text-center line-clamp-1 w-full font-semibold">
-            {userLabel || name}
+            {displayName}
           </div>
           <div className="text-5xl font-black leading-none tracking-tight" style={{ color: tileTint }}>
-            {isOnline ? `${pct}%` : "—"}
+            {pct}%
           </div>
           {capL > 0 && (
             <div
               className="mt-1 flex items-baseline gap-1.5 px-3 py-1.5 rounded-full whitespace-nowrap"
-              style={{
-                background: isOnline ? band.soft : "#374151",
-              }}
+              style={{ background: band.soft }}
             >
               <span
                 className="text-xl font-extrabold leading-none"
-                style={{ color: isOnline ? band.deep : "#e5e7eb" }}
+                style={{ color: band.deep }}
               >
-                {isOnline ? fmtLitres(litres) : "—"}
+                {fmtLitres(litres)}
               </span>
               <span
                 className="text-xs font-bold leading-none"
-                style={{ color: isOnline ? band.deep : "#d1d5db", opacity: 0.7 }}
+                style={{ color: band.deep, opacity: 0.7 }}
               >
                 /
               </span>
               <span
                 className="text-sm font-bold leading-none"
-                style={{ color: isOnline ? band.deep : "#d1d5db", opacity: 0.85 }}
+                style={{ color: band.deep, opacity: 0.85 }}
               >
                 {fmtLitres(capL)}
               </span>
@@ -249,8 +272,9 @@ function TankTile({ d, isOnline, colorByLevel, compact, isAlert }) {
             {/* lid */}
             <rect x="10" y="30" width="130" height="14" rx="4" fill="#475569" />
             <rect x="35" y="20" width="80" height="12" rx="3" fill="#64748b" />
-            {/* water */}
-            {isOnline && pct > 0 && (
+            {/* water — draws last-known level whether online or not.
+                Empty tank (pct 0) has nothing to fill. */}
+            {pct > 0 && (
               <g clipPath={`url(#clip-${d.deviceCode})`}>
                 <rect x="0" y={yStart} width="150" height={innerBottom - yStart} fill={`url(#grad-${d.deviceCode})`} />
                 <ellipse cx="75" cy={yStart} rx="65" ry="3" fill={waterTop} opacity="0.7" />
@@ -260,14 +284,14 @@ function TankTile({ d, isOnline, colorByLevel, compact, isAlert }) {
 
           <div className="flex-1 min-w-0 flex flex-col justify-center gap-0.5">
             <div className="text-xs text-neutral-300 line-clamp-2 font-medium leading-tight">
-              {userLabel || name}
+              {displayName}
             </div>
             <div className="text-3xl font-black leading-none" style={{ color: tileTint }}>
-              {isOnline ? `${pct}%` : "—"}
+              {pct}%
             </div>
             {capL > 0 && (
               <div className="text-[10px] text-neutral-400 truncate">
-                {isOnline ? `${fmtLitres(litres)} / ${fmtLitres(capL)}` : fmtLitres(capL)}
+                {fmtLitres(litres)} / {fmtLitres(capL)}
               </div>
             )}
             {/* Ultrasonic-only depth line — matches the compact-mode
@@ -280,6 +304,14 @@ function TankTile({ d, isOnline, colorByLevel, compact, isAlert }) {
           </div>
         </div>
       )}
+      {/* Tiny device-code footer — used to sit in the top-right of the
+          banner; moved here so the customer-facing header stays clean
+          (they don't care about SF-XXX codes). Small grey text still
+          lets a technician standing at the kiosk identify a specific
+          tank without hunting through /admin/devices. */}
+      <div className="absolute bottom-1 right-1.5 text-[8px] text-neutral-500 font-mono leading-none opacity-70 pointer-events-none">
+        {d.deviceCode.split("-")[1]}
+      </div>
     </div>
   );
 }
@@ -360,8 +392,18 @@ export default function Kiosk() {
 
   // Apply group filter same way Dashboard does. Individual accounts skip
   // this entirely — the dropdown is hidden for them.
+  //
+  // Also drop never-reported devices from the kiosk grid entirely — no
+  // /live payload means we have nothing meaningful to display (no
+  // last-known pct, no fill color, no litres). A "?" placeholder tile
+  // would invite the customer to ask "what's wrong with that tank?"
+  // — worse than not showing it at all. Admin / installer can still
+  // see never-reported devices on /admin/devices and the regular
+  // Dashboard for diagnostic purposes. The moment first data arrives
+  // the tile appears in the kiosk on the next real-time update.
   const filteredDevices = useMemo(() => {
     return devices.filter((d) => {
+      if (!d.live) return false;
       if (groupFilter === "all") return true;
       const g = groups.find((x) => x.groupId === groupFilter);
       if (g) return g.deviceCodes?.includes(d.deviceCode);
