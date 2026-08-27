@@ -116,7 +116,17 @@ function alertSeverity(d) {
 function TankTile({ d, isOnline, colorByLevel, compact, isAlert }) {
   const pct        = d.live?.confirmedPct ?? 0;
   const flags      = d.live?.flags ?? 0;
-  const sensorErr  = (flags & 0x01) === 0x01;
+  // Sensor-fault bit (flags & 0x01) is meaningful for ultrasonic
+  // (transducer failure, out-of-range distance, hardware issue that
+  // needs attention). For DIP it also fires on inconsistent probe
+  // patterns — a wiring quirk that's a technician problem, not a
+  // customer problem. Kiosk hides DIP faults entirely so the
+  // customer doesn't see purple panic tiles for what is really a
+  // "please call your installer" state; the tile shows the resolved
+  // level like normal. Ultrasonic faults still surface because they
+  // mean the reading itself is not trustworthy.
+  const sType      = d.info?.sensorType ?? d.catalog?.sensorType;
+  const sensorErr  = (flags & 0x01) === 0x01 && sType === 2;
   const band       = bandFor(pct);
   const capL       = d.tankCapacityLitres || d.catalog?.tankCapacityLitres || 0;
   const litres     = capL > 0 ? Math.round((pct * capL) / 100) : 0;
@@ -132,8 +142,8 @@ function TankTile({ d, isOnline, colorByLevel, compact, isAlert }) {
   // Water depth for ultrasonic devices. Same source-of-truth
   // priority as SensorCard: prefer live.rawCm (exact), fall back to
   // pct + geometry math. Null when device is DIP, offline, errored,
-  // or geometry not yet reported.
-  const sType = d.info?.sensorType ?? d.catalog?.sensorType;
+  // or geometry not yet reported. sType is declared above for the
+  // sensor-fault gate.
   const depthText = (sType === 2 && isOnline && !sensorErr)
     ? cmToFtInKiosk(computeDepthKiosk({
         rawCm:        d.live?.rawCm,
