@@ -4,6 +4,7 @@ import { useAuth } from "../context/AuthContext";
 import { useDebugMode } from "../context/DebugModeContext";
 import { useDevices } from "../hooks/useDevices";
 import { useDashboardAlertSound } from "../hooks/useDashboardAlertSound";
+import { useDebouncedAlerts } from "../hooks/useDebouncedAlerts";
 import { getOrgGroups, updateUserDoc, updateOrgGroup } from "../firebase/db";
 import DeviceCard from "../components/DeviceCard/DeviceCard";
 import DeviceAnalyticsModal from "../components/Analytics/DeviceAnalyticsModal";
@@ -93,10 +94,33 @@ export default function Dashboard() {
       navigate("/kiosk");
     }
   };
+  // 2-min sustained-state debounce for level threshold alerts. Filters
+  // out sensor oscillation (e.g. 55↔56 around a 55% threshold) that
+  // used to fire the alert visual + sound on every jitter. Committed
+  // state is exposed as a Map<deviceCode, isAlerting>; downstream
+  // consumers behave "as if" the raw thresholds haven't been crossed
+  // until the flip holds for DEBOUNCE_MS.
+  const debouncedAlerts = useDebouncedAlerts(devices);
+
+  // Build a version of devices where the alert thresholds are cleared
+  // for tanks the debounce hasn't yet committed to alert. SensorCard's
+  // flash + useDashboardAlertSound both read alertLowPct/alertHighPct
+  // to decide whether to fire — nulling those fields is the cleanest
+  // way to suppress the alert visual/audio without changing either
+  // downstream. Once the debounce commits (raw crossing has held for
+  // 2 min), the original thresholds pass through and the flash + beep
+  // fire on the next render — same code paths as before.
+  const debouncedDevices = useMemo(() => {
+    return devices.map((d) => {
+      if (debouncedAlerts.get(d.deviceCode)) return d;
+      return { ...d, alertLowPct: null, alertHighPct: null };
+    });
+  }, [devices, debouncedAlerts]);
+
   // Edge-triggered audible alert when any device crosses a user-configured
   // alertLowPct / alertHighPct threshold. Silent for devices where the
   // user never set thresholds — only fires for alerts they activated.
-  const { muted: soundMuted, toggleMuted: toggleSoundMuted } = useDashboardAlertSound(devices);
+  const { muted: soundMuted, toggleMuted: toggleSoundMuted } = useDashboardAlertSound(debouncedDevices);
 
   // Per-device analytics popup. Holds the deviceCode of whichever tile's
   // chart icon was clicked, or null when no modal is open. Firebase reads
@@ -225,7 +249,12 @@ export default function Dashboard() {
   // Filter devices: search first (global), else apply the wing filter.
   //   all       → every device the user can see (unassigned live here too)
   //   <groupId> → devices in that specific wing/group
-  const filteredDevices = devices.filter((d) => {
+  // Uses debouncedDevices so the alertLowPct/alertHighPct fields carried
+  // into SensorCard already reflect the 2-min sustained-state debounce.
+  // Tanks that only momentarily crossed a threshold pass through with
+  // thresholds nulled — SensorCard's flash + audible alert both see
+  // "no threshold" and stay quiet until the crossing holds.
+  const filteredDevices = debouncedDevices.filter((d) => {
     if (searchActive) {
       const t = searchText.trim().toLowerCase();
       const blob = `${d.deviceCode} ${d.deviceName || ""} ${d.location || ""}`.toLowerCase();
