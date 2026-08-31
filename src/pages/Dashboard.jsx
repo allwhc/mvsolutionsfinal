@@ -94,7 +94,7 @@ export default function Dashboard() {
       navigate("/kiosk");
     }
   };
-  // 2-min sustained-state debounce for level threshold alerts. Filters
+  // 1-min sustained-state debounce for level threshold alerts. Filters
   // out sensor oscillation (e.g. 55↔56 around a 55% threshold) that
   // used to fire the alert visual + sound on every jitter. Committed
   // state is exposed as a Map<deviceCode, isAlerting>; downstream
@@ -108,7 +108,7 @@ export default function Dashboard() {
   // to decide whether to fire — nulling those fields is the cleanest
   // way to suppress the alert visual/audio without changing either
   // downstream. Once the debounce commits (raw crossing has held for
-  // 2 min), the original thresholds pass through and the flash + beep
+  // 1 min), the original thresholds pass through and the flash + beep
   // fire on the next render — same code paths as before.
   const debouncedDevices = useMemo(() => {
     return devices.map((d) => {
@@ -250,7 +250,7 @@ export default function Dashboard() {
   //   all       → every device the user can see (unassigned live here too)
   //   <groupId> → devices in that specific wing/group
   // Uses debouncedDevices so the alertLowPct/alertHighPct fields carried
-  // into SensorCard already reflect the 2-min sustained-state debounce.
+  // into SensorCard already reflect the 1-min sustained-state debounce.
   // Tanks that only momentarily crossed a threshold pass through with
   // thresholds nulled — SensorCard's flash + audible alert both see
   // "no threshold" and stay quiet until the crossing holds.

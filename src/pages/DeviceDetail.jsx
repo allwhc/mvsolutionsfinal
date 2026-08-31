@@ -788,6 +788,67 @@ export default function DeviceDetail() {
       {(catalog && (catalog.sensorType === 1 || catalog.sensorType === 2 || info?.sensorType === 1 || info?.sensorType === 2)) && (() => {
         const sc = info?.sensorCount ?? catalog?.sensorCount ?? 4;
         const isSingle = sc === 1;
+        const sType = info?.sensorType ?? catalog?.sensorType ?? 2;
+
+        // Legal threshold values per sensor type. DIP snaps to probe
+        // levels (0/25/50/75/100 for a 4-probe, 0/33/67/100 for 3-probe,
+        // etc.) because anything in between is physically meaningless —
+        // the probes only report discrete levels. Ultrasonic goes in 5%
+        // steps 0..100 for finer control. Unknown or single-sensor
+        // devices fall back to 5% steps (unlikely path — single sensors
+        // use the ON/OFF toggle branch above).
+        const stepValues = (() => {
+          if (sType === 1) {
+            // DIP — one entry per probe level, plus 0% (empty).
+            const table = {
+              1: [100],
+              2: [50, 100],
+              3: [33, 67, 100],
+              4: [25, 50, 75, 100],
+              5: [20, 40, 60, 80, 100],
+              6: [17, 33, 50, 67, 83, 100],
+            }[sc] || [25, 50, 75, 100];
+            return [0, ...table];
+          }
+          // Ultrasonic (or unknown) — 5% steps, inclusive of 0 and 100.
+          const out = [];
+          for (let v = 0; v <= 100; v += 5) out.push(v);
+          return out;
+        })();
+
+        // Snap a saved numeric threshold to the nearest legal step for
+        // this sensor type. Handles legacy values (e.g. 37% saved before
+        // the stepped dropdown existed) — the dropdown displays the
+        // snapped value; the DB write on next save persists it.
+        const snapToStep = (raw) => {
+          if (raw === "" || raw == null) return "";
+          const n = Number(raw);
+          if (!isFinite(n)) return "";
+          let best = stepValues[0];
+          let bestDist = Math.abs(n - best);
+          for (const v of stepValues) {
+            const d = Math.abs(n - v);
+            if (d < bestDist) { best = v; bestDist = d; }
+          }
+          return String(best);
+        };
+
+        // Display-side view of the current thresholds — snapped for the
+        // dropdown but doesn't touch stored state until user saves. The
+        // save button below reads from the snapped values so a click-
+        // without-change still writes the snapped value back.
+        const shownLow  = snapToStep(alertLowPct);
+        const shownHigh = snapToStep(alertHighPct);
+
+        // Dependent filtering — low must be strictly less than high, and
+        // the minimum gap is one step (5% for ultrasonic, 25% for a
+        // 4-probe DIP). Prevents overlap where alert zones touch and
+        // there's no safe zone in between.
+        const gap = stepValues.length > 1 ? stepValues[1] - stepValues[0] : 5;
+        const highNum = shownHigh === "" ? null : Number(shownHigh);
+        const lowNum  = shownLow  === "" ? null : Number(shownLow);
+        const validLowOptions  = stepValues.filter((v) => highNum == null || v + gap <= highNum);
+        const validHighOptions = stepValues.filter((v) => lowNum  == null || v - gap >= lowNum);
 
         return (
           <div className="bg-white rounded-xl shadow-sm border border-gray-200 mt-4 p-4">
@@ -851,41 +912,56 @@ export default function DeviceDetail() {
                 <p className="text-xs text-gray-400">Card flashes red when empty, green when water is present.</p>
               </div>
             ) : (
-              /* Multiple sensors — percentage inputs */
+              /* Multi-sensor — stepped dropdowns. DIP snaps to probe
+                 levels (physically meaningful values only); ultrasonic
+                 uses 5% steps for finer control. Dependent filtering
+                 hides options that would create an invalid overlap
+                 (low >= high) so an invalid combination cannot be
+                 saved from the UI. */
               <>
                 <div className="grid grid-cols-2 gap-2 text-sm mb-3">
                   <span className="text-gray-500">Low Alert (≤)</span>
                   <div className="flex items-center gap-1">
-                    <input type="number" min="0" max="100" value={alertLowPct}
+                    <select
                       disabled={!isEffectiveOwner}
+                      value={shownLow}
                       onChange={(e) => { setAlertLowPct(e.target.value); setAlertError(""); }}
-                      placeholder="Off"
-                      className="w-16 px-2 py-0.5 border border-gray-200 rounded text-sm disabled:bg-gray-50 disabled:text-gray-500" />
-                    <span className="text-gray-500 text-xs">%</span>
+                      className="px-2 py-1 border border-gray-200 rounded text-sm bg-white disabled:bg-gray-50 disabled:text-gray-500"
+                    >
+                      <option value="">Disabled</option>
+                      {validLowOptions.map((v) => (
+                        <option key={v} value={String(v)}>{v}%</option>
+                      ))}
+                    </select>
                   </div>
                   <span className="text-gray-500">High Alert (≥)</span>
                   <div className="flex items-center gap-1">
-                    <input type="number" min="0" max="100" value={alertHighPct}
+                    <select
                       disabled={!isEffectiveOwner}
+                      value={shownHigh}
                       onChange={(e) => { setAlertHighPct(e.target.value); setAlertError(""); }}
-                      placeholder="Off"
-                      className="w-16 px-2 py-0.5 border border-gray-200 rounded text-sm disabled:bg-gray-50 disabled:text-gray-500" />
-                    <span className="text-gray-500 text-xs">%</span>
+                      className="px-2 py-1 border border-gray-200 rounded text-sm bg-white disabled:bg-gray-50 disabled:text-gray-500"
+                    >
+                      <option value="">Disabled</option>
+                      {validHighOptions.map((v) => (
+                        <option key={v} value={String(v)}>{v}%</option>
+                      ))}
+                    </select>
                   </div>
                 </div>
                 {alertError && <p className="text-red-500 text-xs mb-2">{alertError}</p>}
                 {isEffectiveOwner && (
                   <button onClick={async () => {
-                    const low = alertLowPct === "" ? null : parseInt(alertLowPct);
-                    const high = alertHighPct === "" ? null : parseInt(alertHighPct);
+                    // Save the snapped values — even a click without an
+                    // explicit change writes back the snapped form, which
+                    // migrates any legacy non-stepped values (e.g. 37 → 35
+                    // for ultrasonic, 37 → 25 for a 4-probe DIP).
+                    const low  = shownLow  === "" ? null : parseInt(shownLow);
+                    const high = shownHigh === "" ? null : parseInt(shownHigh);
                     if (low != null && high != null && low >= high) {
                       setAlertError("Low must be less than High");
                       return;
                     }
-                    // Canonical alert thresholds now live on
-                    // deviceCatalog — one setting per physical tank,
-                    // applies to every viewer's alert. See ownership
-                    // model discussion.
                     await updateDoc(doc(db, "deviceCatalog", code), {
                       alertLowPct: low, alertHighPct: high,
                     }).catch((e) => {

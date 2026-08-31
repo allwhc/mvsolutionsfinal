@@ -332,14 +332,14 @@ export default function Kiosk() {
   const { devices: rawDevices, loading } = useDevices();
   const navigate = useNavigate();
 
-  // 2-min sustained-state debounce for level threshold alerts. Same
+  // 1-min sustained-state debounce for level threshold alerts. Same
   // hook Dashboard uses — keeps kiosk in sync with the dashboard's
   // alert state so the wall display and the operator's laptop don't
   // disagree about whether a tank is "in alert" right now. Devices
   // whose crossings haven't committed yet get alertLowPct/alertHighPct
   // nulled, which makes isTankInAlert(), alertSeverity() and the
   // ring-4 red pulse all fall through as "no alert" until the flip
-  // has held for 2 min.
+  // has held for 1 min.
   const debouncedAlerts = useDebouncedAlerts(rawDevices);
   const devices = useMemo(() => {
     return rawDevices.map((d) => {

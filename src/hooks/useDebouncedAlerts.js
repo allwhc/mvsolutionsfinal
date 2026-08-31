@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 
-// Threshold alert with 2-min sustained-state debounce.
+// Threshold alert with 1-min sustained-state debounce.
 //
 // The bug: ultrasonic sensors oscillate 55↔56% around a 55% threshold and
 // fire the alert visual every 20-30 sec even when the tank is physically
@@ -21,7 +21,7 @@ import { useEffect, useRef, useState } from "react";
 //
 // Initial state: first push after tab open sets committed state
 // IMMEDIATELY (no debounce) — customer opening the dashboard on a
-// genuinely-low tank must see the alert without a 2-min stall. Every
+// genuinely-low tank must see the alert without a 1-min stall. Every
 // subsequent flip goes through the debounce.
 //
 // Scope: browser-only. Each tab tracks its own timers. Nothing written
@@ -29,7 +29,7 @@ import { useEffect, useRef, useState } from "react";
 // push" logic re-fires — acceptable, matches "we only care about while
 // the browser is open".
 
-export const DEBOUNCE_MS = 2 * 60 * 1000;
+export const DEBOUNCE_MS = 1 * 60 * 1000;
 
 // Raw alert-zone check — pure of any debouncing. Matches the semantics
 // Dashboard's SensorCard and Kiosk's isTankInAlert used before.
