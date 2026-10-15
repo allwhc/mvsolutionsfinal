@@ -1683,9 +1683,22 @@ export default function AdminDevices() {
       {/* Device Live Viewer Modal */}
       {viewDevice && (() => {
         const cat = registered.find(d => d.deviceCode === viewDevice) || {};
-        const lastSeen = viewInfo?.lastSeen;
-        const isStale = lastSeen ? (Date.now() - lastSeen) > 900000 : true;
-        const isOnline = viewInfo?.online === true && !isStale;
+        // v118.0.12: pump-aware online check. Pumps (deviceClass=4) never
+        // write info.online / info.lastSeen — they publish via /live.ts
+        // heartbeat only. Previously this modal always showed pumps as
+        // Offline because it checked info.online which is always undefined
+        // for pumps. Match the pump-aware isDeviceOnline() used in the
+        // main list and Kiosk / Dashboard.
+        const isPump = (viewInfo?.deviceClass ?? 0) === 4;
+        let isOnline;
+        if (isPump) {
+          const liveTs = viewLive?.ts;
+          isOnline = liveTs ? (Date.now() - liveTs) <= 600000 : false;   // 10 min
+        } else {
+          const lastSeen = viewInfo?.lastSeen;
+          const isStale = lastSeen ? (Date.now() - lastSeen) > 900000 : true;
+          isOnline = viewInfo?.online === true && !isStale;
+        }
         const VALVE_STATES = ["Recovery", "Opening", "Open", "Closing", "Closed", "Fault", "LS Error"];
         const valveState = viewLive?.valveState;
         const flags = viewLive?.flags ?? 0;
