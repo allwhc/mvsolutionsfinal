@@ -237,8 +237,13 @@ export async function sendRestartCommand(deviceCode) {
 }
 
 export async function sendTestCommand(deviceCode) {
+  // v118.0.12: write BOTH field names so one cloud call fires the test
+  // LED on any device variant. Legacy (ultrasonic tank monitor / valve)
+  // firmware reads `testRequested`; v118+ pump firmware reads `testLed`.
+  // Each device only reads its own key and ignores the other.
   await update(ref(rtdb, `devices/${deviceCode}/commands`), {
     testRequested: true,
+    testLed: true,
   });
 }
 
