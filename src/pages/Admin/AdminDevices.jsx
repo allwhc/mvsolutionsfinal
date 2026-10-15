@@ -1734,7 +1734,24 @@ export default function AdminDevices() {
                       <span className="text-gray-500">Class</span>
                       <span className="text-gray-900">{DEVICE_CLASS[cat.deviceClass] || "?"}</span>
                       <span className="text-gray-500">Sensor</span>
-                      <span className="text-gray-900">{SENSOR_TYPE[cat.sensorType] || "?"} ({cat.sensorCount || 0})</span>
+                      <span className="text-gray-900">
+                        {(() => {
+                          // v118.0.12: pump panels publish sensor info via
+                          // info.terraceSensorType ("dip" / "ultrasonic"),
+                          // not via catalog.sensorType — which only
+                          // sensor-class devices (deviceClass=2) populate on
+                          // registration. Prefer the firmware-published
+                          // field; fall back to catalog for other devices.
+                          const live = viewInfo?.terraceSensorType;
+                          if (live === "ultrasonic") return "Ultrasonic";
+                          if (live === "dip")        return "DIP";
+                          const t = SENSOR_TYPE[cat.sensorType];
+                          const c = cat.sensorCount;
+                          if (t && c) return `${t} (${c})`;
+                          if (t)      return t;
+                          return "—";
+                        })()}
+                      </span>
                       <span className="text-gray-500">Firmware</span>
                       <span className="text-gray-900">{viewInfo?.firmwareVersion || cat.firmwareVersion || "?"}</span>
                       <span className="text-gray-500">RSSI</span>
