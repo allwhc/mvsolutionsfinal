@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { getAllDevices } from "../../firebase/db";
-import { getDevicesInfoMap, sendOtaTrigger, cancelOtaTrigger } from "../../firebase/rtdb";
+import { getDevicesInfoMap, getDevicesLiveMap, sendOtaTrigger, cancelOtaTrigger } from "../../firebase/rtdb";
 
 // Helper: format epoch seconds → readable IST string
 function fmtEpoch(epochSec) {
@@ -18,8 +18,19 @@ function fmtEpoch(epochSec) {
   return `${day}-${mon}-${year}, ${h}:${m}:${s} ${ampm}`;
 }
 
-function isDeviceOnline(info) {
+// Device-class-aware online check — mirrors Dashboard/Kiosk/AdminDevices
+// logic so this OTA page's Online column and queued/in_progress badges
+// agree with what the customer sees on their tile.
+//   • Pumps (deviceClass=4) don't write /info/online + /info/lastSeen.
+//     Derive from /live.ts freshness with a 10-min window.
+//   • Everything else keeps the classic /info/online + lastSeen check
+//     that sensor/valve/motor firmware writes on every heartbeat.
+function isDeviceOnline(info, live) {
   if (!info) return false;
+  if ((info.deviceClass ?? 0) === 4) {
+    const ts = live?.ts;
+    return ts ? (Date.now() - ts) < 10 * 60 * 1000 : false;
+  }
   if (!info.online) return false;
   if (!info.lastSeen) return false;
   return Date.now() - info.lastSeen < 15 * 60 * 1000; // 15 min
@@ -38,6 +49,11 @@ function statusBadge(status, online) {
 export default function AdminFirmware() {
   const [devices, setDevices] = useState([]);
   const [infoMap, setInfoMap] = useState({});
+  // Batch /live snapshot for pump-online derivation — pumps skip
+  // /info/online + /info/lastSeen, so this page's OTA online check
+  // needs to read /live/ts freshness to decide if the device is
+  // reachable. One-shot fetch per refresh, not a listener.
+  const [liveMap, setLiveMap] = useState({});
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -72,8 +88,12 @@ export default function AdminFirmware() {
     const list = await getAllDevices();
     setDevices(list);
     const codes = list.map((d) => d.deviceCode);
-    const map = await getDevicesInfoMap(codes);
+    const [map, live] = await Promise.all([
+      getDevicesInfoMap(codes),
+      getDevicesLiveMap(codes),
+    ]);
     setInfoMap(map);
+    setLiveMap(live);
     setLoading(false);
     setRefreshing(false);
   }
@@ -118,13 +138,14 @@ export default function AdminFirmware() {
   const filtered = useMemo(() => {
     const out = devices.filter((d) => {
       const info = infoMap[d.deviceCode] || {};
+      const live = liveMap[d.deviceCode] || null;
       if (filterClass !== "all" && String(d.deviceClass) !== filterClass) return false;
       if (filterSensorType !== "all" && String(d.sensorType ?? info.sensorType) !== filterSensorType) return false;
       if (filterProbes !== "all" && String(d.sensorCount ?? info.sensorCount) !== filterProbes) return false;
       if (filterFirmware && !String(info.firmwareVersion || "").toLowerCase().includes(filterFirmware.toLowerCase())) return false;
       if (filterGroup && !String(d.groupId || "").toLowerCase().includes(filterGroup.toLowerCase())) return false;
       if (filterStatus !== "all") {
-        const online = isDeviceOnline(info);
+        const online = isDeviceOnline(info, live);
         if (filterStatus === "online"  && !online) return false;
         if (filterStatus === "offline" &&  online) return false;
       }
@@ -136,7 +157,7 @@ export default function AdminFirmware() {
       return true;
     });
     return out;
-  }, [devices, infoMap, filterClass, filterSensorType, filterProbes, filterFirmware, filterGroup, filterStatus, searchText]);
+  }, [devices, infoMap, liveMap, filterClass, filterSensorType, filterProbes, filterFirmware, filterGroup, filterStatus, searchText]);
 
   // Reset selection when filter changes
   useEffect(() => {
@@ -343,7 +364,8 @@ export default function AdminFirmware() {
             <tbody>
               {filtered.map((d) => {
                 const info = infoMap[d.deviceCode] || {};
-                const online = isDeviceOnline(info);
+                const live = liveMap[d.deviceCode] || null;
+                const online = isDeviceOnline(info, live);
                 const isSel = selected.has(d.deviceCode);
                 return (
                   <tr key={d.deviceCode} className="border-b hover:bg-gray-50">

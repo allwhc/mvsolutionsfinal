@@ -2,10 +2,15 @@ import { useState, useEffect, useRef, useMemo } from "react";
 import { useSearchParams } from "react-router-dom";
 import { getAllDevices, approvePendingDevice, registerDevice, updateDevice, deleteDeviceFromCatalog, getAllUsers, getAllOrgs, subscribeToDevice, assignDeviceOwner, getDeviceSubscribers } from "../../firebase/db";
 import { useAuth } from "../../context/AuthContext";
-import { sendTestCommand, sendRestartCommand, getPendingDevicesRTDB, listenToDeviceLive, listenToDeviceInfo, listenToValveConfig, setAnalyticsEnabled, setDiagnosticsEnabled, setNotifyEnabled, bulkSetConfigFlag, getDevicesInfoMap, getDevicesConfigMap, getDeviceInfo, deleteHistoryOlderThan } from "../../firebase/rtdb";
+import { sendTestCommand, sendRestartCommand, getPendingDevicesRTDB, listenToDeviceLive, listenToDeviceInfo, listenToValveConfig, setAnalyticsEnabled, setDiagnosticsEnabled, setNotifyEnabled, bulkSetConfigFlag, getDevicesInfoMap, getDevicesLiveMap, getDevicesConfigMap, getDeviceInfo, deleteHistoryOlderThan } from "../../firebase/rtdb";
 import { QRCodeSVG } from "qrcode.react";
 
-const DEVICE_CLASS = { 1: "Valve", 2: "Sensor", 3: "Motor", "senseflowstandard": "SenseFlow Standard" };
+const DEVICE_CLASS = { 1: "Valve", 2: "Sensor", 3: "Motor", 4: "Pump Panel", "senseflowstandard": "SenseFlow Standard" };
+// Which device classes actually have "sensors" (probes/ultrasonic) — used
+// to decide whether to show the "N sensors" tail on pending/registered
+// rows. Pumps, valves, motors have no sensor count; only Sensor (class 2)
+// and SenseFlow Standard (integrated sensor+motor) do.
+const HAS_SENSORS = { 2: true, "senseflowstandard": true };
 const SENSOR_TYPE = { 0: "None", 1: "DIP", 2: "Ultrasonic" };
 
 export default function AdminDevices() {
@@ -381,6 +386,11 @@ export default function AdminDevices() {
   // toggling flags, e.g. "all sensor devices on 17.0.9 with diagnostics
   // OFF" → enable in one click.
   const [infoMap, setInfoMap]               = useState({});
+  // Batch /live snapshot per device — used ONLY by the online check for
+  // pumps (deviceClass=4), which don't write /info/online + /info/lastSeen
+  // and would otherwise show as permanently offline in this admin table.
+  // Fetched alongside infoMap; not streamed — one-shot per page load.
+  const [liveMap, setLiveMap]               = useState({});
   const [configMap, setConfigMap]           = useState({});
   const [usersMap, setUsersMap]             = useState({});       // uid -> user doc (name, orgId, role)
   const [orgsMap, setOrgsMap]               = useState({});       // orgId -> org doc (name)
@@ -513,11 +523,13 @@ export default function AdminDevices() {
     const codes = r.map((d) => d.deviceCode);
     Promise.all([
       getDevicesInfoMap(codes),
+      getDevicesLiveMap(codes),
       getDevicesConfigMap(codes),
       getAllUsers(),
       getAllOrgs(),
-    ]).then(([info, cfg, users, orgs]) => {
+    ]).then(([info, live, cfg, users, orgs]) => {
       setInfoMap(info);
+      setLiveMap(live);
       setConfigMap(cfg);
       // Index users + orgs by id for O(1) lookup per device when filtering.
       const uMap = {}; users.forEach((u) => { uMap[u.uid] = u; });
@@ -839,13 +851,23 @@ export default function AdminDevices() {
     };
   }
 
-  // Same online definition Dashboard uses: device's /info/online flag is
-  // true AND its lastSeen heartbeat is fresh (< 15 min old). Without the
-  // staleness gate the filter would mark devices online forever based on
-  // the last successful boot, even after they fell off the network — so
-  // "Online" matched a different set than the dashboard's green dot.
-  const STALE_MS = 15 * 60 * 1000;
-  function isDeviceOnline(info) {
+  // Device-class-aware online check — matches Dashboard/Kiosk logic so
+  // the admin "Online" filter and OTA queue gate agree with what the
+  // customer sees on their tile. Two branches:
+  //   • Pumps (deviceClass=4) never write /info/online + /info/lastSeen;
+  //     they only push /live on state change plus a periodic heartbeat
+  //     (5 min in v117.0.1+). Derive online from /live.ts freshness with
+  //     a 10-min window — catches one missed heartbeat while still
+  //     flagging real WiFi loss within an hour.
+  //   • Everything else keeps the classic /info/online + lastSeen check.
+  //     Sensor/valve/motor firmware writes those on every heartbeat.
+  const STALE_MS      = 15 * 60 * 1000;
+  const PUMP_STALE_MS = 10 * 60 * 1000;
+  function isDeviceOnline(info, live) {
+    if ((info?.deviceClass ?? 0) === 4) {
+      const ts = live?.ts;
+      return ts ? (Date.now() - ts) <= PUMP_STALE_MS : false;
+    }
     if (!info?.online) return false;
     const lastSeen = info.lastSeen;
     if (!lastSeen) return false;
@@ -857,9 +879,10 @@ export default function AdminDevices() {
   const filteredRegistered = useMemo(() => {
     return registered.filter((d) => {
       const info  = infoMap[d.deviceCode] || {};
+      const live  = liveMap[d.deviceCode] || null;
       const cfg   = configMap[d.deviceCode] || {};
       const owner = ownerInfoFor(d);
-      const online = isDeviceOnline(info);
+      const online = isDeviceOnline(info, live);
 
       if (filterClass !== "all" && String(d.deviceClass) !== filterClass) return false;
       if (filterFirmware && !String(info.firmwareVersion || "").toLowerCase().includes(filterFirmware.toLowerCase())) return false;
@@ -895,7 +918,7 @@ export default function AdminDevices() {
       }
       return true;
     });
-  }, [registered, infoMap, configMap, usersMap, orgsMap, filterClass, filterFirmware, filterStatus, filterDiag, filterNotify, filterAnalytics, filterOwnerType, filterOrg, filterOwner, filterSearch]);
+  }, [registered, infoMap, liveMap, configMap, usersMap, orgsMap, filterClass, filterFirmware, filterStatus, filterDiag, filterNotify, filterAnalytics, filterOwnerType, filterOrg, filterOwner, filterSearch]);
 
   // Drop selections that no longer match the active filter so the bulk
   // "Apply to N" count stays honest. Without this, admin could narrow the
@@ -1089,7 +1112,11 @@ export default function AdminDevices() {
               <div>
                 <p className="text-white font-mono text-sm font-bold">{serialDeviceCode}</p>
                 <p className="text-gray-400 text-xs">
-                  {DEVICE_CLASS[serialDeviceInfo?.deviceClass] || "Sensor"} | {SENSOR_TYPE[serialDeviceInfo?.sensorType] || "DIP"} | {serialDeviceInfo?.sensorCount || "?"} sensors
+                  {DEVICE_CLASS[serialDeviceInfo?.deviceClass] || "Sensor"}
+                  {HAS_SENSORS[serialDeviceInfo?.deviceClass] && <>
+                    {" | "}{SENSOR_TYPE[serialDeviceInfo?.sensorType] || "DIP"}
+                    {" | "}{serialDeviceInfo?.sensorCount || "?"} sensors
+                  </>}
                 </p>
               </div>
               <button onClick={registerSerialDevice} className="bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-green-700">
@@ -1185,7 +1212,13 @@ export default function AdminDevices() {
               <div className="flex items-center justify-between">
                 <div>
                   <p className="font-mono font-semibold text-sm">{d.deviceCode}</p>
-                  <p className="text-xs text-gray-500">{DEVICE_CLASS[d.deviceClass] || "?"} | {SENSOR_TYPE[d.sensorType] || "?"} | {d.sensorCount || 0} sensors</p>
+                  <p className="text-xs text-gray-500">
+                    {DEVICE_CLASS[d.deviceClass] || "?"}
+                    {HAS_SENSORS[d.deviceClass] && <>
+                      {" | "}{SENSOR_TYPE[d.sensorType] || "?"}
+                      {" | "}{d.sensorCount || 0} sensors
+                    </>}
+                  </p>
                   {d.macAddress && <p className="text-xs text-gray-400">MAC: {d.macAddress}</p>}
                 </div>
                 <button onClick={async () => {
@@ -1460,7 +1493,13 @@ export default function AdminDevices() {
                         {!devActive && <span className="text-xs bg-red-100 text-red-600 px-2 py-0.5 rounded-full">Inactive</span>}
                       </div>
                       <p className="font-mono text-xs text-gray-400">{d.deviceCode}</p>
-                      <p className="text-xs text-gray-500">{DEVICE_CLASS[d.deviceClass] || "?"} | {SENSOR_TYPE[d.sensorType] || "?"} | {d.sensorCount || 0} sensors</p>
+                      <p className="text-xs text-gray-500">
+                        {DEVICE_CLASS[d.deviceClass] || "?"}
+                        {HAS_SENSORS[d.deviceClass] && <>
+                          {" | "}{SENSOR_TYPE[d.sensorType] || "?"}
+                          {" | "}{d.sensorCount || 0} sensors
+                        </>}
+                      </p>
                     </div>
                     <div className="flex flex-wrap gap-1.5">
                       <button onClick={() => openDeviceViewer(d.deviceCode)} className="px-3 py-1.5 bg-cyan-50 text-cyan-700 rounded-lg text-xs hover:bg-cyan-100">View</button>
@@ -1494,7 +1533,13 @@ export default function AdminDevices() {
             <h3 className="font-bold text-lg mb-4">Register Device</h3>
             <div className="text-sm text-gray-600 mb-4">
               <p className="font-mono font-semibold">{registerModal.deviceCode}</p>
-              <p>{DEVICE_CLASS[registerModal.deviceClass]} | {SENSOR_TYPE[registerModal.sensorType]} | {registerModal.sensorCount} sensors</p>
+              <p>
+                {DEVICE_CLASS[registerModal.deviceClass]}
+                {HAS_SENSORS[registerModal.deviceClass] && <>
+                  {" | "}{SENSOR_TYPE[registerModal.sensorType]}
+                  {" | "}{registerModal.sensorCount} sensors
+                </>}
+              </p>
               {registerModal.installerName && (
                 <p className="mt-2 px-2 py-1.5 bg-blue-50 border border-blue-200 rounded text-xs text-blue-900">
                   <span className="font-semibold">Installer set name:</span> {registerModal.installerName}

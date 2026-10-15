@@ -5,7 +5,7 @@ import { useDebugMode } from "../context/DebugModeContext";
 import { useDevices } from "../hooks/useDevices";
 import { useDashboardAlertSound } from "../hooks/useDashboardAlertSound";
 import { useDebouncedAlerts } from "../hooks/useDebouncedAlerts";
-import { getOrgGroups, updateUserDoc, updateOrgGroup } from "../firebase/db";
+import { getOrgGroups, updateUserDoc, updateOrgGroup, unsubscribeFromDevice, removeDeviceFromOrg } from "../firebase/db";
 import DeviceCard from "../components/DeviceCard/DeviceCard";
 import DeviceAnalyticsModal from "../components/Analytics/DeviceAnalyticsModal";
 import NotificationPermissionBanner from "../components/NotificationPermissionBanner";
@@ -84,7 +84,7 @@ function applySavedOrder(devices, savedOrder) {
 
 export default function Dashboard() {
   const { user, userData, isOrgAdmin, isOrgMember } = useAuth();
-  const { devices, loading } = useDevices();
+  const { devices, loading, refresh: refreshDevices } = useDevices();
   const navigate = useNavigate();
 
   // Kiosk entry — confirmation prompt then hand off to /kiosk (which
@@ -270,8 +270,18 @@ export default function Dashboard() {
   // (newly subscribed) appears at the end automatically.
   const orderedDevices = applySavedOrder(filteredDevices, dashboardOrder);
 
-  // Count online/offline
+  // Count online/offline — device-class aware. Pumps (deviceClass=4)
+  // don't write /info/online + /info/lastSeen; they push /live on
+  // state change with a 20-sec min-gap rate limit AND a periodic
+  // heartbeat push every 4 min. 10-min freshness window catches a
+  // missed heartbeat cycle without flagging idle-but-healthy pumps
+  // as offline too eagerly. Sensors/valves/motors keep the classic
+  // 15-min /info/lastSeen check they already implement.
   const isDeviceOnline = (d) => {
+    if (d.info?.deviceClass === 4) {
+      const ts = d.live?.ts;
+      return ts ? (Date.now() - ts) < 600000 : false;   // 10 min
+    }
     const lastSeen = d.info?.lastSeen;
     const isStale = lastSeen ? (Date.now() - lastSeen) > 900000 : true;
     return d.info?.online && !isStale;
@@ -334,6 +344,48 @@ export default function Dashboard() {
     setGroups((prev) => prev.map((x) => x.groupId === groupId ? { ...x, deviceCodes: nextCodes } : x));
     try { await updateOrgGroup(orgId, groupId, { deviceCodes: nextCodes }); }
     catch (e) { console.error("Failed to remove from wing:", e); alert("Failed to remove — try again"); }
+  }
+
+  // Personal dashboard removal — different from wing removal (which just
+  // drops the tile from a group but keeps the device on other wings/the
+  // "All" tab). This one severs the user's subscription entirely so the
+  // tile disappears from their dashboard everywhere.
+  //   • Individual account → deletes subscriptions/{uid}/devices/{code}
+  //     plus its subscriber index. Only affects THIS user; other people
+  //     who also subscribe to the same device keep it. Reversible via
+  //     the "+ Add Device" flow.
+  //   • Org account (orgAdmin only) → removes the device from the org's
+  //     shared list (orgDevices/{orgId}/devices/{code}). Affects every
+  //     org member's dashboard since the org account has one shared
+  //     device list, not per-user subs.
+  // Catalog, RTDB (/live, /info, /history, /commands), and other users'
+  // subs are untouched — reversible without data loss.
+  async function removeDeviceFromDashboard(deviceCode, deviceName) {
+    const label = deviceName || deviceCode;
+    if (isOrg) {
+      if (!orgId) return;
+      if (!confirm(`Remove ${label} from ${userData?.orgName || "the organisation"}'s dashboard?\n\nThis affects every org member. Device data and history are preserved — a new orgAdmin can re-add the device later.`)) return;
+      try {
+        await removeDeviceFromOrg(orgId, deviceCode);
+        // Firestore delete doesn't trigger useDevices's listeners
+        // (those cover RTDB, not orgDevices). Explicit refresh so the
+        // tile disappears immediately instead of on next page load.
+        refreshDevices();
+      } catch (e) {
+        console.error("Failed to remove from org dashboard:", e);
+        alert("Failed to remove — try again");
+      }
+    } else {
+      if (!user) return;
+      if (!confirm(`Remove ${label} from your dashboard?\n\nDevice history and settings are preserved. You can re-add the device anytime.`)) return;
+      try {
+        await unsubscribeFromDevice(user.uid, deviceCode);
+        refreshDevices();
+      } catch (e) {
+        console.error("Failed to unsubscribe:", e);
+        alert("Failed to remove — try again");
+      }
+    }
   }
 
   async function commitAddToWing() {
@@ -604,6 +656,22 @@ export default function Dashboard() {
                 // the tile's <Link> navigation.
                 const activeGroup = groups.find((g) => g.groupId === filter);
                 const showRemoveX = activeGroup && isOrgAdmin && !locked;
+
+                // Personal dashboard-remove button — separate from wing
+                // remove. Visible when the dashboard is unlocked AND the
+                // viewer has the authority to remove this tile:
+                //   • Individual account → any user can remove their own
+                //     dashboard subscription. If they happen to be the
+                //     owner, unsubscribeFromDevice() cascades ownership
+                //     to the next-oldest subscriber automatically.
+                //   • Org account → only orgAdmin (matches wing-remove
+                //     permissioning; ordinary members can't restructure
+                //     the shared org device list)
+                // Rendered slightly left of the wing-remove button when
+                // both apply so they don't stack visually.
+                const canRemoveFromDashboard = !locked && (
+                  isOrg ? isOrgAdmin : !!user
+                );
                 return (
                   <SortableTile key={d.deviceCode} id={d.deviceCode} enabled={dragEnabled}>
                     <div className="relative group">
@@ -625,6 +693,29 @@ export default function Dashboard() {
                                      hover:bg-red-500 hover:text-white hover:ring-red-500"
                           title={`Remove from ${activeGroup.name}`}
                           aria-label={`Remove device from ${activeGroup.name}`}
+                        >
+                          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={3}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M20 12H4" />
+                          </svg>
+                        </button>
+                      )}
+                      {/* Dashboard-remove button — mirrors the wing-
+                          remove style so users learn ONE gesture ("hover
+                          reveals minus, click to remove"). Sits 8 px to
+                          the left of the wing button when both are shown
+                          so they don't overlap. Preserves the same
+                          hover-red confirm affordance. */}
+                      {canRemoveFromDashboard && (
+                        <button
+                          onClick={(e) => { e.preventDefault(); e.stopPropagation(); removeDeviceFromDashboard(d.deviceCode, d.deviceName); }}
+                          onMouseDown={(e) => e.stopPropagation()}
+                          style={{ right: showRemoveX ? "34px" : "6px" }}
+                          className="absolute top-1.5 z-10 w-[22px] h-[22px] rounded-full flex items-center justify-center shadow-sm transition-all
+                                     bg-white/80 text-gray-400 ring-1 ring-gray-300 opacity-40
+                                     group-hover:opacity-100
+                                     hover:bg-red-500 hover:text-white hover:ring-red-500"
+                          title="Remove from dashboard"
+                          aria-label="Remove device from dashboard"
                         >
                           <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={3}>
                             <path strokeLinecap="round" strokeLinejoin="round" d="M20 12H4" />

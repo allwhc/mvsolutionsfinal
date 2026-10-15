@@ -411,7 +411,15 @@ export default function Kiosk() {
   }
 
   // Online = has heartbeat within the last 15 min. Matches Dashboard.jsx.
+  // Device-class aware — pumps (deviceClass=4) push /live on state
+  // change + a periodic 4-min heartbeat. 10-min window catches one
+  // missed heartbeat cycle. Sensors/valves/motors keep the classic
+  // 15-min /info/lastSeen check they already implement.
   const isDeviceOnline = (d) => {
+    if (d.info?.deviceClass === 4) {
+      const ts = d.live?.ts;
+      return ts ? (Date.now() - ts) < 600000 : false;   // 10 min
+    }
     const lastSeen = d.info?.lastSeen;
     const isStale  = lastSeen ? (Date.now() - lastSeen) > 900000 : true;
     return d.info?.online && !isStale;

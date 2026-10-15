@@ -17,7 +17,9 @@ export function formatTimestamp(ts) {
 
 // Format cm → "X ft Y in" — shared with SensorCard callers so both
 // the tile stat pill and any inline label use the same rounding rule.
-function cmToFtIn(cm) {
+// Exported for reuse by PumpCard (v118 ultrasonic variant adds a
+// matching DEPTH stat pill using this same formatter).
+export function cmToFtIn(cm) {
   if (cm == null || !isFinite(cm) || cm < 0) return "";
   const totalInches = cm / 2.54;
   let ft = Math.floor(totalInches / 12);

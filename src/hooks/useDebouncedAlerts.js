@@ -33,13 +33,56 @@ export const DEBOUNCE_MS = 1 * 60 * 1000;
 
 // Raw alert-zone check — pure of any debouncing. Matches the semantics
 // Dashboard's SensorCard and Kiosk's isTankInAlert used before.
+//
+// Percentage source is device-class aware:
+//   • Sensor / valve / motor  → live.confirmedPct  (0-100 or null)
+//   • Pump (deviceClass=4)    → live.terracePct    when firmware
+//     publishes a continuous ultrasonic level, else the discrete
+//     terraceState enum mapped to 0/50/100 (empty/half/full).
+// Same alertLowPct/alertHighPct thresholds apply to both so nothing
+// downstream (notifications, sound, flash) has to branch by class.
 function isInAlertZone(d) {
-  const pct = d.live?.confirmedPct;
-  if (typeof pct !== "number") return false;
+  const isPump = d.info?.deviceClass === 4;
+  let pct;
+  if (isPump) {
+    const raw = d.live?.terracePct;
+    if (typeof raw === "number" && isFinite(raw)) {
+      pct = raw;
+    } else {
+      const s = d.live?.terraceState;
+      pct = s === "full" ? 100 : s === "half" ? 50 : s === "empty" ? 0 : null;
+    }
+  } else {
+    pct = d.live?.confirmedPct;
+  }
   const lo = d.alertLowPct;
   const hi = d.alertHighPct;
-  if (lo != null && lo !== "" && pct <= Number(lo)) return true;
-  if (hi != null && hi !== "" && pct >= Number(hi)) return true;
+  if (typeof pct === "number") {
+    if (lo != null && lo !== "" && pct <= Number(lo)) return true;
+    if (hi != null && hi !== "" && pct >= Number(hi)) return true;
+  }
+
+  // Pump-only extras — source-dry and pump-fault flags. Each is opt-in
+  // via a separate catalog boolean so users can enable exactly the
+  // categories they care about. All feed the same debounced "in alert"
+  // signal so downstream (flash, beep, push) treats them uniformly.
+  if (isPump) {
+    const src        = d.live?.sourceState;                    // "wet" | "dry"
+    const pumpState  = d.live?.pumpState;                      // "off"/"auto"/"manual"/"fault"/…
+    const pumpStage  = d.live?.pumpStage;                      // "SAFE_MODE" / "DRY_RUN_RECOVERY" / …
+    const causeLast  = d.live?.lastCauseEnd;                   // firmware sets on each pump_off event
+    // Source dry (with pump attempting to run) — the impeller-protection
+    // scenario the user called out. Only flags when the pump is
+    // actually trying to move water, not just idle-source-dry.
+    if (d.alertSourceDry && src === "dry" && (pumpState === "auto" || pumpState === "manual" || pumpState === "starting")) return true;
+    // Firmware-detected dry_run event on the last completed run.
+    if (d.alertPumpDryRun && causeLast === "dry_run") return true;
+    // Firmware-detected max_runtime event on the last completed run.
+    if (d.alertPumpMaxRuntime && causeLast === "max_runtime") return true;
+    // Persistent SAFE_MODE lockout — stays flagged until the customer clears it.
+    if (d.alertPumpSafeMode && pumpStage === "SAFE_MODE") return true;
+  }
+
   return false;
 }
 

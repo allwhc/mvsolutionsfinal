@@ -52,7 +52,22 @@ function playBeep(severity) {
 // alertLowPct / alertHighPct come from the subscription doc and are
 // undefined/null when the user never opened the Alert Settings panel.
 function severityFor(d) {
-  const pct = d.live?.confirmedPct;
+  // Pump devices publish terracePct (or the terraceState enum) instead
+  // of confirmedPct — mirror the pump-aware branch in useDebouncedAlerts
+  // so pump-alert configs actually trigger the beep.
+  const isPump = d.info?.deviceClass === 4;
+  let pct;
+  if (isPump) {
+    const raw = d.live?.terracePct;
+    if (typeof raw === "number" && isFinite(raw)) {
+      pct = raw;
+    } else {
+      const s = d.live?.terraceState;
+      pct = s === "full" ? 100 : s === "half" ? 50 : s === "empty" ? 0 : null;
+    }
+  } else {
+    pct = d.live?.confirmedPct;
+  }
   if (typeof pct !== "number") return null;
   const low  = d.alertLowPct;
   const high = d.alertHighPct;

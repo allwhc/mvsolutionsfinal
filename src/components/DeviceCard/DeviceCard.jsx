@@ -1,8 +1,10 @@
 import SensorCard from "./SensorCard";
 import ValveCard from "./ValveCard";
 import MotorCard from "./MotorCard";
+import PumpCard from "./PumpCard";
 
-// deviceClass: 1=valve, 2=sensor, 3=motor, "senseflowstandard"=tank controller
+// deviceClass: 1=valve, 2=sensor, 3=motor, 4=pump (panel controller),
+//              "senseflowstandard"=tank controller
 export default function DeviceCard({ deviceCode, deviceName, live, info, catalog, isOnline, lastCleanedAt, cleanIntervalDays, tankCapacityLitres, alertLowPct, alertHighPct, valveAlertOpenHours, valveAlertClosedHours, onOpenAnalytics }) {
   const deviceClass = info?.deviceClass ?? catalog?.deviceClass ?? 2;
 
@@ -10,7 +12,6 @@ export default function DeviceCard({ deviceCode, deviceName, live, info, catalog
 
   // SenseFlow Standard — use MotorCard if present, otherwise SensorCard with level info
   if (deviceClass === "senseflowstandard") {
-    // Shim live data for SensorCard: levelPct -> confirmedPct
     const sfsLive = live ? { ...live, confirmedPct: live.levelPct, stateVal: live.motorState ? 1 : 0 } : live;
     return <SensorCard {...props} live={sfsLive} />;
   }
@@ -20,6 +21,8 @@ export default function DeviceCard({ deviceCode, deviceName, live, info, catalog
       return <ValveCard {...props} />;
     case 3:
       return <MotorCard {...props} />;
+    case 4:
+      return <PumpCard {...props} />;
     case 2:
     default:
       return <SensorCard {...props} />;

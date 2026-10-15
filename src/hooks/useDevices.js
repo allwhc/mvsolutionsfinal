@@ -8,6 +8,12 @@ export function useDevices() {
   const { user, userData } = useAuth();
   const [devices, setDevices] = useState([]);
   const [loading, setLoading] = useState(true);
+  // Bump this to force a full refetch of subscriptions/orgDevices. Used
+  // when the caller performs an action that doesn't flow through the
+  // RTDB listeners (e.g. adding/removing a subscription in Firestore).
+  // Live device data still updates via the RTDB listeners without
+  // touching this counter.
+  const [refreshKey, setRefreshKey] = useState(0);
   // Route based on account type: org accounts read from the org's shared
   // device list (all members see the same devices, no per-user subscribe);
   // individual accounts read from their personal subscriptions.
@@ -79,6 +85,13 @@ export function useDevices() {
           tankCapacityLitres:  catalog?.tankCapacityLitres  ?? sub.tankCapacityLitres  ?? 0,
           alertLowPct:         catalog?.alertLowPct         ?? sub.alertLowPct         ?? null,
           alertHighPct:        catalog?.alertHighPct        ?? sub.alertHighPct        ?? null,
+          // Pump-only alert flags — booleans on catalog. Forwarded here
+          // so useDebouncedAlerts can evaluate them uniformly with the
+          // pct thresholds. Missing = false (opt-in).
+          alertSourceDry:      catalog?.alertSourceDry      ?? false,
+          alertPumpDryRun:     catalog?.alertPumpDryRun     ?? false,
+          alertPumpMaxRuntime: catalog?.alertPumpMaxRuntime ?? false,
+          alertPumpSafeMode:   catalog?.alertPumpSafeMode   ?? false,
           lastCleanedAt:       catalog?.lastCleanedAt       ?? sub.lastCleanedAt       ?? null,
           cleanIntervalDays:   catalog?.cleanIntervalDays   ?? sub.cleanIntervalDays   ?? 30,
           live: null,
@@ -102,7 +115,13 @@ export function useDevices() {
       document.removeEventListener("visibilitychange", onVisibilityChange);
       detachListeners();
     };
-  }, [user, orgId]);
+  }, [user, orgId, refreshKey]);
 
-  return { devices, loading };
+  // Callers use refresh() after any Firestore write that changes the
+  // subscription set (unsubscribe, subscribe, org add/remove). The RTDB
+  // listeners don't cover those — Firestore has no equivalent onSnapshot
+  // wired up in this hook — so we do a manual re-read on demand.
+  const refresh = () => setRefreshKey((k) => k + 1);
+
+  return { devices, loading, refresh };
 }

@@ -345,6 +345,22 @@ export async function getDevicesInfoMap(deviceCodes) {
   return Object.fromEntries(entries);
 }
 
+// Batch-read /live for a set of devices. Only used by admin surfaces
+// where we need /live.ts freshness for the online check (pumps don't
+// write /info/online + /info/lastSeen, so /info alone can't tell us
+// if they're currently talking to the cloud). One-shot get() per code
+// so this is one round-trip per device — safe for admin-scale fleets
+// of a few dozen. Do NOT call from the customer dashboard.
+export async function getDevicesLiveMap(deviceCodes) {
+  const entries = await Promise.all(
+    deviceCodes.map(async (code) => {
+      const snap = await get(ref(rtdb, `devices/${code}/live`));
+      return [code, snap.exists() ? snap.val() : null];
+    })
+  );
+  return Object.fromEntries(entries);
+}
+
 // Send an OTA trigger to one or many devices in a single multi-path update.
 // devicesWithSchedule = [{ deviceCode, scheduledAt }]
 // scheduledAt is epoch seconds (0 = now)
@@ -366,5 +382,77 @@ export async function sendOtaTrigger({ devicesWithSchedule, url, version, md5 })
 export async function cancelOtaTrigger(deviceCode) {
   await update(ref(rtdb, `devices/${deviceCode}/config`), {
     otaTrigger: false,
+  });
+}
+
+// ─── Pump-panel Settings tab helpers ───────────────────────────────
+// One-shot read of the panel's current /config node. Called on Panel
+// Settings tab open — pairs with the /info listener the Live tab
+// already maintains (for the appliedConfig echo) so no extra listener.
+export async function getPanelConfig(deviceCode) {
+  const snap = await get(ref(rtdb, `devices/${deviceCode}/config`));
+  return snap.exists() ? snap.val() : {};
+}
+
+// Atomic multi-field save with a fresh savedAt timestamp. Firmware's
+// checkCloudConfig() picks this up on its next 60-sec poll, validates
+// every field against on-device limits (same as our client-side
+// panelConfigValidation.js), persists to NVS, and writes appliedAt =
+// savedAt back to /info/appliedConfig on success. UI compares the two
+// timestamps to render the per-field ✓/⏳ pill.
+//
+// v117.0.10+: also increments /config/_v (version counter). Firmware
+// polls just _v (~15 B) instead of the full /config JSON (~500 B) on
+// each 60-sec tick — full fetch only when _v changed. Cuts steady-
+// state config-poll bandwidth by ~30×.
+//
+// Version increment is done via a transaction so concurrent saves from
+// two admins can't collide on the same version number. We fetch the
+// current _v, add 1, and include it in the same atomic update() so
+// firmware sees savedAt + _v flip together (no half-applied read).
+export async function savePanelConfig(deviceCode, fields) {
+  const nowSec = Math.floor(Date.now() / 1000);
+  // Read current version (returns null when key doesn't exist yet).
+  // Missing = start at 1; existing = increment. Small extra read is
+  // dwarfed by the write, and only fires on the rare Save action.
+  const vSnap = await get(ref(rtdb, `devices/${deviceCode}/config/_v`));
+  const nextV = ((vSnap.exists() ? vSnap.val() : 0) || 0) + 1;
+  await update(ref(rtdb, `devices/${deviceCode}/config`), {
+    ...fields,
+    savedAt: nowSec,
+    _v: nextV,
+  });
+  return nowSec;
+}
+
+// Force-run pump from cloud. Firmware watches /commands/forceRunMinutes
+// (already handled by the v117.0.1 command dispatcher). Value = minutes,
+// or -1 for "until tank full". Firmware clears the command node once it
+// acts, so leaving the write here is safe — customer can't accidentally
+// re-trigger by refreshing the page.
+export async function forceRunPump(deviceCode, minutes) {
+  await update(ref(rtdb, `devices/${deviceCode}/commands`), {
+    forceRunMinutes: minutes,
+    forceRunRequestedAt: Math.floor(Date.now() / 1000),
+  });
+}
+
+// Stop an in-progress force run early. Firmware's checkCloudCommands()
+// handles forceRunStop symmetrically with forceRunMinutes.
+export async function stopForceRunPump(deviceCode) {
+  await update(ref(rtdb, `devices/${deviceCode}/commands`), {
+    forceRunStop: true,
+    forceRunStopRequestedAt: Math.floor(Date.now() / 1000),
+  });
+}
+
+// v118.0.7: cloud equivalent of the AP page's "CLEAR ERROR & RESUME"
+// button. Firmware clears all fault state (dry-run, panel fault, safe
+// mode, feedback fault) and returns to normal/idle. Command is a bool
+// flag the firmware consumes + resets.
+export async function clearPumpFault(deviceCode) {
+  await update(ref(rtdb, `devices/${deviceCode}/commands`), {
+    clearFault: true,
+    clearFaultRequestedAt: Math.floor(Date.now() / 1000),
   });
 }

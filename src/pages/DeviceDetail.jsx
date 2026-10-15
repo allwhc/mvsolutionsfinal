@@ -12,6 +12,7 @@ import { db } from "../firebase/config";
 import { sendRefreshCommand, sendRestartCommand, sendTestCommand, sendValveCommand, listenToValveConfig, setValveConfig, sfsSetAutoMode, sfsForcePumpRun, listenToSfsLogs, getDeviceBootLog, getDeviceDiagnosticsNow, requestDiagnosticsRefresh, requestDiagnosticsClear, sendUpdateGeometry } from "../firebase/rtdb";
 import DeviceCard from "../components/DeviceCard/DeviceCard";
 import AnalyticsChart, { generateCSV, downloadCSV } from "../components/Analytics/AnalyticsChart";
+import PumpDetail from "./PumpDetail";
 import { useDebugMode } from "../context/DebugModeContext";
 import { resolveLevel } from "../utils/resolveLevel";
 
@@ -102,8 +103,27 @@ function cmToFtIn(cm) {
   return `${ft} ft ${inches} in`;
 }
 
+// Top-level dispatcher — reads deviceClass from RTDB info/ and picks the
+// right detail-page component. Splitting this from the giant original
+// implementation keeps React hooks stable (all-or-nothing mount) — the
+// prior in-body dispatch violated rules-of-hooks.
+//
+// The dispatcher owns the single useDevice(code) subscription and passes
+// its results down as props. Both branches (PumpDetail and
+// SensorValveMotorDetail) receive the same live/info/isOnline tree —
+// this avoids the naive pattern where the inner branch would attach a
+// SECOND useDevice() to the same paths, doubling per-render work and
+// listener callbacks on every live push.
 export default function DeviceDetail() {
   const { code } = useParams();
+  const { live, info, isOnline } = useDevice(code);
+  if ((info?.deviceClass ?? 0) === 4 || info?.kind === "pump") {
+    return <PumpDetail code={code} live={live} info={info} isOnline={isOnline} />;
+  }
+  return <SensorValveMotorDetail code={code} live={live} info={info} isOnline={isOnline} />;
+}
+
+function SensorValveMotorDetail({ code, live, info, isOnline }) {
   const { user, userData, isSuperAdmin, isOrgAdmin, isOrgMember } = useAuth();
   const orgId = userData?.orgId || null;
   // Org role — only orgAdmin can rename or remove org-owned devices.
@@ -127,7 +147,10 @@ export default function DeviceDetail() {
   }, [isOrg, orgId]);
   const currentWing = wings.find((w) => (w.deviceCodes || []).includes(code));
   const { debugMode } = useDebugMode();
-  const { live, info, isOnline } = useDevice(code);
+  // live/info/isOnline arrive as props from the DeviceDetail dispatcher
+  // above, which owns the single useDevice(code) subscription for both
+  // pump and non-pump branches. Adding a second useDevice() here would
+  // double-attach listeners to the same live/info paths on every render.
   const [catalog, setCatalog] = useState(null);
   const [loading, setLoading] = useState(true);
   const [isOwner, setIsOwner] = useState(false);
