@@ -129,7 +129,7 @@ function downloadWindowCSV({ tankPoints, pumpRuns, sourceSegments, tMin, tMax, d
   URL.revokeObjectURL(url);
 }
 
-export default function UnifiedTimelineChart({ history, live, deviceLabel, tankVolumeL }) {
+export default function UnifiedTimelineChart({ history, live, deviceLabel, tankVolumeL, hasSource = true }) {
   const [rangeKey, setRangeKey] = useState("24h");
   // v118.0.6: "Show raw points" toggle — when ON, overlay a dot at
   // every actual history data point so customer can see where readings
@@ -250,7 +250,8 @@ export default function UnifiedTimelineChart({ history, live, deviceLabel, tankV
               tankPoints={tankPoints}
               tankLiveAnchor={tankLiveAnchor}
               pumpRuns={pumpRuns}
-              sourceSegments={sourceSegments}
+              sourceSegments={hasSource ? sourceSegments : []}
+              hasSource={hasSource}
               tMin={tMin}
               tMax={tMax}
               showRaw={showRaw}
@@ -258,7 +259,7 @@ export default function UnifiedTimelineChart({ history, live, deviceLabel, tankV
               onSelectRun={setSelectedRunIdx}
               selectedRunIdx={selectedRunIdx}
             />
-            <Legend showRaw={showRaw} />
+            <Legend showRaw={showRaw} hasSource={hasSource} />
             {selectedRunIdx != null && pumpRuns[selectedRunIdx] && (
               <PumpRunDetailCard
                 run={pumpRuns[selectedRunIdx]}
@@ -424,7 +425,16 @@ function PumpRunDetailCard({ run, tankPoints, tankLiveAnchor, tankVolumeL, onClo
                    ? Math.round((deltaPct / 100) * tankVolumeL)
                    : null;
   const hours    = durationSec / 3600;
-  const litresPerHour = (litres != null && hours > 0) ? Math.round(litres / hours) : null;
+  const minutes  = durationSec / 60;
+  const litresPerHour   = (litres != null && hours > 0)   ? Math.round(litres / hours)   : null;
+  // v118.0.13: L/min alongside L/h — more intuitive for small tanks (6
+  // L/min reads better than 360 L/h). One decimal when < 10 so slow
+  // fills (0.5 L/min) stay useful. Both shown; operator picks whichever
+  // framing clicks.
+  const litresPerMin    = (litres != null && minutes > 0) ? (litres / minutes)           : null;
+  const litresPerMinStr = litresPerMin == null ? null
+                          : (litresPerMin >= 10 ? Math.round(litresPerMin).toString()
+                                                 : litresPerMin.toFixed(1));
   return (
     <div className="mt-4 bg-blue-50 border border-blue-200 rounded-xl p-4">
       <div className="flex items-start justify-between gap-2">
@@ -451,8 +461,10 @@ function PumpRunDetailCard({ run, tankPoints, tankLiveAnchor, tankVolumeL, onClo
         />
         <Metric
           label="Fill rate"
-          value={litresPerHour != null ? `${litresPerHour.toLocaleString()} L/h` : "—"}
-          sub={run.cause ? `cause: ${run.cause}` : null}
+          value={litresPerMinStr != null ? `${litresPerMinStr} L/min` : "—"}
+          sub={litresPerHour != null
+                 ? `${litresPerHour.toLocaleString()} L/h${run.cause ? ` · cause: ${run.cause}` : ""}`
+                 : (run.cause ? `cause: ${run.cause}` : null)}
         />
       </div>
     </div>
@@ -468,7 +480,7 @@ function Metric({ label, value, sub }) {
   );
 }
 
-function Legend({ showRaw }) {
+function Legend({ showRaw, hasSource = true }) {
   return (
     <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-600">
       <div className="flex items-center gap-1.5">
@@ -492,14 +504,18 @@ function Legend({ showRaw }) {
         <span className="inline-block w-4 h-3 rounded-sm" style={{ backgroundColor: "#fcd34d", opacity: 0.6 }} />
         <span>Pump running</span>
       </div>
-      <div className="flex items-center gap-1.5">
-        <span className="inline-block w-3 h-3 rounded-sm" style={{ backgroundColor: "#22c55e" }} />
-        <span>Source water present</span>
-      </div>
-      <div className="flex items-center gap-1.5">
-        <span className="inline-block w-3 h-3 rounded-sm" style={{ backgroundColor: "#ef4444" }} />
-        <span>Source dry</span>
-      </div>
+      {hasSource && (
+        <>
+          <div className="flex items-center gap-1.5">
+            <span className="inline-block w-3 h-3 rounded-sm" style={{ backgroundColor: "#22c55e" }} />
+            <span>Source water present</span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <span className="inline-block w-3 h-3 rounded-sm" style={{ backgroundColor: "#ef4444" }} />
+            <span>Source dry</span>
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -761,7 +777,7 @@ function splitHistory(history, windowHours, zoomWindow, live) {
 //   260..278 → source strip
 //
 // Padding: 40 on left (y-labels), 12 on right.
-function ChartCanvas({ tankPoints, tankLiveAnchor, pumpRuns, sourceSegments, tMin, tMax, showRaw, tankVolumeL, onSelectRun, selectedRunIdx }) {
+function ChartCanvas({ tankPoints, tankLiveAnchor, pumpRuns, sourceSegments, tMin, tMax, showRaw, tankVolumeL, onSelectRun, selectedRunIdx, hasSource = true }) {
   const W = 1000;
   const PADL = 88;     // wide gutter so "Source"/"Pump" 18px labels fit clearly
   const PADR = 20;
@@ -1049,30 +1065,37 @@ function ChartCanvas({ tankPoints, tankLiveAnchor, pumpRuns, sourceSegments, tMi
           );
         })}
 
-        {/* Source strip — green/red segments */}
-        <text x={PADL - 10} y={SRC_TOP + 20} fontSize="18" fontWeight="700" fill="#374151" textAnchor="end">Source</text>
-        {sourceSegments.map((s, i) => {
-          const x1 = xFor(s.start);
-          const x2 = xFor(s.end);
-          const w = Math.max(x2 - x1, 1);
-          const fill = s.wet ? "#22c55e" : "#ef4444";
-          // v118.0.6: visual distinction between actual + interpolated
-          // only in showRaw mode. Clean mode shows a uniform strip.
-          const dim = showRaw && s.interpolated;
-          return (
-            <rect
-              key={`s-${i}`}
-              x={x1} y={SRC_TOP} width={w} height={SRC_BOT - SRC_TOP}
-              fill={fill}
-              opacity={dim ? "0.45" : "0.85"}
-              strokeDasharray={dim ? "4,3" : ""}
-              stroke={dim ? fill : "none"}
-              strokeWidth={dim ? "1" : "0"}
-            >
-              <title>{`Source ${s.wet ? "present" : "dry"} — ${new Date(s.start).toLocaleString()} to ${new Date(s.end).toLocaleString()}${(showRaw && s.interpolated) ? " (interpolated)" : ""}`}</title>
-            </rect>
-          );
-        })}
+        {/* Source strip — green/red segments. v118.0.13: hidden entirely
+            when the panel has no source sensor configured (hasSource=false)
+            so we don't render a misleading full-width band from the
+            "water presumed available" firmware default. */}
+        {hasSource && (
+          <>
+            <text x={PADL - 10} y={SRC_TOP + 20} fontSize="18" fontWeight="700" fill="#374151" textAnchor="end">Source</text>
+            {sourceSegments.map((s, i) => {
+              const x1 = xFor(s.start);
+              const x2 = xFor(s.end);
+              const w = Math.max(x2 - x1, 1);
+              const fill = s.wet ? "#22c55e" : "#ef4444";
+              // v118.0.6: visual distinction between actual + interpolated
+              // only in showRaw mode. Clean mode shows a uniform strip.
+              const dim = showRaw && s.interpolated;
+              return (
+                <rect
+                  key={`s-${i}`}
+                  x={x1} y={SRC_TOP} width={w} height={SRC_BOT - SRC_TOP}
+                  fill={fill}
+                  opacity={dim ? "0.45" : "0.85"}
+                  strokeDasharray={dim ? "4,3" : ""}
+                  stroke={dim ? fill : "none"}
+                  strokeWidth={dim ? "1" : "0"}
+                >
+                  <title>{`Source ${s.wet ? "present" : "dry"} — ${new Date(s.start).toLocaleString()} to ${new Date(s.end).toLocaleString()}${(showRaw && s.interpolated) ? " (interpolated)" : ""}`}</title>
+                </rect>
+              );
+            })}
+          </>
+        )}
 
         {/* Vertical gridlines + X-axis ticks + labels */}
         {xTicks.map((ts, i) => {

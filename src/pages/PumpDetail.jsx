@@ -169,13 +169,41 @@ function LiveSchematic({ code, live, info, catalog }) {
         )}
       </div>
 
-      {/* v118.0.7: Clear Fault button — only shown when a clearable
-          fault condition is active. Mirrors the AP page's "CLEAR
-          ERROR & RESUME" affordance so operators don't need to walk
-          to the panel just to acknowledge a stuck-contactor alarm. */}
-      {(feedbackFault || live?.pumpState === "panel_fault" || live?.pumpState === "safe_mode" || live?.pumpState === "dry_run_recovery") && (
-        <ClearFaultButton code={code} />
-      )}
+      {/* v118.0.13: operMode banner + Clear Fault. operMode is published
+          by firmware 118.0.13+ on /live and distinguishes the broader
+          operational modes (dry run recovery, safe mode, source dry
+          run, panel fault, schedule inactive) that the pumpState enum
+          collapses into "off". Fallback for pre-0.13 firmware: use
+          pumpState + feedbackFault flag. */}
+      {(() => {
+        const operMode = live?.operMode;
+        // Fault modes that benefit from a Clear Fault button (per Vishal).
+        const clearableFault = (operMode === "safe_mode" || operMode === "panel_fault" || operMode === "source_dry_run")
+          || (!operMode && (feedbackFault || live?.pumpState === "panel_fault" || live?.pumpState === "safe_mode"));
+        // All operMode states (including non-fault like schedule_inactive, dry_run_recovery)
+        // that are worth surfacing to the user with a banner.
+        const banners = {
+          dry_run_recovery:  { bg: "bg-amber-50 border-amber-200 text-amber-800",   icon: "🔄", title: "Dry run — retrying",          body: "Pump stopped: water level didn't rise during the last fill. Will retry automatically." },
+          safe_mode:         { bg: "bg-red-50 border-red-200 text-red-800",         icon: "🛟", title: "Safe mode",                   body: "Pump halted after repeated dry-run attempts. Clear the fault to resume." },
+          source_dry_run:    { bg: "bg-blue-50 border-blue-200 text-blue-800",      icon: "💧", title: "Source dry",                  body: "Source water not available. Pump will retry when source returns, or clear to resume now." },
+          panel_fault:       { bg: "bg-red-50 border-red-200 text-red-800",         icon: "⚠",  title: "Panel fault",                 body: "Contactor feedback error. Check wiring, then clear the fault." },
+          schedule_inactive: { bg: "bg-indigo-50 border-indigo-200 text-indigo-800",icon: "⏰", title: "Outside schedule window",     body: "Pump paused — not inside any active schedule window right now." },
+          sensor_offline:    { bg: "bg-purple-50 border-purple-200 text-purple-800",icon: "📡", title: "Sensor offline",              body: "Ultrasonic sensor not responding. Pump safety-stopped until a valid reading returns." },
+        };
+        const banner = banners[operMode];
+        if (!banner && !clearableFault && !feedbackFault) return null;
+        return (
+          <div className="mb-3 space-y-2">
+            {banner && (
+              <div className={`border rounded-lg p-3 ${banner.bg}`}>
+                <div className="font-semibold text-sm mb-0.5">{banner.icon} {banner.title}</div>
+                <div className="text-xs opacity-90">{banner.body}</div>
+              </div>
+            )}
+            {clearableFault && <ClearFaultButton code={code} />}
+          </div>
+        );
+      })()}
 
       {/* Schematic at 1.5× scale — fits detail page without dwarfing */}
       <div

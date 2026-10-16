@@ -91,6 +91,7 @@ export default function AnalyticsTab({ code, history, analyticsOn, catalog, info
         live={live}
         deviceLabel={catalog?.customName || catalog?.code || code}
         tankVolumeL={info?.appliedConfig?.tankVolume || catalog?.tankVolume}
+        hasSource={info?.hasSource ?? live?.hasSource ?? false}
       />
 
       {/* ═══ USAGE ═══ */}

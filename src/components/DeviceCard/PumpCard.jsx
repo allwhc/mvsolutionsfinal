@@ -459,6 +459,27 @@ export default function PumpCard({ deviceCode, deviceName, live, info, catalog, 
         {feedbackFault && (
           <span className="text-[10px] text-red-600 font-medium">⚠ feedback fault</span>
         )}
+        {/* v118.0.13: compact operMode chip for fault-ish modes so the
+            dashboard reflects dry-run / safe-mode / source-dry without
+            needing to open the PumpDetail page. normal/idle/manual_override
+            are hidden — the main pump pill already covers those. */}
+        {(() => {
+          const operMode = live?.operMode;
+          const chips = {
+            dry_run_recovery:  { bg: "bg-amber-50 border-amber-200 text-amber-700",     label: "🔄 Dry run · retrying" },
+            safe_mode:         { bg: "bg-red-50 border-red-200 text-red-700",           label: "🛟 Safe mode" },
+            source_dry_run:    { bg: "bg-blue-50 border-blue-200 text-blue-700",        label: "💧 Source dry" },
+            panel_fault:       { bg: "bg-red-50 border-red-200 text-red-700",           label: "⚠ Panel fault" },
+            sensor_offline:    { bg: "bg-purple-50 border-purple-200 text-purple-700",  label: "📡 Sensor offline" },
+          };
+          const chip = chips[operMode];
+          if (!chip) return null;
+          return (
+            <span className={`inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full border ${chip.bg}`}>
+              {chip.label}
+            </span>
+          );
+        })()}
       </div>
 
       {/* Schematic — CSS grid with explicit tracks */}

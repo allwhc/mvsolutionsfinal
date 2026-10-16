@@ -21,7 +21,7 @@ export const GRACE_PERIOD_TENS_CHOICES = [4, 6, 12, 18, 24, 30, 42, 60];        
 export const RETRY_WAIT_CHOICES        = [1, 2, 3, 5, 7, 10, 15];                    // "Wait Between Retries" (source)
 export const MAX_RETRY_CHOICES         = [1, 2, 3, 4, 5];                            // 1-5 (source retries)
 export const MAX_DRY_RUN_CHOICES       = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];            // 1-10 (dry-run retries, extended v118.0.9)
-export const SMART_CHECK_MINS_CHOICES  = [1, 2, 3, 5, 10, 15];                       // smart dry-run check window
+export const SMART_CHECK_MINS_CHOICES  = [1, 2, 3, 5, 10, 15, 20, 30, 60];           // smart dry-run check window (v118.0.13: added 20/30/60 for very tall tanks)
 export const SMART_MIN_PCT_CHOICES     = [1, 2, 3, 5, 10];                           // smart dry-run minimum rise
 export const DETECTION_MODE_CHOICES    = [
   { value: 0, label: "Pre-Detection (detect water first, then start motor)" },
@@ -169,7 +169,9 @@ export const VALIDATORS = {
   smartDryRunCheckMins: (v) => {
     const n = Number(v);
     if (!Number.isInteger(n)) return "Must be a whole number";
-    if (n < 1 || n > 15) return "Must be 1–15 minutes";
+    // v118.0.13: range extended 1-15 → 1-60 for very tall tanks that
+    // physically need 20-60 min between measurable level changes.
+    if (n < 1 || n > 60) return "Must be 1–60 minutes";
     return null;
   },
   smartDryRunMinPct: (v) => {
