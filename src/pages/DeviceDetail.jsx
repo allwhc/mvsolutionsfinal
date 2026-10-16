@@ -192,6 +192,13 @@ function SensorValveMotorDetail({ code, live, info, isOnline }) {
   const [geoSuctionInput,  setGeoSuctionInput]  = useState("");
   const [geoSending,       setGeoSending]       = useState(false);
   const [geoError,         setGeoError]         = useState("");
+  // v118.0.13: non-blocking warning (orange, below input). Used when
+  // the value is PHYSICALLY VALID but risky for most sensor types —
+  // e.g. overflow < 28 cm trips the one-eye ultrasonic's dead zone.
+  // Two-eye sensors have a 5 cm dead zone so still want the lower
+  // bound at 5, but should see a nudge if they picked a value only
+  // two-eye hardware can handle.
+  const [geoWarn,          setGeoWarn]          = useState("");
   const [valveAlertOpenHours, setValveAlertOpenHours] = useState("");
   const [valveAlertClosedHours, setValveAlertClosedHours] = useState("");
   const [sfsLogs, setSfsLogs] = useState([]);
@@ -389,6 +396,7 @@ function SensorValveMotorDetail({ code, live, info, isOnline }) {
   // that's the visible ACK.
   async function handleSendGeometry() {
     setGeoError("");
+    setGeoWarn("");
     // Basic front-side validation matching firmware bounds so the
     // admin isn't confused when firmware silently rejects.
     const tank = geoTankInput === "" ? null : Number(geoTankInput);
@@ -401,12 +409,25 @@ function SensorValveMotorDetail({ code, live, info, isOnline }) {
     // Use edited tank or current /info value for overflow/suction
     // bounds check (whichever the device will end up with).
     const effectiveTank = tank ?? Number(info?.tankHeightCm) ?? 100;
-    if (ovfl != null && ovfl !== 0 && (ovfl < 35 || ovfl >= effectiveTank - 10)) {
-      setGeoError(`Overflow must be 0 or between 35 and ${Math.floor(effectiveTank - 10)} cm.`);
+    // v118.0.13: lowered hard-minimum 35 → 5 cm. Two-eye ultrasonic
+    // sensors have a 5 cm dead zone (physical minimum); one-eye
+    // sensors need 28 cm. Hard-block below 5 (sensor physically can't
+    // read); soft-warn below 28 so one-eye installs get flagged.
+    // Two-eye installs with legit tight clearances (5-27 cm) can
+    // acknowledge the warning and proceed.
+    if (ovfl != null && ovfl !== 0 && (ovfl < 5 || ovfl >= effectiveTank - 10)) {
+      setGeoError(`Overflow must be 0 or between 5 and ${Math.floor(effectiveTank - 10)} cm.`);
       return;
     }
-    if (suct != null && suct !== 0 && (suct <= 0 || suct >= effectiveTank - 35)) {
-      setGeoError(`Suction must be 0 or between 1 and ${Math.floor(effectiveTank - 36)} cm.`);
+    if (ovfl != null && ovfl !== 0 && ovfl < 28) {
+      setGeoWarn(`⚠ Overflow ${ovfl} cm is below the 28 cm safe minimum for one-eye ultrasonic sensors. OK only if this install uses a two-eye sensor (5 cm dead zone).`);
+      // Non-blocking — continue the save
+    }
+    // v118.0.13: suction upper bound derived from the same 5 cm overflow
+    // dead-zone minimum. Lets installers configure tight overhead-tank
+    // suction heights that previously got rejected.
+    if (suct != null && suct !== 0 && (suct <= 0 || suct >= effectiveTank - 5)) {
+      setGeoError(`Suction must be 0 or between 1 and ${Math.floor(effectiveTank - 6)} cm.`);
       return;
     }
     setGeoSending(true);
@@ -615,6 +636,7 @@ function SensorValveMotorDetail({ code, live, info, isOnline }) {
                   <span className="text-gray-500"></span>
                   <span className="flex flex-col gap-1 text-xs">
                     {geoError && <span className="text-red-600">{geoError}</span>}
+                    {geoWarn  && <span className="text-amber-700">{geoWarn}</span>}
                     <span className="text-gray-400">
                       Leave blank to keep current value. Applies to device within ~30 sec.
                       {!isOnline && " Device is offline — will apply on next reconnect."}
@@ -628,7 +650,7 @@ function SensorValveMotorDetail({ code, live, info, isOnline }) {
                         {geoSending ? "Sending…" : "Send to Device"}
                       </button>
                       <button
-                        onClick={() => { setEditingGeometry(false); setGeoError(""); }}
+                        onClick={() => { setEditingGeometry(false); setGeoError(""); setGeoWarn(""); }}
                         className="text-gray-500 hover:text-gray-700 text-xs"
                       >
                         Cancel
@@ -658,6 +680,7 @@ function SensorValveMotorDetail({ code, live, info, isOnline }) {
                           setGeoOverflowInput(ovfl > 0 ? Math.round(ovfl).toString() : "");
                           setGeoSuctionInput(suct > 0 ? Math.round(suct).toString() : "");
                           setGeoError("");
+                          setGeoWarn("");
                           setEditingGeometry(true);
                         }}
                         className="text-xs text-blue-600 hover:underline"
