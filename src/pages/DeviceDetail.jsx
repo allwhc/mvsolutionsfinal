@@ -222,6 +222,43 @@ function SensorValveMotorDetail({ code, live, info, isOnline }) {
     return () => unsub();
   }, [isSfs, code]);
 
+  // v118.0.13: live geometry validation — recompute error/warn messages
+  // whenever any geometry input changes, so the operator sees feedback
+  // the moment they type an out-of-bounds value instead of waiting
+  // until they click Send. Same rules as the Send validator at
+  // handleSendGeometry(); kept in sync.
+  useEffect(() => {
+    if (!editingGeometry) {
+      // Clear any lingering messages when the edit panel is closed.
+      if (geoError) setGeoError("");
+      if (geoWarn)  setGeoWarn("");
+      return;
+    }
+    const tank = geoTankInput     === "" ? null : Number(geoTankInput);
+    const ovfl = geoOverflowInput === "" ? null : Number(geoOverflowInput);
+    const suct = geoSuctionInput  === "" ? null : Number(geoSuctionInput);
+    let err = "";
+    let warn = "";
+    if (tank != null && (!isFinite(tank) || tank < 36 || tank > 750)) {
+      err = "Tank height must be 36-750 cm.";
+    } else {
+      const effectiveTank = tank ?? Number(info?.tankHeightCm) ?? 100;
+      if (ovfl != null && ovfl !== 0 && (ovfl < 5 || ovfl >= effectiveTank - 10)) {
+        err = `Overflow must be 0 or between 5 and ${Math.floor(effectiveTank - 10)} cm.`;
+      } else if (suct != null && suct !== 0 && (suct <= 0 || suct >= effectiveTank - 5)) {
+        err = `Suction must be 0 or between 1 and ${Math.floor(effectiveTank - 6)} cm.`;
+      }
+      // Soft warn — only when value passes hard-min but is below the
+      // one-eye sensor safe threshold. User can still save; just needs
+      // to confirm the install has two-eye hardware.
+      if (!err && ovfl != null && ovfl !== 0 && ovfl < 28) {
+        warn = `⚠ Overflow ${ovfl} cm is below the 28 cm safe minimum for one-eye ultrasonic sensors. OK only if this install uses a two-eye sensor (5 cm dead zone).`;
+      }
+    }
+    setGeoError(err);
+    setGeoWarn(warn);
+  }, [editingGeometry, geoTankInput, geoOverflowInput, geoSuctionInput, info?.tankHeightCm]);
+
   useEffect(() => {
     async function load() {
       const d = await getDevice(code);
