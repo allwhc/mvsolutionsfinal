@@ -2,7 +2,7 @@ import { useEffect, useState, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { doc, getDoc, updateDoc } from "firebase/firestore";
 import { db } from "../firebase/config";
-import { listenToDeviceHistory, clearDeviceHistory, clearPumpFault } from "../firebase/rtdb";
+import { listenToDeviceHistory, clearDeviceHistory, clearPumpFault, pausePump, resumePump } from "../firebase/rtdb";
 import PanelSettingsTab from "../components/PumpDetail/PanelSettingsTab";
 import ForceRunButton from "../components/PumpDetail/ForceRunButton";
 import AnalyticsTab from "../components/PumpDetail/AnalyticsTab";
@@ -111,6 +111,67 @@ function ClearFaultButton({ code }) {
   );
 }
 
+// v119.0.0: Pause / Resume current pump operation.
+//
+// Visible only when the pump is currently running under auto / schedule
+// (never during manual override — Force Run has its own Stop button).
+// If paused state is live-reported true, flips to Resume. Pause blocks
+// all auto starts; Force Run clears pause as a side effect. State is
+// RAM-only on firmware, so a device reboot wakes unpaused.
+function PausePumpButton({ code, live, isOnline, canEdit }) {
+  const [state, setState] = useState("idle");
+  const [err,   setErr]   = useState("");
+  const paused     = !!live?.pumpPaused || live?.operMode === "paused";
+  const motorRunning = live?.pumpState === "auto";   // schedule-driven = "auto"; manual has its own UI
+  // Hide entirely unless we have a reason to show something
+  if (!isOnline || !canEdit) return null;
+  if (!paused && !motorRunning) return null;
+
+  async function handleClick() {
+    if (!code || state === "sending") return;
+    setErr("");
+    setState("sending");
+    try {
+      if (paused) {
+        await resumePump(code);
+      } else {
+        await pausePump(code);
+      }
+      setState("sent");
+      setTimeout(() => setState("idle"), 3000);
+    } catch (e) {
+      console.error("pause/resume failed:", e);
+      setErr("Failed to send — try again");
+      setState("idle");
+    }
+  }
+  const label = state === "sending" ? "Sending…"
+              : state === "sent"    ? (paused ? "✓ Resume sent" : "✓ Pause sent")
+              : paused              ? "▶ Resume Pump"
+              :                       "⏸ Pause Current Pump Operation";
+  return (
+    <div className="mb-3 max-w-sm mx-auto">
+      <button
+        onClick={handleClick}
+        disabled={state !== "idle"}
+        className={`w-full text-sm font-medium px-3 py-2 rounded-lg text-white transition-colors
+          ${paused
+            ? "bg-green-600 hover:bg-green-700 disabled:bg-green-300"
+            : "bg-amber-500 hover:bg-amber-600 disabled:bg-amber-300"}
+          disabled:cursor-not-allowed`}
+      >
+        {label}
+      </button>
+      {paused && (
+        <p className="text-xs text-amber-700 mt-1 text-center">
+          Pump paused — auto / schedule / fill-until-full suppressed. Resume or Force Run to re-enable.
+        </p>
+      )}
+      {err && <p className="text-xs text-red-600 mt-1 text-center">{err}</p>}
+    </div>
+  );
+}
+
 function LiveSchematic({ code, live, info, catalog }) {
   const pumpState    = live?.pumpState || "off";
   const sourceState  = live?.sourceState  || "dry";
@@ -189,6 +250,7 @@ function LiveSchematic({ code, live, info, catalog }) {
           panel_fault:       { bg: "bg-red-50 border-red-200 text-red-800",         icon: "⚠",  title: "Panel fault",                 body: "Contactor feedback error. Check wiring, then clear the fault." },
           schedule_inactive: { bg: "bg-indigo-50 border-indigo-200 text-indigo-800",icon: "⏰", title: "Outside schedule window",     body: "Pump paused — not inside any active schedule window right now." },
           sensor_offline:    { bg: "bg-purple-50 border-purple-200 text-purple-800",icon: "📡", title: "Sensor offline",              body: "Ultrasonic sensor not responding. Pump safety-stopped until a valid reading returns." },
+          paused:            { bg: "bg-amber-50 border-amber-200 text-amber-800",   icon: "⏸", title: "Pump paused",                 body: "Operator paused current pump operation. Auto / schedule / fill-until-full starts suppressed. Click Resume (or Force Run) to re-enable. Reboot also clears pause." },
         };
         const banner = banners[operMode];
         if (!banner && !clearableFault && !feedbackFault) return null;
@@ -1099,6 +1161,10 @@ export default function PumpDetail({ code, live, info, isOnline }) {
       {tab === "live" && (
         <>
           <LiveSchematic code={code} live={live} info={info} catalog={catalog} />
+          {/* v119.0.0: Pause / Resume — above Force Run per Vishal's
+              spec. Visible only when pump is actually running under
+              auto / schedule (or already paused). */}
+          <PausePumpButton code={code} live={live} isOnline={isOnline} canEdit={true} />
           {/* Force Run — full-width button under the schematic. Hidden
               entirely when device is offline (see component). Owner-only
               gate is enforced there too. */}

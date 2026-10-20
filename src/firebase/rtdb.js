@@ -461,3 +461,21 @@ export async function clearPumpFault(deviceCode) {
     clearFaultRequestedAt: Math.floor(Date.now() / 1000),
   });
 }
+
+// v119.0.0: pause/resume an in-progress auto/schedule pump run without
+// disabling Auto Mode entirely. Firmware blocks all auto triggers until
+// Resume is called. Does NOT survive device reboot — pause state is
+// RAM-only on firmware side, so a power-cycle wakes the pump unpaused.
+// Force Run from AP or cloud implicitly clears pause as a side effect.
+export async function pausePump(deviceCode) {
+  await update(ref(rtdb, `devices/${deviceCode}/commands`), {
+    pumpPause: true,
+    pumpPauseRequestedAt: Math.floor(Date.now() / 1000),
+  });
+}
+export async function resumePump(deviceCode) {
+  await update(ref(rtdb, `devices/${deviceCode}/commands`), {
+    pumpResume: true,
+    pumpResumeRequestedAt: Math.floor(Date.now() / 1000),
+  });
+}

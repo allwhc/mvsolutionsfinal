@@ -471,6 +471,7 @@ export default function PumpCard({ deviceCode, deviceName, live, info, catalog, 
             source_dry_run:    { bg: "bg-blue-50 border-blue-200 text-blue-700",        label: "💧 Source dry" },
             panel_fault:       { bg: "bg-red-50 border-red-200 text-red-700",           label: "⚠ Panel fault" },
             sensor_offline:    { bg: "bg-purple-50 border-purple-200 text-purple-700",  label: "📡 Sensor offline" },
+            paused:            { bg: "bg-amber-50 border-amber-200 text-amber-700",     label: "⏸ Paused" },
           };
           const chip = chips[operMode];
           if (!chip) return null;
