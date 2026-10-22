@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Link } from "react-router-dom";
 import TankViz, { formatTimestamp } from "./TankViz";
 import CleaningBadge from "./CleaningBadge";
@@ -41,6 +41,14 @@ function getAlertFlash({ sensorError, sensorOffline, confirmedPct, alertLowPct, 
 function computeWaterDepthCm({ rawCm, pct, tankHeightCm, overflowCm, suctionCm }) {
   const tank = Number(tankHeightCm);
   if (!isFinite(tank) || tank <= 0) return null;
+  // Consistency guard: when Level reports 0% force Depth to 0 so the
+  // card never shows the confusing combo "Level 0% / Depth 63 cm" that
+  // arises when firmware's Layer-4 pct is held at 0 while rawCm keeps
+  // updating. Only matches an EXPLICIT number 0 — leaves null/undefined
+  // alone so the sticky-value cache in SensorCard still works unaffected
+  // during /live subscription gaps. 100% is NOT capped (users read
+  // "100% + 63 cm water column" naturally); only the 0% case is a bug.
+  if (pct === 0) return 0;
   const ovfl    = Number(overflowCm) || 0;
   const suction = Number(suctionCm)  || 0;
   // Effective range: from suction pipe (bottom cutoff) to overflow
@@ -77,8 +85,42 @@ export default function SensorCard({ deviceCode, deviceName, live, info, catalog
   const { debugMode } = useDebugMode();
   const sensorType = info?.sensorType ?? catalog?.sensorType ?? 1;
   const sensorCount = info?.sensorCount ?? catalog?.sensorCount ?? 4;
-  const rawBits = live?.sensorBits ?? 0;
-  const rawPct = live?.confirmedPct ?? 0;
+  // Sticky "last-good value" cache. When /live.confirmedPct is a real
+  // number from firmware we remember it; when it goes missing (RTDB
+  // subscription momentary gap, device restarting + warmup gate hasn't
+  // released first push yet) we fall back to the remembered value
+  // instead of flashing a bogus 0% on the card.
+  //
+  // Only pct, bits, and rawCm are stickied — the three fields the UI
+  // actually renders. Flags are read through as-is so a transient
+  // sensorError or sensorOffline bit is honored immediately (we don't
+  // want to mask a real error with a stale reading).
+  //
+  // First-ever page load with no cached value → refs stay null → the
+  // existing `?? 0` fallbacks kick in → card shows 0% once as before.
+  // After the first real value arrives → refs populate → any later
+  // missing-field moment keeps showing the last known number.
+  const lastGoodPctRef  = useRef(null);
+  const lastGoodBitsRef = useRef(null);
+  const lastGoodRawCmRef = useRef(null);
+
+  const livePct   = live?.confirmedPct;
+  const liveBits  = live?.sensorBits;
+  const liveRawCm = live?.rawCm;
+
+  // Update cache when firmware gives us a real number.
+  if (typeof livePct   === "number") lastGoodPctRef.current  = livePct;
+  if (typeof liveBits  === "number") lastGoodBitsRef.current = liveBits;
+  if (typeof liveRawCm === "number") lastGoodRawCmRef.current = liveRawCm;
+
+  // Resolve what we'll actually use for rendering: fresh value if present,
+  // else sticky last-good, else the old `?? 0` default.
+  const rawBits = typeof liveBits === "number" ? liveBits
+                : lastGoodBitsRef.current !== null ? lastGoodBitsRef.current
+                : 0;
+  const rawPct  = typeof livePct === "number" ? livePct
+                : lastGoodPctRef.current !== null ? lastGoodPctRef.current
+                : 0;
   const flags = live?.flags ?? 0;
   const rawSensorError = !!(flags & 0x01);
   const sensorOffline = !!(flags & 0x20);
@@ -171,7 +213,10 @@ export default function SensorCard({ deviceCode, deviceName, live, info, catalog
           tankCapacityLitres={tankCapacityLitres}
           waterDepthCm={sensorType === 2 && isOnline && !sensorError
             ? computeWaterDepthCm({
-                rawCm:        live?.rawCm,
+                // Use sticky last-good rawCm so Depth pill stays in sync
+                // with the pct we're actually rendering (both come from
+                // the same remembered-value cache above).
+                rawCm:        typeof liveRawCm === "number" ? liveRawCm : lastGoodRawCmRef.current,
                 pct:          confirmedPct,
                 tankHeightCm: info?.tankHeightCm,
                 overflowCm:   info?.overflowCm,
