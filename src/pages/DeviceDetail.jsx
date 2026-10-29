@@ -9,7 +9,7 @@ import {
 } from "../firebase/db";
 import { doc, updateDoc } from "firebase/firestore";
 import { db } from "../firebase/config";
-import { sendRefreshCommand, sendRestartCommand, sendTestCommand, sendValveCommand, listenToValveConfig, setValveConfig, sfsSetAutoMode, sfsForcePumpRun, listenToSfsLogs, getDeviceBootLog, getDeviceDiagnosticsNow, requestDiagnosticsRefresh, requestDiagnosticsClear, sendUpdateGeometry } from "../firebase/rtdb";
+import { sendRefreshCommand, sendRestartCommand, sendTestCommand, sendTestCommandAwaitAck, sendValveCommand, listenToValveConfig, setValveConfig, sfsSetAutoMode, sfsForcePumpRun, listenToSfsLogs, getDeviceBootLog, getDeviceDiagnosticsNow, requestDiagnosticsRefresh, requestDiagnosticsClear, sendUpdateGeometry } from "../firebase/rtdb";
 import DeviceCard from "../components/DeviceCard/DeviceCard";
 import AnalyticsChart, { generateCSV, downloadCSV } from "../components/Analytics/AnalyticsChart";
 import PumpDetail from "./PumpDetail";
@@ -153,6 +153,10 @@ function SensorValveMotorDetail({ code, live, info, isOnline }) {
   // double-attach listeners to the same live/info paths on every render.
   const [catalog, setCatalog] = useState(null);
   const [loading, setLoading] = useState(true);
+  // Test LED button state: "idle" | "waiting" (spinner, device hasn't
+  // read the command yet) | "noresponse" (timed out — see
+  // sendTestCommandAwaitAck in rtdb.js for the ack mechanism + timeout).
+  const [testLedState, setTestLedState] = useState("idle");
   const [isOwner, setIsOwner] = useState(false);
   // Whoever has authority to edit shared per-tank settings (tank
   // capacity, access mode, etc.). For individual accounts that's the
@@ -1557,8 +1561,24 @@ function SensorValveMotorDetail({ code, live, info, isOnline }) {
         <div className="flex flex-wrap gap-2">
           <button onClick={() => sendRefreshCommand(code)}
             className="px-4 py-2 bg-blue-50 text-blue-600 rounded-lg text-sm hover:bg-blue-100">Force Refresh</button>
-          <button onClick={() => { if (confirm("Send test blink command to this device?")) sendTestCommand(code); }}
-            className="px-4 py-2 bg-green-50 text-green-600 rounded-lg text-sm hover:bg-green-100">Test LED</button>
+          <button
+            disabled={testLedState === "waiting"}
+            onClick={async () => {
+              if (!confirm("Send test blink command to this device?")) return;
+              setTestLedState("waiting");
+              const { acked } = await sendTestCommandAwaitAck(code);
+              setTestLedState(acked ? "idle" : "noresponse");
+              if (!acked) setTimeout(() => setTestLedState("idle"), 4000);
+            }}
+            className="px-4 py-2 bg-green-50 text-green-600 rounded-lg text-sm hover:bg-green-100 disabled:opacity-60 disabled:cursor-not-allowed inline-flex items-center gap-2">
+            {testLedState === "waiting" && (
+              <svg className="w-3.5 h-3.5 animate-spin" viewBox="0 0 24 24" fill="none">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+              </svg>
+            )}
+            {testLedState === "waiting" ? "Waiting for device…" : testLedState === "noresponse" ? "No response" : "Test LED"}
+          </button>
           <button onClick={() => { if (confirm("Restart this device? It will go offline for a few seconds.")) sendRestartCommand(code); }}
             className="px-4 py-2 bg-yellow-50 text-yellow-600 rounded-lg text-sm hover:bg-yellow-100">Restart</button>
           {/* Quick-jump to the tanker log with THIS tank pre-selected.

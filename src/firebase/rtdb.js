@@ -247,6 +247,54 @@ export async function sendTestCommand(deviceCode) {
   });
 }
 
+// Send the test-LED command and resolve once the device has actually read
+// it, instead of the fire-and-forget sendTestCommand() above.
+//
+// Firmware only polls commands/ every ~30s (COMMAND_CHECK_INTERVAL) and
+// clears testRequested back to false the moment it reads it — that
+// false transition is the device's own acknowledgment, so we listen for
+// it instead of guessing a fixed delay. Worst case observed: ~30s poll
+// wait + ~3s for the sequential command-chain reads ahead of it in
+// checkCommands() (refreshRequested is checked first) = ~33s. Timeout
+// below gives a margin on top of that worst case rather than cutting it
+// close, so a slow-but-working device doesn't get falsely reported as
+// unresponsive.
+//
+// Resolves with { acked: true } once the device clears the flag, or
+// { acked: false } if ACK_TIMEOUT_MS elapses first (device offline,
+// stuck, or firebaseHealthy gate closed — see checkCommands() gating).
+// Either way the RTDB listener is always torn down before resolving.
+const COMMAND_ACK_TIMEOUT_MS = 40000;
+
+export function sendTestCommandAwaitAck(deviceCode) {
+  return new Promise((resolve) => {
+    const flagRef = ref(rtdb, `devices/${deviceCode}/commands/testRequested`);
+    let settled = false;
+
+    const finish = (acked) => {
+      if (settled) return;
+      settled = true;
+      off(flagRef, "value", handleValue);
+      clearTimeout(timer);
+      resolve({ acked });
+    };
+
+    const handleValue = (snap) => {
+      // Skip the initial callback firing for our own write (true) —
+      // only the transition back to false/absent means the device read it.
+      if (snap.val() !== true) finish(true);
+    };
+
+    const timer = setTimeout(() => finish(false), COMMAND_ACK_TIMEOUT_MS);
+
+    onValue(flagRef, handleValue);
+    update(ref(rtdb, `devices/${deviceCode}/commands`), {
+      testRequested: true,
+      testLed: true,
+    }).catch(() => finish(false));
+  });
+}
+
 // Ultrasonic geometry push. Firmware v21.1.2+ picks this up on its
 // next commands poll (~30 sec), validates, writes NVS, updates its
 // in-memory values, and pushes new geometry to /info. Cloud sees
