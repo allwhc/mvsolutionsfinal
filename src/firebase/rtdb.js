@@ -305,13 +305,117 @@ export function sendTestCommandAwaitAck(deviceCode) {
 // (e.g. only updating overflow keeps tank height + suction as-is).
 // Firmware validates ranges; invalid values are dropped silently
 // (see [GEOM] Serial log on device).
-export async function sendUpdateGeometry(deviceCode, { tankHeight, overflow, suction }) {
+//
+// historyPct (optional, firmware v21.1.8+): tunes how much pct delta
+// is required between consecutive /history writes. Firmware default 5,
+// super-admin can drop to 2 for keen-observation clients. Firmware
+// bounds 2-25; cloud UI bounds 2-10. Rejected as a group with the
+// other fields if any one is out of range.
+export async function sendUpdateGeometry(deviceCode, { tankHeight, overflow, suction, historyPct }) {
   const payload = {};
   if (tankHeight != null && tankHeight !== "") payload.tankHeight = Number(tankHeight);
   if (overflow   != null && overflow   !== "") payload.overflow   = Number(overflow);
   if (suction    != null && suction    !== "") payload.suction    = Number(suction);
+  if (historyPct != null && historyPct !== "") payload.historyPct = Number(historyPct);
   await update(ref(rtdb, `devices/${deviceCode}/commands`), {
     updateGeometry: payload,
+  });
+}
+
+// Round-trip variant of sendUpdateGeometry that resolves ONLY after the
+// device has read the command (or the timeout elapses). Watches two
+// RTDB signals:
+//   1. /commands/updateGeometry is DELETED  → firmware read + processed
+//      the command (strong ACK — firmware always deletes after reading,
+//      valid OR rejected)
+//   2. the matching /info/* field flips to the value we sent
+//      → firmware VALIDATED, wrote NVS, mirrored back (stronger — proves
+//      the value we sent was accepted, not silently rejected)
+//
+// Resolves { acked: true, applied: true  }   — both signals matched
+//          { acked: true, applied: false }   — device read it but the
+//                                              new /info value doesn't
+//                                              match (partial reject,
+//                                              validation failure)
+//          { acked: false }                  — timeout: device never
+//                                              deleted the command node
+//                                              within GEOM_ACK_TIMEOUT_MS
+//                                              (likely offline)
+//
+// Timeout chosen as 45 sec: firmware polls commands every ~30 sec worst
+// case + a few sec for the delete + /info push roundtrip. Matches the
+// existing sendTestCommandAwaitAck (40 sec) pattern.
+const GEOM_ACK_TIMEOUT_MS = 45000;
+
+export function sendUpdateGeometryAwaitAck(deviceCode, fields) {
+  return new Promise(async (resolve) => {
+    const cmdRef  = ref(rtdb, `devices/${deviceCode}/commands/updateGeometry`);
+    const infoRef = ref(rtdb, `devices/${deviceCode}/info`);
+    let settled    = false;
+    let cmdDeleted = false;
+    let infoMatched = false;
+
+    const payload = {};
+    if (fields.tankHeight != null && fields.tankHeight !== "") payload.tankHeight = Number(fields.tankHeight);
+    if (fields.overflow   != null && fields.overflow   !== "") payload.overflow   = Number(fields.overflow);
+    if (fields.suction    != null && fields.suction    !== "") payload.suction    = Number(fields.suction);
+    if (fields.historyPct != null && fields.historyPct !== "") payload.historyPct = Number(fields.historyPct);
+
+    // Map our command payload keys → /info mirror keys so we can check
+    // the values actually landed. Firmware mirrors tankHeight → tankHeightCm,
+    // overflow → overflowCm, suction → suctionCm, historyPct → historyPct.
+    const infoKeyMap = {
+      tankHeight: "tankHeightCm",
+      overflow:   "overflowCm",
+      suction:    "suctionCm",
+      historyPct: "historyPct",
+    };
+    const expected = {};
+    for (const k of Object.keys(payload)) expected[infoKeyMap[k]] = payload[k];
+
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      off(cmdRef,  "value", handleCmd);
+      off(infoRef, "value", handleInfo);
+      clearTimeout(timer);
+      resolve(result);
+    };
+
+    const maybeSuccess = () => {
+      if (!cmdDeleted) return;
+      // Command deleted — the device read it. Check /info values to
+      // decide applied vs partial.
+      finish({ acked: true, applied: infoMatched });
+    };
+
+    const handleCmd = (snap) => {
+      if (snap.val() == null) {
+        cmdDeleted = true;
+        maybeSuccess();
+      }
+    };
+
+    const handleInfo = (snap) => {
+      const info = snap.val() || {};
+      let allMatch = true;
+      for (const [key, want] of Object.entries(expected)) {
+        if (Number(info[key]) !== Number(want)) { allMatch = false; break; }
+      }
+      infoMatched = allMatch;
+      maybeSuccess();
+    };
+
+    const timer = setTimeout(() => finish({ acked: false }), GEOM_ACK_TIMEOUT_MS);
+
+    onValue(cmdRef,  handleCmd);
+    onValue(infoRef, handleInfo);
+
+    try {
+      await update(ref(rtdb, `devices/${deviceCode}/commands`), { updateGeometry: payload });
+    } catch (e) {
+      finish({ acked: false, error: e.message || "write failed" });
+    }
   });
 }
 

@@ -9,7 +9,7 @@ import {
 } from "../firebase/db";
 import { doc, updateDoc } from "firebase/firestore";
 import { db } from "../firebase/config";
-import { sendRefreshCommand, sendRestartCommand, sendTestCommand, sendTestCommandAwaitAck, sendValveCommand, listenToValveConfig, setValveConfig, sfsSetAutoMode, sfsForcePumpRun, listenToSfsLogs, getDeviceBootLog, getDeviceDiagnosticsNow, requestDiagnosticsRefresh, requestDiagnosticsClear, sendUpdateGeometry } from "../firebase/rtdb";
+import { sendRefreshCommand, sendRestartCommand, sendTestCommand, sendTestCommandAwaitAck, sendValveCommand, listenToValveConfig, setValveConfig, sfsSetAutoMode, sfsForcePumpRun, listenToSfsLogs, getDeviceBootLog, getDeviceDiagnosticsNow, requestDiagnosticsRefresh, requestDiagnosticsClear, sendUpdateGeometry, sendUpdateGeometryAwaitAck } from "../firebase/rtdb";
 import DeviceCard from "../components/DeviceCard/DeviceCard";
 import AnalyticsChart, { generateCSV, downloadCSV } from "../components/Analytics/AnalyticsChart";
 import PumpDetail from "./PumpDetail";
@@ -194,7 +194,18 @@ function SensorValveMotorDetail({ code, live, info, isOnline }) {
   const [geoTankInput,     setGeoTankInput]     = useState("");
   const [geoOverflowInput, setGeoOverflowInput] = useState("");
   const [geoSuctionInput,  setGeoSuctionInput]  = useState("");
+  // v21.1.8 firmware: cloud-tunable /history delta threshold (default 5%).
+  // Super-admin only — never visible to org admins or members. Range 2-10
+  // in UI; firmware allows up to 25 but anything above 10 is only a
+  // noise-storm fallback and we don't want it click-reachable.
+  const [geoHistoryPctInput, setGeoHistoryPctInput] = useState("");
   const [geoSending,       setGeoSending]       = useState(false);
+  // Round-trip ACK result banner. One of:
+  //   null                                      — idle
+  //   { tone: "good",    text: "✓ Applied to device" }
+  //   { tone: "warn",    text: "⚠ Device read it but some values were rejected" }
+  //   { tone: "offline", text: "Device didn't respond — values queued" }
+  const [geoAck,           setGeoAck]            = useState(null);
   const [geoError,         setGeoError]         = useState("");
   // v118.0.13: non-blocking warning (orange, below input). Used when
   // the value is PHYSICALLY VALID but risky for most sensor types —
@@ -241,6 +252,7 @@ function SensorValveMotorDetail({ code, live, info, isOnline }) {
     const tank = geoTankInput     === "" ? null : Number(geoTankInput);
     const ovfl = geoOverflowInput === "" ? null : Number(geoOverflowInput);
     const suct = geoSuctionInput  === "" ? null : Number(geoSuctionInput);
+    const hpct = geoHistoryPctInput === "" ? null : Number(geoHistoryPctInput);
     let err = "";
     let warn = "";
     if (tank != null && (!isFinite(tank) || tank < 36 || tank > 750)) {
@@ -251,6 +263,8 @@ function SensorValveMotorDetail({ code, live, info, isOnline }) {
         err = `Overflow must be 0 or between 5 and ${Math.floor(effectiveTank - 10)} cm.`;
       } else if (suct != null && suct !== 0 && (suct <= 0 || suct >= effectiveTank - 5)) {
         err = `Suction must be 0 or between 1 and ${Math.floor(effectiveTank - 6)} cm.`;
+      } else if (hpct != null && (!Number.isInteger(hpct) || hpct < 2 || hpct > 10)) {
+        err = "History Push must be an integer 2-10%.";
       }
       // Soft warn — only when value passes hard-min but is below the
       // one-eye sensor safe threshold. User can still save; just needs
@@ -261,7 +275,7 @@ function SensorValveMotorDetail({ code, live, info, isOnline }) {
     }
     setGeoError(err);
     setGeoWarn(warn);
-  }, [editingGeometry, geoTankInput, geoOverflowInput, geoSuctionInput, info?.tankHeightCm]);
+  }, [editingGeometry, geoTankInput, geoOverflowInput, geoSuctionInput, geoHistoryPctInput, info?.tankHeightCm]);
 
   useEffect(() => {
     async function load() {
@@ -443,6 +457,7 @@ function SensorValveMotorDetail({ code, live, info, isOnline }) {
     const tank = geoTankInput === "" ? null : Number(geoTankInput);
     const ovfl = geoOverflowInput === "" ? null : Number(geoOverflowInput);
     const suct = geoSuctionInput === "" ? null : Number(geoSuctionInput);
+    const hpct = geoHistoryPctInput === "" ? null : Number(geoHistoryPctInput);
     if (tank != null && (!isFinite(tank) || tank < 36 || tank > 750)) {
       setGeoError("Tank height must be 36-750 cm.");
       return;
@@ -471,20 +486,47 @@ function SensorValveMotorDetail({ code, live, info, isOnline }) {
       setGeoError(`Suction must be 0 or between 1 and ${Math.floor(effectiveTank - 6)} cm.`);
       return;
     }
+    // Super-admin-only history delta threshold; firmware v21.1.8+. Range
+    // 2-10 in UI even though firmware allows 2-25 — anything above 10 is
+    // only a noise-storm fallback no one should click into.
+    if (hpct != null && (!Number.isInteger(hpct) || hpct < 2 || hpct > 10)) {
+      setGeoError("History Push must be an integer 2-10%.");
+      return;
+    }
     setGeoSending(true);
+    setGeoAck(null);
     try {
-      await sendUpdateGeometry(code, {
+      // Round-trip wait: resolve only after firmware has read the
+      // command node (it deletes the node = strong ACK). Also checks
+      // that /info mirror values flip to what we sent — tells us
+      // whether firmware accepted or silently rejected the values.
+      const result = await sendUpdateGeometryAwaitAck(code, {
         tankHeight: tank,
         overflow:   ovfl,
         suction:    suct,
+        historyPct: hpct,
       });
-      // Exit edit mode — device applies within ~30 sec, and the /info
-      // WebSocket listener will refresh the read-only rows when the
-      // new values land. If nothing changes, admin can click Edit
-      // again and re-Send.
-      setEditingGeometry(false);
+      if (result.acked && result.applied) {
+        setGeoAck({ tone: "good", text: "✓ Applied to device" });
+        // Auto-exit edit mode on clean success after a brief dwell so
+        // the admin SEES the confirmation flash.
+        setTimeout(() => { setEditingGeometry(false); setGeoAck(null); }, 2500);
+      } else if (result.acked && !result.applied) {
+        setGeoAck({
+          tone: "warn",
+          text: "⚠ Device read the command but one or more values were rejected (likely out of firmware range). Current /info values haven't changed."
+        });
+        // Stay in edit mode so admin can correct + retry.
+      } else {
+        setGeoAck({
+          tone: "offline",
+          text: "Device didn't respond in time. Values are queued and will apply on next reconnect."
+        });
+        // Auto-close after the admin has had a chance to read it.
+        setTimeout(() => { setEditingGeometry(false); setGeoAck(null); }, 5000);
+      }
     } catch (e) {
-      console.error("sendUpdateGeometry failed:", e);
+      console.error("sendUpdateGeometryAwaitAck failed:", e);
       setGeoError("Send failed — try again.");
     } finally {
       setGeoSending(false);
@@ -505,6 +547,23 @@ function SensorValveMotorDetail({ code, live, info, isOnline }) {
     if (min > 1) return true;
     if (min < 1) return false;
     return patch >= 2;
+  }
+
+  // historyPct is a separate capability — firmware v21.1.8+ added the
+  // field to updateGeometry. Older ultrasonic firmware still accepts
+  // tankHeight/overflow/suction via the same command and silently
+  // ignores unknown fields, so the main geometry editor stays usable
+  // across the fleet; this gate only hides the History Push row.
+  function fwSupportsHistoryPct(versionStr) {
+    if (!versionStr) return false;
+    const m = /^(\d+)\.(\d+)\.(\d+)/.exec(versionStr);
+    if (!m) return false;
+    const [maj, min, patch] = [Number(m[1]), Number(m[2]), Number(m[3])];
+    if (maj > 21) return true;
+    if (maj < 21) return false;
+    if (min > 1) return true;
+    if (min < 1) return false;
+    return patch >= 8;
   }
 
   async function handleSaveAccess() {
@@ -643,8 +702,10 @@ function SensorValveMotorDetail({ code, live, info, isOnline }) {
               if (!isFinite(cm) || cm < 0) return <span className="text-gray-400">—</span>;
               return <span>{cmToFtIn(cm)} <span className="text-gray-400 text-xs">({Math.round(cm)} cm)</span></span>;
             };
-            const canEditGeo   = isEffectiveOwner;
-            const fwSupports   = fwSupportsGeometryPush(info?.firmwareVersion);
+            const canEditGeo    = isEffectiveOwner;
+            const fwSupports    = fwSupportsGeometryPush(info?.firmwareVersion);
+            const canEditHistPct = isSuperAdmin && fwSupportsHistoryPct(info?.firmwareVersion);
+            const currentHistPct = Number(info?.historyPct);
             const cmInput = (val, setVal, placeholder) => (
               <input
                 type="number"
@@ -674,6 +735,27 @@ function SensorValveMotorDetail({ code, live, info, isOnline }) {
                     {cmInput(geoSuctionInput, setGeoSuctionInput, `${Math.round(suct) || "0=off"}`)}
                     <span className="text-gray-400 text-xs">cm from bottom</span>
                   </span>
+                  {canEditHistPct && (
+                    <>
+                      <span className="text-gray-500">
+                        History Push
+                        <span className="ml-1 text-[10px] text-amber-700 font-medium">super-admin</span>
+                      </span>
+                      <span className="flex items-center gap-1">
+                        <input
+                          type="number"
+                          min="2"
+                          max="10"
+                          step="1"
+                          value={geoHistoryPctInput}
+                          onChange={(e) => setGeoHistoryPctInput(e.target.value)}
+                          placeholder={isFinite(currentHistPct) && currentHistPct > 0 ? `${currentHistPct}` : "5"}
+                          className="w-20 px-1.5 py-0.5 border border-gray-200 rounded text-xs"
+                        />
+                        <span className="text-gray-400 text-xs">% change (2-10)</span>
+                      </span>
+                    </>
+                  )}
                   <span className="text-gray-500"></span>
                   <span className="flex flex-col gap-1 text-xs">
                     {geoError && <span className="text-red-600">{geoError}</span>}
@@ -682,21 +764,37 @@ function SensorValveMotorDetail({ code, live, info, isOnline }) {
                       Leave blank to keep current value. Applies to device within ~30 sec.
                       {!isOnline && " Device is offline — will apply on next reconnect."}
                     </span>
-                    <span className="flex gap-2 mt-1">
+                    <span className="flex items-center gap-2 mt-1">
                       <button
                         onClick={handleSendGeometry}
                         disabled={geoSending}
-                        className="bg-blue-600 text-white px-3 py-1 rounded text-xs font-medium hover:bg-blue-700 disabled:opacity-50"
+                        className="bg-blue-600 text-white px-3 py-1 rounded text-xs font-medium hover:bg-blue-700 disabled:opacity-50 flex items-center gap-1.5"
                       >
-                        {geoSending ? "Sending…" : "Send to Device"}
+                        {geoSending && (
+                          <svg className="animate-spin h-3 w-3" viewBox="0 0 24 24" fill="none">
+                            <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" className="opacity-25" />
+                            <path d="M4 12a8 8 0 018-8" stroke="currentColor" strokeWidth="4" fill="none" className="opacity-75" />
+                          </svg>
+                        )}
+                        {geoSending ? "Waiting for device…" : "Send to Device"}
                       </button>
                       <button
-                        onClick={() => { setEditingGeometry(false); setGeoError(""); setGeoWarn(""); }}
-                        className="text-gray-500 hover:text-gray-700 text-xs"
+                        onClick={() => { setEditingGeometry(false); setGeoError(""); setGeoWarn(""); setGeoHistoryPctInput(""); setGeoAck(null); }}
+                        disabled={geoSending}
+                        className="text-gray-500 hover:text-gray-700 text-xs disabled:opacity-50 disabled:cursor-not-allowed"
                       >
                         Cancel
                       </button>
                     </span>
+                    {geoAck && (
+                      <span className={`mt-1 text-xs px-2 py-1 rounded border ${
+                        geoAck.tone === "good"    ? "bg-emerald-50 border-emerald-200 text-emerald-800" :
+                        geoAck.tone === "warn"    ? "bg-amber-50 border-amber-200 text-amber-800" :
+                                                    "bg-gray-50 border-gray-200 text-gray-700"
+                      }`}>
+                        {geoAck.text}
+                      </span>
+                    )}
                   </span>
                 </>
               );
@@ -720,6 +818,14 @@ function SensorValveMotorDetail({ code, live, info, isOnline }) {
                           setGeoTankInput(hasTank ? Math.round(tankH).toString() : "");
                           setGeoOverflowInput(ovfl > 0 ? Math.round(ovfl).toString() : "");
                           setGeoSuctionInput(suct > 0 ? Math.round(suct).toString() : "");
+                          // Seed only when super-admin + firmware supports it,
+                          // so the input is blank for everyone else (gate also
+                          // hides the whole row for them).
+                          setGeoHistoryPctInput(
+                            canEditHistPct && isFinite(currentHistPct) && currentHistPct > 0
+                              ? Math.round(currentHistPct).toString()
+                              : ""
+                          );
                           setGeoError("");
                           setGeoWarn("");
                           setEditingGeometry(true);
