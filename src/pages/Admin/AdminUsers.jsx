@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { httpsCallable } from "firebase/functions";
 import { getAllUsers, updateUserDoc, getUserSubscriptions, getAllPlans, getAllOrgs, removeSubscriber, addOrgMember, createOrg, removeOrgMember } from "../../firebase/db";
+import { createUserAsSuperAdmin } from "../../firebase/auth";
 import { functions } from "../../firebase/config";
 import { useAuth } from "../../context/AuthContext";
 
@@ -51,6 +52,23 @@ export default function AdminUsers() {
   const [rolePickNewOrgName, setRolePickNewOrgName] = useState(""); // if creating fresh
   const [rolePickSaving, setRolePickSaving] = useState(false);
   const [rolePickError, setRolePickError] = useState("");
+
+  // Create-user modal state. Super-admin spins up any role (individual /
+  // orgAdmin / orgMember / superadmin). When an org-scoped role is
+  // picked, an org dropdown appears (existing orgs only; no inline
+  // create-new per design decision). On submit → confirm dialog with
+  // summary → actual create. Uses secondary-app pattern in
+  // createUserAsSuperAdmin so the super-admin stays signed in.
+  const [showCreate,       setShowCreate]       = useState(false);
+  const [newName,          setNewName]          = useState("");
+  const [newEmail,         setNewEmail]         = useState("");
+  const [newPassword,      setNewPassword]      = useState("");
+  const [newShowPassword,  setNewShowPassword]  = useState(false);
+  const [newRole,          setNewRole]          = useState("individual");
+  const [newOrgId,         setNewOrgId]         = useState("");
+  const [newCreating,      setNewCreating]      = useState(false);
+  const [newError,         setNewError]         = useState("");
+  const [newConfirm,       setNewConfirm]       = useState(false); // shows summary dialog
 
   async function load() {
     const [u, p, orgs] = await Promise.all([getAllUsers(), getAllPlans(), getAllOrgs()]);
@@ -200,6 +218,59 @@ export default function AdminUsers() {
     }
   }
 
+  // Reset all create-user modal fields.
+  function resetCreateForm() {
+    setNewName(""); setNewEmail(""); setNewPassword(""); setNewShowPassword(false);
+    setNewRole("individual"); setNewOrgId(""); setNewError(""); setNewConfirm(false);
+  }
+
+  // Super-admin override: no 10-member cap check here. If the resulting
+  // org crosses 10 active members it's allowed. Also writes a complete
+  // orgMembers record (displayName + email + status + role + addedBy +
+  // addedAt) so the member list renders correctly from the start — no
+  // "Unknown" ghosts.
+  async function handleCreateUser() {
+    const email = newEmail.trim();
+    const name  = newName.trim();
+    const pwd   = newPassword;
+    const needsOrg = (newRole === "orgAdmin" || newRole === "orgMember");
+    if (!email || !name || !pwd) { setNewError("Name, email and password are required."); return; }
+    if (pwd.length < 6)          { setNewError("Password must be at least 6 characters.");  return; }
+    if (needsOrg && !newOrgId)   { setNewError("Pick an organisation for this role.");     return; }
+
+    setNewCreating(true); setNewError("");
+    try {
+      const orgName = newOrgId ? (orgsMap[newOrgId]?.name || "") : null;
+      const uid = await createUserAsSuperAdmin({
+        email, password: pwd, displayName: name,
+        role: newRole,
+        orgId:   needsOrg ? newOrgId : null,
+        orgName: needsOrg ? orgName  : null,
+      });
+      // Org-scoped roles also need a membership record so they show up
+      // in the Org Members list. Super-admin bypasses the 10-cap.
+      if (needsOrg) {
+        await addOrgMember(newOrgId, uid, {
+          role:        newRole === "orgAdmin" ? "admin" : "viewer",
+          status:      "active",
+          addedBy:     currentUser.uid,
+          displayName: name,
+          email,
+        });
+      }
+      resetCreateForm();
+      setShowCreate(false);
+      await load();
+    } catch (e) {
+      const msg = e?.code === "auth/email-already-in-use"
+        ? "That email is already registered — can't create a second account with the same email."
+        : (e?.message || "Create user failed.");
+      setNewError(msg);
+    } finally {
+      setNewCreating(false);
+    }
+  }
+
   async function viewSubscriptions(user) {
     setSelectedUser(user);
     setLoadingSubs(true);
@@ -212,9 +283,20 @@ export default function AdminUsers() {
     return <div className="flex justify-center py-10"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div></div>;
   }
 
+  const orgsList = Object.values(orgsMap).sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+  const needsOrgForNewRole = (newRole === "orgAdmin" || newRole === "orgMember");
+
   return (
     <div>
-      <h1 className="text-2xl font-bold text-gray-900 mb-6">Users ({users.length})</h1>
+      <div className="flex items-center justify-between mb-6">
+        <h1 className="text-2xl font-bold text-gray-900">Users ({users.length})</h1>
+        <button
+          onClick={() => { resetCreateForm(); setShowCreate(true); }}
+          className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700"
+        >
+          + Create User
+        </button>
+      </div>
 
       <div className="space-y-3">
         {users.map((u) => {
@@ -439,6 +521,153 @@ export default function AdminUsers() {
             <button onClick={() => setSelectedUser(null)} className="w-full mt-4 py-2 bg-gray-100 text-gray-600 rounded-lg text-sm">
               Close
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* Create User modal — super-admin can create any role for any
+          org directly, without the user needing to self-register first.
+          Secondary Firebase app handles the signup so the super-admin
+          session stays intact (see createUserAsSuperAdmin). */}
+      {showCreate && (
+        <div
+          className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+          onClick={() => !newCreating && setShowCreate(false)}
+        >
+          <div className="bg-white rounded-xl shadow-xl max-w-md w-full p-5" onClick={(e) => e.stopPropagation()}>
+            {!newConfirm ? (
+              <>
+                <h2 className="font-semibold text-gray-900 mb-3">Create User</h2>
+                <div className="space-y-3">
+                  <input
+                    type="text" placeholder="Full name" value={newName}
+                    onChange={(e) => setNewName(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                  />
+                  <input
+                    type="email" placeholder="Email" value={newEmail}
+                    onChange={(e) => setNewEmail(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                  />
+                  <div className="relative">
+                    <input
+                      type={newShowPassword ? "text" : "password"}
+                      placeholder="Password (min 6 chars)"
+                      value={newPassword}
+                      onChange={(e) => setNewPassword(e.target.value)}
+                      className="w-full px-3 py-2 pr-10 border border-gray-300 rounded-lg text-sm"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setNewShowPassword(!newShowPassword)}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                    >
+                      {newShowPassword ? (
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" />
+                        </svg>
+                      ) : (
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                        </svg>
+                      )}
+                    </button>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-700 mb-1">Role</label>
+                    <select
+                      value={newRole}
+                      onChange={(e) => { setNewRole(e.target.value); setNewOrgId(""); }}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                    >
+                      <option value="individual">Individual</option>
+                      <option value="orgMember">Organisation Member</option>
+                      <option value="orgAdmin">Organisation Admin</option>
+                      <option value="superadmin">Super Admin</option>
+                    </select>
+                  </div>
+                  {needsOrgForNewRole && (
+                    <div>
+                      <label className="block text-xs font-medium text-gray-700 mb-1">Organisation</label>
+                      {orgsList.length === 0 ? (
+                        <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1">
+                          No organisations exist yet. Create one via Admin → Organisations first.
+                        </p>
+                      ) : (
+                        <select
+                          value={newOrgId}
+                          onChange={(e) => setNewOrgId(e.target.value)}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                        >
+                          <option value="">— pick an organisation —</option>
+                          {orgsList.map((o) => (
+                            <option key={o.orgId} value={o.orgId}>{o.name || o.orgId}</option>
+                          ))}
+                        </select>
+                      )}
+                    </div>
+                  )}
+                  {newError && <p className="text-xs text-red-600 bg-red-50 border border-red-200 rounded px-2 py-1">{newError}</p>}
+                </div>
+                <div className="flex gap-2 mt-4">
+                  <button
+                    onClick={() => setShowCreate(false)}
+                    disabled={newCreating}
+                    className="flex-1 py-2 bg-gray-100 text-gray-700 rounded text-sm hover:bg-gray-200 disabled:opacity-50"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={() => { setNewError(""); setNewConfirm(true); }}
+                    disabled={newCreating}
+                    className="flex-1 py-2 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
+                  >
+                    Continue
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <h2 className="font-semibold text-gray-900 mb-3">Confirm user creation</h2>
+                <div className="text-sm text-gray-800 bg-gray-50 border border-gray-200 rounded-lg p-3 space-y-1">
+                  <div><span className="text-gray-500">Name:</span> <span className="font-medium">{newName}</span></div>
+                  <div><span className="text-gray-500">Email:</span> <span className="font-medium">{newEmail}</span></div>
+                  <div><span className="text-gray-500">Role:</span> <span className="font-medium">
+                    {newRole === "individual"  && "Individual"}
+                    {newRole === "orgMember"   && "Organisation Member"}
+                    {newRole === "orgAdmin"    && "Organisation Admin"}
+                    {newRole === "superadmin"  && "Super Admin"}
+                  </span></div>
+                  {needsOrgForNewRole && (
+                    <div><span className="text-gray-500">Organisation:</span> <span className="font-medium">{orgsMap[newOrgId]?.name || newOrgId}</span></div>
+                  )}
+                </div>
+                {newError && <p className="mt-2 text-xs text-red-600 bg-red-50 border border-red-200 rounded px-2 py-1">{newError}</p>}
+                <div className="flex gap-2 mt-4">
+                  <button
+                    onClick={() => setNewConfirm(false)}
+                    disabled={newCreating}
+                    className="flex-1 py-2 bg-gray-100 text-gray-700 rounded text-sm hover:bg-gray-200 disabled:opacity-50"
+                  >
+                    Back
+                  </button>
+                  <button
+                    onClick={handleCreateUser}
+                    disabled={newCreating}
+                    className="flex-1 py-2 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700 disabled:opacity-50 flex items-center justify-center gap-1.5"
+                  >
+                    {newCreating && (
+                      <svg className="animate-spin h-3 w-3" viewBox="0 0 24 24" fill="none">
+                        <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" className="opacity-25" />
+                        <path d="M4 12a8 8 0 018-8" stroke="currentColor" strokeWidth="4" fill="none" className="opacity-75" />
+                      </svg>
+                    )}
+                    {newCreating ? "Creating…" : "Create user"}
+                  </button>
+                </div>
+              </>
+            )}
           </div>
         </div>
       )}
