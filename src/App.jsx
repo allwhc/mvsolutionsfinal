@@ -8,6 +8,7 @@ import RegisterForm from "./components/Auth/RegisterForm";
 import OrgRegisterForm from "./components/Auth/OrgRegisterForm";
 import Dashboard from "./pages/Dashboard";
 import DeviceDetail from "./pages/DeviceDetail";
+import TankCompare from "./pages/TankCompare";
 import Kiosk from "./pages/Kiosk";
 import Subscribe from "./pages/Subscribe";
 import Tankers from "./pages/Tankers";
@@ -73,6 +74,7 @@ export default function App() {
           <Route element={<ProtectedRoute><PendingGate><AppLayout /></PendingGate></ProtectedRoute>}>
             <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/device/:code" element={<DeviceDetail />} />
+            <Route path="/compare" element={<ProtectedRoute roles={["orgAdmin", "superadmin"]}><TankCompare /></ProtectedRoute>} />
             <Route path="/subscribe" element={<Subscribe />} />
             <Route path="/tankers" element={<Tankers />} />
             <Route path="/profile" element={<Profile />} />

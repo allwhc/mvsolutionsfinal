@@ -26,6 +26,7 @@ export default function Navbar() {
     "/dashboard":  (<svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" /></svg>),
     "/subscribe":  (<svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" /></svg>),
     "/tankers":    (<svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round"><path d="M2 17V10h3.5l1.5-2h3v9" /><rect x="9" y="8.5" width="12" height="8" rx="3.5" /><line x1="14" y1="8.5" x2="14" y2="6.5" /><line x1="16" y1="8.5" x2="16" y2="6.5" /><path d="M2 17h20" /><circle cx="6.5" cy="19" r="1.4" /><circle cx="17" cy="19" r="1.4" /></svg>),
+    "/compare":    (<svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M9 19V5m-5 14V9m10 10V13m5 6V7" /></svg>),
     "/org":        (<svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" /></svg>),
     "/admin":      (<svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" /></svg>),
     "/profile":    (<svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" /></svg>),
@@ -69,6 +70,7 @@ export default function Navbar() {
               it in both places was redundant. Route still works if
               anything deep-links to /subscribe. */}
           {navLink("/tankers", "Water Tankers")}
+          {(isOrgAdmin || isSuperAdmin) && navLink("/compare", "Compare")}
           {(isOrgAdmin || isOrgMember) && navLink("/org", "Organisation")}
           {isSuperAdmin && navLink("/admin", "Admin")}
           {navLink("/profile", userData?.displayName || "Profile")}
@@ -107,6 +109,7 @@ export default function Navbar() {
               it in both places was redundant. Route still works if
               anything deep-links to /subscribe. */}
           {navLink("/tankers", "Water Tankers")}
+          {(isOrgAdmin || isSuperAdmin) && navLink("/compare", "Compare")}
           {(isOrgAdmin || isOrgMember) && navLink("/org", "Organisation")}
           {isSuperAdmin && navLink("/admin", "Admin")}
           {navLink("/profile", userData?.displayName || "Profile")}

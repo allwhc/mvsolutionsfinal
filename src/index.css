@@ -22,3 +22,53 @@
 .animate-pulse-green { animation: pulseGreen 1.5s ease-in-out infinite; }
 .animate-pulse-purple { animation: pulsePurple 1.5s ease-in-out infinite; }
 .animate-pulse-yellow { animation: pulseYellow 1.5s ease-in-out infinite; }
+
+/* ───── Tank Comparison PDF print mode ─────
+   Triggered by the Download report (PDF) button on /compare. The page
+   sets `body.tank-compare-print` right before window.print() and clears
+   it on afterprint. Rules below only apply when BOTH the body class
+   AND @media print are active, so they never leak into other pages or
+   the normal on-screen view.
+*/
+@media print {
+  body.tank-compare-print {
+    background: #ffffff !important;
+  }
+
+  /* Hide app chrome — nav bar, header banner, any sidebar. Covers both
+     Navbar top row and the org banner strip above it. */
+  body.tank-compare-print nav,
+  body.tank-compare-print header,
+  body.tank-compare-print aside {
+    display: none !important;
+  }
+
+  /* Remove the layout max-width so the report uses the full print page. */
+  body.tank-compare-print main {
+    max-width: none !important;
+    padding: 0 !important;
+  }
+
+  /* Make the print-only header visible (it's hidden on screen). */
+  body.tank-compare-print .print-only {
+    display: block !important;
+  }
+
+  /* Keep chart cards together across page breaks where possible. */
+  body.tank-compare-print section,
+  body.tank-compare-print .rounded-lg {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  /* Prevent any lingering box shadows / hovers printing weirdly. */
+  body.tank-compare-print * {
+    box-shadow: none !important;
+    text-shadow: none !important;
+  }
+
+  @page {
+    size: A4;
+    margin: 12mm 10mm;
+  }
+}
