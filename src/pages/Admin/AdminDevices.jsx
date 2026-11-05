@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { useSearchParams } from "react-router-dom";
-import { getAllDevices, approvePendingDevice, registerDevice, updateDevice, deleteDeviceFromCatalog, getAllUsers, getAllOrgs, subscribeToDevice, assignDeviceOwner, getDeviceSubscribers } from "../../firebase/db";
+import { getAllDevices, approvePendingDevice, registerDevice, updateDevice, deleteDeviceFromCatalog, getAllUsers, getAllOrgs, subscribeToDevice, assignDeviceOwner, getDeviceSubscribers, setDeviceWarranty, seedDeviceWarranties, bulkSetDeviceWarranty, getOrgDevices } from "../../firebase/db";
 import { useAuth } from "../../context/AuthContext";
 import { sendTestCommand, sendTestCommandAwaitAck, sendRestartCommand, getPendingDevicesRTDB, listenToDeviceLive, listenToDeviceInfo, listenToValveConfig, setAnalyticsEnabled, setDiagnosticsEnabled, setNotifyEnabled, bulkSetConfigFlag, getDevicesInfoMap, getDevicesLiveMap, getDevicesConfigMap, getDeviceInfo, deleteHistoryOlderThan } from "../../firebase/rtdb";
 import { QRCodeSVG } from "qrcode.react";
@@ -55,6 +55,40 @@ export default function AdminDevices() {
   // Bulk QR print
   const [selectedForPrint, setSelectedForPrint] = useState(new Set());
   const [showBulkPrint, setShowBulkPrint] = useState(false);
+
+  // Warranty edit modal. Opens via the "Warranty" button on each
+  // registered-device row (super-admin only). Admin can edit activation
+  // date + pick a duration preset (6 / 12 / 24 / 36 months) OR type a
+  // custom expiry. Editing activation auto-shifts expiry by the same
+  // delta (keeping duration constant). Editing expiry directly stops
+  // the auto-shift for that session.
+  const [warrantyEdit, setWarrantyEdit] = useState(null);         // the device being edited
+  const [warrantyActivatedStr, setWarrantyActivatedStr] = useState("");  // yyyy-mm-dd
+  const [warrantyExpiresStr,   setWarrantyExpiresStr]   = useState("");  // yyyy-mm-dd
+  const [warrantyDurationMonths, setWarrantyDurationMonths] = useState(12);
+  const [warrantyManualExpiry, setWarrantyManualExpiry] = useState(false);
+  const [warrantySaving, setWarrantySaving] = useState(false);
+  const [warrantyError,  setWarrantyError]  = useState("");
+
+  // Seed-all-warranties modal. Runs seedDeviceWarranties() which is
+  // idempotent — only touches devices with no warrantyActivatedAt yet.
+  const [seedWarrantyOpen,     setSeedWarrantyOpen]     = useState(false);
+  const [seedWarrantyRunning,  setSeedWarrantyRunning]  = useState(false);
+  const [seedWarrantyResult,   setSeedWarrantyResult]   = useState(null);
+
+  // Bulk warranty modal — applies the same activation + expiry to every
+  // device in selectedForPrint. Overwrites existing values silently per
+  // design decision. Shows progress during the write loop and a
+  // per-device failure list at the end so admin can retry individually.
+  const [bulkWarrantyOpen,     setBulkWarrantyOpen]     = useState(false);
+  const [bulkWarrantyActStr,   setBulkWarrantyActStr]   = useState("");
+  const [bulkWarrantyExpStr,   setBulkWarrantyExpStr]   = useState("");
+  const [bulkWarrantyMonths,   setBulkWarrantyMonths]   = useState(12);
+  const [bulkWarrantyManual,   setBulkWarrantyManual]   = useState(false);
+  const [bulkWarrantyRunning,  setBulkWarrantyRunning]  = useState(false);
+  const [bulkWarrantyProgress, setBulkWarrantyProgress] = useState(null);  // { done, total }
+  const [bulkWarrantyResult,   setBulkWarrantyResult]   = useState(null);
+  const [bulkWarrantyError,    setBulkWarrantyError]    = useState("");
 
   // QR sticker print settings. Persisted in localStorage per browser so
   // the admin's chosen sticker size + layout stick across sessions and
@@ -394,6 +428,13 @@ export default function AdminDevices() {
   const [configMap, setConfigMap]           = useState({});
   const [usersMap, setUsersMap]             = useState({});       // uid -> user doc (name, orgId, role)
   const [orgsMap, setOrgsMap]               = useState({});       // orgId -> org doc (name)
+  // Reverse lookup: deviceCode -> orgId. Populated by iterating every
+  // org's orgDevices subcollection at load time. Needed because
+  // org-attached devices don't carry orgId on the device doc itself;
+  // they're linked via orgDevices/<orgId>/devices/<deviceCode>. Without
+  // this, the Organisation filter missed every org-attached device
+  // whose ownerUid was null (or whose owner had a different orgId).
+  const [deviceOrgMap, setDeviceOrgMap]     = useState({});
   const [filterClass, setFilterClass]       = useState("all");
   const [filterFirmware, setFilterFirmware] = useState("");
   const [filterStatus, setFilterStatus]     = useState("all");    // all/online/offline
@@ -545,7 +586,7 @@ export default function AdminDevices() {
       getDevicesConfigMap(codes),
       getAllUsers(),
       getAllOrgs(),
-    ]).then(([info, live, cfg, users, orgs]) => {
+    ]).then(async ([info, live, cfg, users, orgs]) => {
       setInfoMap(info);
       setLiveMap(live);
       setConfigMap(cfg);
@@ -554,6 +595,20 @@ export default function AdminDevices() {
       const oMap = {}; orgs.forEach((o)  => { oMap[o.orgId] = o; });
       setUsersMap(uMap);
       setOrgsMap(oMap);
+      // Build the reverse lookup { deviceCode -> orgId } by fanning out
+      // one read per org. Device counts per org are small so this is
+      // cheap at admin-fleet scale. Done after the users/orgs maps land
+      // so the filter can use it immediately.
+      try {
+        const perOrg = await Promise.all(
+          orgs.map(async (o) => ({ orgId: o.orgId, devices: await getOrgDevices(o.orgId) }))
+        );
+        const dMap = {};
+        for (const { orgId, devices } of perOrg) {
+          for (const d of (devices || [])) dMap[d.deviceCode] = orgId;
+        }
+        setDeviceOrgMap(dMap);
+      } catch { /* ignore — filter degrades to owner-only path */ }
     }).catch(() => { /* non-fatal, filter just lacks live data */ });
   }
 
@@ -662,6 +717,198 @@ export default function AdminDevices() {
       await deleteDeviceFromCatalog(deviceCode);
       await load();
     } catch (err) { alert(err.message); }
+  }
+
+  // Convert Firestore Timestamp or Date or number → "yyyy-mm-dd" string
+  // for <input type="date">. Returns "" for nullish inputs.
+  function toDateInputValue(v) {
+    if (!v) return "";
+    const d = v.toDate ? v.toDate() : (v instanceof Date ? v : new Date(v));
+    if (isNaN(d.getTime())) return "";
+    const pad = (n) => String(n).padStart(2, "0");
+    return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`;
+  }
+
+  // Human-readable "05 Jan 2027" for display.
+  function formatWarrantyDate(v) {
+    if (!v) return "—";
+    const d = v.toDate ? v.toDate() : (v instanceof Date ? v : new Date(v));
+    if (isNaN(d.getTime())) return "—";
+    return d.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" });
+  }
+
+  // Open the warranty edit modal for a device. Pre-fills the three
+  // inputs from the device's current catalog values; falls back to
+  // today + 12 months if none set yet (operator hasn't run seed).
+  function openWarrantyEdit(d) {
+    const activated = d.warrantyActivatedAt;
+    const expires   = d.warrantyExpiresAt;
+    const duration  = Number.isFinite(d.warrantyDurationMonths) ? d.warrantyDurationMonths : 12;
+    setWarrantyActivatedStr(toDateInputValue(activated) || toDateInputValue(new Date()));
+    setWarrantyExpiresStr  (toDateInputValue(expires)   || toDateInputValue(new Date(Date.now() + 365 * 86400000)));
+    setWarrantyDurationMonths(duration);
+    setWarrantyManualExpiry(false);
+    setWarrantyError("");
+    setWarrantyEdit(d);
+  }
+
+  // Add N months to a date (preserves day-of-month where possible, clamps
+  // to last day of target month for Feb 30 → Feb 28 cases).
+  function addMonths(iso, months) {
+    const [y, m, d] = iso.split("-").map(Number);
+    const base = new Date(Date.UTC(y, m - 1 + months, 1));
+    const lastDay = new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth() + 1, 0)).getUTCDate();
+    base.setUTCDate(Math.min(d, lastDay));
+    const pad = (n) => String(n).padStart(2, "0");
+    return `${base.getUTCFullYear()}-${pad(base.getUTCMonth() + 1)}-${pad(base.getUTCDate())}`;
+  }
+
+  // Edit activation: if the operator hasn't manually touched expiry,
+  // shift expiry by the same delta so duration stays constant.
+  function onWarrantyActivatedChange(newIso) {
+    if (!warrantyManualExpiry && warrantyActivatedStr && warrantyExpiresStr) {
+      const oldAct = new Date(warrantyActivatedStr);
+      const newAct = new Date(newIso);
+      const delta  = newAct - oldAct;
+      if (!isNaN(delta)) {
+        const shifted = new Date(new Date(warrantyExpiresStr).getTime() + delta);
+        setWarrantyExpiresStr(toDateInputValue(shifted));
+      }
+    }
+    setWarrantyActivatedStr(newIso);
+  }
+
+  // Duration preset dropdown → recompute expiry from activation + N months.
+  function onWarrantyDurationChange(months) {
+    setWarrantyDurationMonths(months);
+    if (warrantyActivatedStr) {
+      setWarrantyExpiresStr(addMonths(warrantyActivatedStr, months));
+    }
+    setWarrantyManualExpiry(false);
+  }
+
+  // Explicit expiry edit — locks auto-shift for this session.
+  function onWarrantyExpiresChange(newIso) {
+    setWarrantyExpiresStr(newIso);
+    setWarrantyManualExpiry(true);
+  }
+
+  async function handleSaveWarranty() {
+    const act = warrantyActivatedStr ? new Date(warrantyActivatedStr) : null;
+    const exp = warrantyExpiresStr   ? new Date(warrantyExpiresStr)   : null;
+    if (!act || isNaN(act.getTime())) { setWarrantyError("Activation date is required."); return; }
+    if (!exp || isNaN(exp.getTime())) { setWarrantyError("Expiry date is required."); return; }
+    if (exp <= act) { setWarrantyError("Expiry must be after activation."); return; }
+
+    setWarrantySaving(true); setWarrantyError("");
+    try {
+      await setDeviceWarranty(warrantyEdit.deviceCode, {
+        activatedAt:    act,
+        expiresAt:      exp,
+        durationMonths: warrantyDurationMonths,
+      });
+      setWarrantyEdit(null);
+      await load();
+    } catch (e) {
+      setWarrantyError(e.message || "Save failed.");
+    } finally {
+      setWarrantySaving(false);
+    }
+  }
+
+  // Idempotent bulk seed. Only touches devices with no warrantyActivatedAt
+  // — admin-edited devices stay untouched. See seedDeviceWarranties()
+  // comment in firebase/db.js for how activation is computed per device.
+  async function handleSeedWarranties() {
+    setSeedWarrantyRunning(true);
+    setSeedWarrantyResult(null);
+    try {
+      const r = await seedDeviceWarranties();
+      setSeedWarrantyResult(r);
+      await load();
+    } catch (e) {
+      setSeedWarrantyResult({ error: e.message || "Seed failed" });
+    } finally {
+      setSeedWarrantyRunning(false);
+    }
+  }
+
+  // Open the bulk warranty modal. Pre-fills today + 12 months as a sane
+  // default; admin typically picks the real install month.
+  function openBulkWarranty() {
+    if (selectedForPrint.size === 0) return;
+    setBulkWarrantyActStr(toDateInputValue(new Date()));
+    setBulkWarrantyExpStr(toDateInputValue(new Date(Date.now() + 365 * 86400000)));
+    setBulkWarrantyMonths(12);
+    setBulkWarrantyManual(false);
+    setBulkWarrantyError("");
+    setBulkWarrantyResult(null);
+    setBulkWarrantyProgress(null);
+    setBulkWarrantyOpen(true);
+  }
+
+  // Same auto-shift behavior as single-device warranty: editing activation
+  // moves expiry by the same delta unless admin manually edited expiry.
+  function onBulkWarrantyActChange(newIso) {
+    if (!bulkWarrantyManual && bulkWarrantyActStr && bulkWarrantyExpStr) {
+      const oldAct = new Date(bulkWarrantyActStr);
+      const newAct = new Date(newIso);
+      const delta  = newAct - oldAct;
+      if (!isNaN(delta)) {
+        const shifted = new Date(new Date(bulkWarrantyExpStr).getTime() + delta);
+        setBulkWarrantyExpStr(toDateInputValue(shifted));
+      }
+    }
+    setBulkWarrantyActStr(newIso);
+  }
+
+  function onBulkWarrantyDurationChange(months) {
+    setBulkWarrantyMonths(months);
+    if (bulkWarrantyActStr) setBulkWarrantyExpStr(addMonths(bulkWarrantyActStr, months));
+    setBulkWarrantyManual(false);
+  }
+
+  function onBulkWarrantyExpChange(newIso) {
+    setBulkWarrantyExpStr(newIso);
+    setBulkWarrantyManual(true);
+  }
+
+  async function handleBulkWarrantySave() {
+    const act = bulkWarrantyActStr ? new Date(bulkWarrantyActStr) : null;
+    const exp = bulkWarrantyExpStr ? new Date(bulkWarrantyExpStr) : null;
+    if (!act || isNaN(act.getTime())) { setBulkWarrantyError("Activation date is required."); return; }
+    if (!exp || isNaN(exp.getTime())) { setBulkWarrantyError("Expiry date is required."); return; }
+    if (exp <= act) { setBulkWarrantyError("Expiry must be after activation."); return; }
+
+    const codes = [...selectedForPrint];
+    setBulkWarrantyRunning(true);
+    setBulkWarrantyError("");
+    setBulkWarrantyProgress({ done: 0, total: codes.length });
+    try {
+      const r = await bulkSetDeviceWarranty(
+        codes,
+        { activatedAt: act, expiresAt: exp, durationMonths: bulkWarrantyMonths },
+        (done, total) => setBulkWarrantyProgress({ done, total }),
+      );
+      setBulkWarrantyResult(r);
+      await load();
+    } catch (e) {
+      setBulkWarrantyError(e.message || "Bulk save failed.");
+    } finally {
+      setBulkWarrantyRunning(false);
+    }
+  }
+
+  // Compute "in warranty / expires in N days / expired N days ago" status
+  // for display. Returns { label, tone }. Tone drives the chip color.
+  function warrantyStatus(d) {
+    if (!d.warrantyExpiresAt) return { label: "Not set", tone: "gray" };
+    const expMs = (d.warrantyExpiresAt.toDate ? d.warrantyExpiresAt.toDate() : new Date(d.warrantyExpiresAt)).getTime();
+    const now   = Date.now();
+    const daysLeft = Math.round((expMs - now) / 86400000);
+    if (daysLeft < 0)  return { label: `Expired ${-daysLeft}d ago`,   tone: "red"    };
+    if (daysLeft < 30) return { label: `Expires in ${daysLeft}d`,     tone: "amber"  };
+    return { label: "In warranty", tone: "green" };
   }
 
   // ══════════════════════════════════════════════
@@ -917,8 +1164,18 @@ export default function AdminDevices() {
       if (filterOwnerType === "individual" && (!owner || owner.type !== "individual")) return false;
       if (filterOwnerType === "group"      && (!owner || owner.type !== "group"))      return false;
 
-      // Specific org filter — used to onboard one customer's whole fleet.
-      if (filterOrg !== "all" && (!owner || owner.orgId !== filterOrg)) return false;
+      // Specific org filter — matches EITHER:
+      //   (a) device's owner user belongs to filterOrg, OR
+      //   (b) device is attached directly to filterOrg via
+      //       orgDevices/<filterOrg>/devices/<deviceCode>
+      // The old check only handled (a), which missed every org-attached
+      // device whose ownerUid was null (common for devices registered
+      // by a super-admin before being assigned to a user).
+      if (filterOrg !== "all") {
+        const ownerOrg    = owner?.orgId || null;
+        const attachedOrg = deviceOrgMap[d.deviceCode] || null;
+        if (ownerOrg !== filterOrg && attachedOrg !== filterOrg) return false;
+      }
 
       // Free-text owner search — matches user name, email, or org name.
       if (filterOwner) {
@@ -936,7 +1193,7 @@ export default function AdminDevices() {
       }
       return true;
     });
-  }, [registered, infoMap, liveMap, configMap, usersMap, orgsMap, filterClass, filterFirmware, filterStatus, filterDiag, filterNotify, filterAnalytics, filterOwnerType, filterOrg, filterOwner, filterSearch]);
+  }, [registered, infoMap, liveMap, configMap, usersMap, orgsMap, deviceOrgMap, filterClass, filterFirmware, filterStatus, filterDiag, filterNotify, filterAnalytics, filterOwnerType, filterOrg, filterOwner, filterSearch]);
 
   // Drop selections that no longer match the active filter so the bulk
   // "Apply to N" count stays honest. Without this, admin could narrow the
@@ -1106,6 +1363,10 @@ export default function AdminDevices() {
           <button onClick={showQrScanner ? stopQrScanner : startQrScanner}
             className={`px-4 py-2 rounded-lg text-sm font-medium ${showQrScanner ? "bg-red-100 text-red-700" : "bg-purple-600 text-white hover:bg-purple-700"}`}>
             {showQrScanner ? "Stop Scanner" : "Scan QR"}
+          </button>
+          <button onClick={() => { setSeedWarrantyResult(null); setSeedWarrantyOpen(true); }}
+            className="bg-emerald-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-emerald-700">
+            🛡️ Seed Warranty
           </button>
           <button onClick={() => setShowManualAdd(!showManualAdd)}
             className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700">
@@ -1441,6 +1702,30 @@ export default function AdminDevices() {
                       </div>
                     ))}
 
+                    {/* Warranty — admin-managed per-device business record.
+                        Bulk variant applies the same activation + expiry
+                        to every selected device. Overwrites existing values
+                        silently (admin is intentionally doing bulk). Modal
+                        has the same auto-shift / preset logic as the
+                        per-device Warranty button. */}
+                    <div className="bg-white rounded-lg px-3 py-2">
+                      <div className="flex items-start justify-between gap-3 flex-wrap">
+                        <div className="min-w-0 flex-1">
+                          <div className="text-sm font-medium text-gray-900">Set warranty</div>
+                          <div className="text-[10px] text-gray-500">
+                            Apply the same activation + expiry date to every selected device.
+                          </div>
+                        </div>
+                        <button
+                          onClick={openBulkWarranty}
+                          disabled={bulkBusy !== null}
+                          className="px-3 py-1 text-xs font-semibold rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-40"
+                        >
+                          🛡️ Set warranty ({selectedForPrint.size})
+                        </button>
+                      </div>
+                    </div>
+
                     {/* History cleanup — destructive, kept visually distinct
                         from the on/off rows. Sequential delete with live
                         progress so admin sees activity rather than a frozen
@@ -1518,6 +1803,27 @@ export default function AdminDevices() {
                           {" | "}{d.sensorCount || 0} sensors
                         </>}
                       </p>
+                      {(() => {
+                        const s = warrantyStatus(d);
+                        const toneMap = {
+                          gray:  "bg-gray-100 text-gray-600",
+                          green: "bg-emerald-100 text-emerald-700",
+                          amber: "bg-amber-100 text-amber-800",
+                          red:   "bg-red-100 text-red-700",
+                        };
+                        return (
+                          <p className="text-xs text-gray-500 mt-1 flex items-center gap-1.5 flex-wrap">
+                            <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${toneMap[s.tone]}`}>
+                              🛡️ {s.label}
+                            </span>
+                            {d.warrantyActivatedAt && (
+                              <span className="text-[11px] text-gray-500">
+                                Activated {formatWarrantyDate(d.warrantyActivatedAt)} · Expires {formatWarrantyDate(d.warrantyExpiresAt)}
+                              </span>
+                            )}
+                          </p>
+                        );
+                      })()}
                     </div>
                     <div className="flex flex-wrap gap-1.5">
                       <button onClick={() => openDeviceViewer(d.deviceCode)} className="px-3 py-1.5 bg-cyan-50 text-cyan-700 rounded-lg text-xs hover:bg-cyan-100">View</button>
@@ -1537,6 +1843,9 @@ export default function AdminDevices() {
                       <button onClick={() => setQrDevice(d.deviceCode)} className="px-3 py-1.5 bg-blue-50 text-blue-600 rounded-lg text-xs hover:bg-blue-100">QR</button>
                       <button onClick={() => setAssignOwnerFor(d)} className="px-3 py-1.5 bg-indigo-50 text-indigo-700 rounded-lg text-xs hover:bg-indigo-100">
                         Owner
+                      </button>
+                      <button onClick={() => openWarrantyEdit(d)} className="px-3 py-1.5 bg-emerald-50 text-emerald-700 rounded-lg text-xs hover:bg-emerald-100">
+                        Warranty
                       </button>
                       <button onClick={() => handleToggleDeviceActive(d.deviceCode, d.isActive)}
                         className={`px-3 py-1.5 rounded-lg text-xs ${devActive ? "bg-red-50 text-red-600 hover:bg-red-100" : "bg-green-50 text-green-600 hover:bg-green-100"}`}>
@@ -1957,6 +2266,278 @@ export default function AdminDevices() {
                   {d.deviceName && <p className="text-xs text-gray-500">{d.deviceName}</p>}
                 </div>
               ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ─── Warranty Edit modal (single device) ───────────────────── */}
+      {warrantyEdit && (
+        <div
+          className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+          onClick={() => !warrantySaving && setWarrantyEdit(null)}
+        >
+          <div className="bg-white rounded-xl p-5 w-full max-w-md" onClick={(e) => e.stopPropagation()}>
+            <h3 className="font-bold text-lg mb-1">Device Warranty</h3>
+            <p className="text-xs text-gray-500 font-mono mb-3">{warrantyEdit.deviceCode}</p>
+
+            <div className="space-y-3">
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">Activation date</label>
+                <input
+                  type="date"
+                  value={warrantyActivatedStr}
+                  onChange={(e) => onWarrantyActivatedChange(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                />
+                <p className="text-[11px] text-gray-500 mt-0.5">When the warranty clock started (install / first-boot date).</p>
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">Duration</label>
+                <select
+                  value={warrantyDurationMonths}
+                  onChange={(e) => onWarrantyDurationChange(Number(e.target.value))}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                >
+                  <option value={6}>6 months</option>
+                  <option value={12}>1 year (default)</option>
+                  <option value={18}>18 months</option>
+                  <option value={24}>2 years</option>
+                  <option value={36}>3 years</option>
+                  <option value={60}>5 years</option>
+                </select>
+                <p className="text-[11px] text-gray-500 mt-0.5">Picks a preset. Recomputes expiry from activation + duration.</p>
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">Expiry date</label>
+                <input
+                  type="date"
+                  value={warrantyExpiresStr}
+                  onChange={(e) => onWarrantyExpiresChange(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                />
+                <p className="text-[11px] text-gray-500 mt-0.5">
+                  {warrantyManualExpiry
+                    ? "Manual override — editing activation above won't shift this date anymore for this session."
+                    : "Auto-shifts if you edit activation. Type here to set an exact date."}
+                </p>
+              </div>
+
+              {warrantyError && (
+                <p className="text-xs text-red-600 bg-red-50 border border-red-200 rounded px-2 py-1">{warrantyError}</p>
+              )}
+            </div>
+
+            <div className="flex gap-2 mt-4">
+              <button
+                onClick={() => setWarrantyEdit(null)}
+                disabled={warrantySaving}
+                className="flex-1 py-2 bg-gray-100 text-gray-700 rounded text-sm hover:bg-gray-200 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSaveWarranty}
+                disabled={warrantySaving}
+                className="flex-1 py-2 bg-emerald-600 text-white rounded text-sm font-medium hover:bg-emerald-700 disabled:opacity-50 flex items-center justify-center gap-1.5"
+              >
+                {warrantySaving && (
+                  <svg className="animate-spin h-3 w-3" viewBox="0 0 24 24" fill="none">
+                    <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" className="opacity-25" />
+                    <path d="M4 12a8 8 0 018-8" stroke="currentColor" strokeWidth="4" fill="none" className="opacity-75" />
+                  </svg>
+                )}
+                {warrantySaving ? "Saving…" : "Save warranty"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ─── Bulk Set Warranty modal (N selected) ─────────────────── */}
+      {bulkWarrantyOpen && (
+        <div
+          className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+          onClick={() => !bulkWarrantyRunning && setBulkWarrantyOpen(false)}
+        >
+          <div className="bg-white rounded-xl p-5 w-full max-w-md" onClick={(e) => e.stopPropagation()}>
+            <h3 className="font-bold text-lg mb-1">Set Warranty — Bulk</h3>
+            <p className="text-sm text-gray-600 mb-3">
+              Apply the same activation + expiry date to
+              {" "}<span className="font-semibold">{selectedForPrint.size}</span>{" "}
+              selected device{selectedForPrint.size !== 1 ? "s" : ""}.
+              Any existing warranty data on these devices will be overwritten.
+            </p>
+
+            {!bulkWarrantyResult ? (
+              <div className="space-y-3">
+                <div>
+                  <label className="block text-xs font-medium text-gray-700 mb-1">Activation date</label>
+                  <input
+                    type="date"
+                    value={bulkWarrantyActStr}
+                    onChange={(e) => onBulkWarrantyActChange(e.target.value)}
+                    disabled={bulkWarrantyRunning}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm disabled:opacity-60"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-gray-700 mb-1">Duration</label>
+                  <select
+                    value={bulkWarrantyMonths}
+                    onChange={(e) => onBulkWarrantyDurationChange(Number(e.target.value))}
+                    disabled={bulkWarrantyRunning}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm disabled:opacity-60"
+                  >
+                    <option value={6}>6 months</option>
+                    <option value={12}>1 year (default)</option>
+                    <option value={18}>18 months</option>
+                    <option value={24}>2 years</option>
+                    <option value={36}>3 years</option>
+                    <option value={60}>5 years</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-gray-700 mb-1">Expiry date</label>
+                  <input
+                    type="date"
+                    value={bulkWarrantyExpStr}
+                    onChange={(e) => onBulkWarrantyExpChange(e.target.value)}
+                    disabled={bulkWarrantyRunning}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm disabled:opacity-60"
+                  />
+                  <p className="text-[11px] text-gray-500 mt-0.5">
+                    {bulkWarrantyManual
+                      ? "Manual override — activation edits won't shift this for the rest of this session."
+                      : "Auto-shifts if you edit activation above."}
+                  </p>
+                </div>
+
+                {bulkWarrantyError && (
+                  <p className="text-xs text-red-600 bg-red-50 border border-red-200 rounded px-2 py-1">{bulkWarrantyError}</p>
+                )}
+
+                {bulkWarrantyProgress && bulkWarrantyRunning && (
+                  <div className="text-xs text-blue-900 bg-blue-50 border border-blue-200 rounded px-2 py-1">
+                    Writing warranty to device {bulkWarrantyProgress.done} of {bulkWarrantyProgress.total}…
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="text-sm bg-emerald-50 border border-emerald-200 text-emerald-900 rounded p-2">
+                ✓ Applied to <span className="font-semibold">{bulkWarrantyResult.applied}</span> device{bulkWarrantyResult.applied === 1 ? "" : "s"}.
+                {bulkWarrantyResult.failed?.length > 0 && (
+                  <div className="mt-2 text-xs text-red-700">
+                    Failed on {bulkWarrantyResult.failed.length} device{bulkWarrantyResult.failed.length === 1 ? "" : "s"} — retry individually via the Warranty button:
+                    <ul className="list-disc list-inside mt-1 max-h-24 overflow-y-auto">
+                      {bulkWarrantyResult.failed.slice(0, 10).map((f) => (
+                        <li key={f.code} className="font-mono text-[11px]">{f.code} — {f.reason}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div className="flex gap-2 mt-4">
+              <button
+                onClick={() => setBulkWarrantyOpen(false)}
+                disabled={bulkWarrantyRunning}
+                className="flex-1 py-2 bg-gray-100 text-gray-700 rounded text-sm hover:bg-gray-200 disabled:opacity-50"
+              >
+                {bulkWarrantyResult ? "Close" : "Cancel"}
+              </button>
+              {!bulkWarrantyResult && (
+                <button
+                  onClick={handleBulkWarrantySave}
+                  disabled={bulkWarrantyRunning}
+                  className="flex-1 py-2 bg-emerald-600 text-white rounded text-sm font-medium hover:bg-emerald-700 disabled:opacity-50 flex items-center justify-center gap-1.5"
+                >
+                  {bulkWarrantyRunning && (
+                    <svg className="animate-spin h-3 w-3" viewBox="0 0 24 24" fill="none">
+                      <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" className="opacity-25" />
+                      <path d="M4 12a8 8 0 018-8" stroke="currentColor" strokeWidth="4" fill="none" className="opacity-75" />
+                    </svg>
+                  )}
+                  {bulkWarrantyRunning
+                    ? "Saving…"
+                    : `Apply to ${selectedForPrint.size} device${selectedForPrint.size !== 1 ? "s" : ""}`}
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ─── Seed Warranty Data modal ─────────────────────────────── */}
+      {seedWarrantyOpen && (
+        <div
+          className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+          onClick={() => !seedWarrantyRunning && setSeedWarrantyOpen(false)}
+        >
+          <div className="bg-white rounded-xl p-5 w-full max-w-md" onClick={(e) => e.stopPropagation()}>
+            <h3 className="font-bold text-lg mb-1">Seed Warranty Data</h3>
+            <p className="text-sm text-gray-600 mb-3">
+              Sets warranty activation + expiry on every device that doesn't have it yet. Idempotent —
+              devices you've already edited manually won't be touched.
+            </p>
+            <div className="text-xs text-gray-600 bg-gray-50 border border-gray-200 rounded p-2 mb-3 space-y-1">
+              <div>Activation date source (first match wins):</div>
+              <div className="pl-3">1. Firmware's <span className="font-mono">firstBootAt</span> (real device first-boot)</div>
+              <div className="pl-3">2. Firebase <span className="font-mono">firstSeenAt</span> (first push timestamp)</div>
+              <div className="pl-3">3. Catalog <span className="font-mono">createdAt</span> (registered-in-cloud date)</div>
+              <div>Expiry: activation + 365 days. Duration: 12 months.</div>
+            </div>
+
+            {seedWarrantyResult && !seedWarrantyResult.error && (
+              <div className="text-sm bg-emerald-50 border border-emerald-200 text-emerald-900 rounded p-2 mb-3">
+                ✓ Seeded <span className="font-semibold">{seedWarrantyResult.seeded}</span> device{seedWarrantyResult.seeded === 1 ? "" : "s"}.{" "}
+                Skipped <span className="font-semibold">{seedWarrantyResult.skipped}</span> (already had warranty data).
+                {seedWarrantyResult.failed?.length > 0 && (
+                  <div className="mt-2 text-xs text-red-700">
+                    Failed on {seedWarrantyResult.failed.length} device{seedWarrantyResult.failed.length === 1 ? "" : "s"}:
+                    <ul className="list-disc list-inside mt-1 max-h-24 overflow-y-auto">
+                      {seedWarrantyResult.failed.slice(0, 10).map((f) => (
+                        <li key={f.code} className="font-mono text-[11px]">{f.code} — {f.reason}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            )}
+            {seedWarrantyResult?.error && (
+              <div className="text-sm bg-red-50 border border-red-200 text-red-800 rounded p-2 mb-3">
+                Error: {seedWarrantyResult.error}
+              </div>
+            )}
+
+            <div className="flex gap-2">
+              <button
+                onClick={() => setSeedWarrantyOpen(false)}
+                disabled={seedWarrantyRunning}
+                className="flex-1 py-2 bg-gray-100 text-gray-700 rounded text-sm hover:bg-gray-200 disabled:opacity-50"
+              >
+                {seedWarrantyResult ? "Close" : "Cancel"}
+              </button>
+              {!seedWarrantyResult && (
+                <button
+                  onClick={handleSeedWarranties}
+                  disabled={seedWarrantyRunning}
+                  className="flex-1 py-2 bg-emerald-600 text-white rounded text-sm font-medium hover:bg-emerald-700 disabled:opacity-50 flex items-center justify-center gap-1.5"
+                >
+                  {seedWarrantyRunning && (
+                    <svg className="animate-spin h-3 w-3" viewBox="0 0 24 24" fill="none">
+                      <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" className="opacity-25" />
+                      <path d="M4 12a8 8 0 018-8" stroke="currentColor" strokeWidth="4" fill="none" className="opacity-75" />
+                    </svg>
+                  )}
+                  {seedWarrantyRunning ? "Seeding…" : "Seed now"}
+                </button>
+              )}
             </div>
           </div>
         </div>

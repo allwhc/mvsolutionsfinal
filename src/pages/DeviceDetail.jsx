@@ -886,6 +886,32 @@ function SensorValveMotorDetail({ code, live, info, isOnline }) {
           <span className={isOnline ? "text-gray-900" : "text-gray-400"}>{rssiLabel(live?.rssi, isOnline)}</span>
           <span className="text-gray-500">Status</span>
           <span className={isOnline ? "text-green-600" : "text-gray-400"}>{isOnline ? "Online" : "Offline"}</span>
+          {/* Warranty — read-only line visible to anyone viewing device
+              detail. Super-admin edits via /admin/devices → Warranty
+              button (not here); keeps this page clean. Shows "Not set"
+              until super-admin seeds warranty data for this device. */}
+          <span className="text-gray-500">Warranty</span>
+          <span className="text-gray-900">
+            {(() => {
+              const act = catalog?.warrantyActivatedAt;
+              const exp = catalog?.warrantyExpiresAt;
+              const fmt = (v) => {
+                if (!v) return "—";
+                const d = v.toDate ? v.toDate() : (v instanceof Date ? v : new Date(v));
+                if (isNaN(d.getTime())) return "—";
+                return d.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" });
+              };
+              if (!act) return <span className="text-gray-400">Not set</span>;
+              const expMs = exp ? (exp.toDate ? exp.toDate() : new Date(exp)).getTime() : null;
+              const expired = expMs != null && expMs < Date.now();
+              return (
+                <span className={expired ? "text-red-600" : "text-gray-900"}>
+                  Activated {fmt(act)} · Expires {fmt(exp)}
+                  {expired && <span className="ml-1 text-[11px] bg-red-100 text-red-700 px-1.5 py-0.5 rounded-full">expired</span>}
+                </span>
+              );
+            })()}
+          </span>
           <span className="text-gray-500">Subscribers</span>
           <span className="text-gray-900">{subscribers.length}</span>
           <span className="text-gray-500">Access</span>

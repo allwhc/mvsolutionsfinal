@@ -261,6 +261,102 @@ export async function deleteDeviceFromCatalog(deviceCode) {
   await deleteDoc(doc(db, "deviceCatalog", deviceCode));
 }
 
+// ── Device Warranty ──
+// Warranty data lives on deviceCatalog alongside tankCapacityLitres,
+// deviceName, cleanIntervalDays. Three fields:
+//   warrantyActivatedAt    (Timestamp) — when warranty clock started
+//   warrantyExpiresAt      (Timestamp) — when warranty ends
+//   warrantyDurationMonths (number)    — convenience; expiry = activated + duration
+// Edit activation → caller recomputes expiry = activation + duration.
+// Edit duration dropdown → caller recomputes expiry.
+// Edit expiry directly → duration becomes derived (we don't try to
+// back-propagate to months — just store the explicit expiry).
+export async function setDeviceWarranty(deviceCode, { activatedAt, expiresAt, durationMonths }) {
+  const payload = {};
+  if (activatedAt    !== undefined) payload.warrantyActivatedAt    = activatedAt;
+  if (expiresAt      !== undefined) payload.warrantyExpiresAt      = expiresAt;
+  if (durationMonths !== undefined) payload.warrantyDurationMonths = durationMonths;
+  await updateDoc(doc(db, "deviceCatalog", deviceCode), payload);
+}
+
+// Bulk-set warranty on multiple devices at once (all same values).
+// Admin-triggered from the Admin > Devices bulk actions row — intended
+// for "Kalpataru's whole fleet: 1 year starting Jan 1" kind of flows.
+//
+// Continue-on-error: one failed write doesn't stop the loop. Returns
+// { applied: N, failed: [{code, reason}] } so the UI can show which
+// devices need manual follow-up. onProgress(done, total) lets the UI
+// update a progress bar during the loop.
+export async function bulkSetDeviceWarranty(deviceCodes, { activatedAt, expiresAt, durationMonths }, onProgress) {
+  const result = { applied: 0, failed: [] };
+  const total  = deviceCodes.length;
+  for (let i = 0; i < total; i++) {
+    const code = deviceCodes[i];
+    try {
+      await setDeviceWarranty(code, { activatedAt, expiresAt, durationMonths });
+      result.applied++;
+    } catch (e) {
+      result.failed.push({ code, reason: e.message || String(e) });
+    }
+    if (onProgress) onProgress(i + 1, total);
+  }
+  return result;
+}
+
+// Seed warranty on every device that doesn't have it yet. Idempotent —
+// never overwrites a device that already has warrantyActivatedAt set.
+//
+// For each unseeded device:
+//   1. Read /devices/<code>/info from RTDB
+//   2. Pick activation = info.firstBootAt (epoch seconds, convert to ms)
+//                     || info.firstSeenAt (ms)
+//                     || catalog.createdAt (Firestore Timestamp)
+//                     || Date.now() as last resort
+//   3. expiry = activation + 365 days
+//   4. Write both to deviceCatalog
+//
+// Returns { seeded: N, skipped: N, failed: [{code, reason}] }.
+// Caller shows a confirmation dialog + progress spinner.
+export async function seedDeviceWarranties() {
+  // Dynamic import of rtdb helpers so this file stays Firestore-only
+  // from a dep-graph POV (seed runs rarely; cost is a one-time code-split
+  // chunk, not a bundle regression on the main page).
+  const { getDeviceInfo } = await import("./rtdb");
+  const all = await getAllDevices();
+  const result = { seeded: 0, skipped: 0, failed: [] };
+
+  for (const d of all) {
+    if (d.warrantyActivatedAt) {
+      result.skipped++;
+      continue;
+    }
+    try {
+      const info = await getDeviceInfo(d.deviceCode);
+      let activationMs;
+      if (info?.firstBootAt && Number(info.firstBootAt) > 0) {
+        activationMs = Number(info.firstBootAt) * 1000;
+      } else if (info?.firstSeenAt && Number(info.firstSeenAt) > 0) {
+        activationMs = Number(info.firstSeenAt);
+      } else if (d.createdAt?.toMillis) {
+        activationMs = d.createdAt.toMillis();
+      } else {
+        activationMs = Date.now();
+      }
+      const activatedAt = new Date(activationMs);
+      const expiresAt   = new Date(activationMs + 365 * 24 * 3600 * 1000);
+      await setDeviceWarranty(d.deviceCode, {
+        activatedAt,
+        expiresAt,
+        durationMonths: 12,
+      });
+      result.seeded++;
+    } catch (e) {
+      result.failed.push({ code: d.deviceCode, reason: e.message || String(e) });
+    }
+  }
+  return result;
+}
+
 // ── Pending Devices ──
 export async function getPendingDevices() {
   const snap = await getDocs(collection(db, "pendingDevices"));
