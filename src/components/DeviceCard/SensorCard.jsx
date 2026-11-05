@@ -18,8 +18,16 @@ function hasThreshold(v) {
 }
 
 function getAlertFlash({ sensorError, sensorOffline, confirmedPct, alertLowPct, alertHighPct }) {
-  // Priority 1: Sensor error — purple
-  if (sensorError || sensorOffline) return "animate-pulse-purple";
+  // Priority 1a: Hard sensor error (probe fault / DIP bits inconsistent) — purple pulse.
+  //   Reading is untrustworthy, needs fault investigation.
+  if (sensorError) return "animate-pulse-purple";
+  // Priority 1b: Ultrasonic sensor-missing / dead (bit 0x20 set after
+  //   15 consecutive failed bursts) — amber pulse, NOT purple.
+  //   Reading shown on the card is the last-known-good value held from
+  //   zone memory while the hardware is unreachable. Soft warning so
+  //   the operator notices the "Check Sensor" badge inside the tank
+  //   visualisation but isn't panicked into thinking the device died.
+  if (sensorOffline) return "animate-pulse-yellow";
   // Priority 2: Level <= low threshold — red
   if (hasThreshold(alertLowPct)  && confirmedPct <= Number(alertLowPct))  return "animate-pulse-red";
   // Priority 3: Level >= high threshold — green
@@ -123,7 +131,20 @@ export default function SensorCard({ deviceCode, deviceName, live, info, catalog
                 : 0;
   const flags = live?.flags ?? 0;
   const rawSensorError = !!(flags & 0x01);
-  const sensorOffline = !!(flags & 0x20);
+  // Raw firmware signal — true after 15 consecutive failed bursts
+  // (~30 sec). This is the authoritative sensor-health state and we
+  // keep it as `rawSensorOffline` for reasoning; see `sensorOffline`
+  // below for what the UI actually reacts to.
+  const rawSensorOffline = !!(flags & 0x20);
+  // Visibility gate — the "Check Sensor" badge + amber pulse should
+  // appear ONLY when probe-diagnostics mode is on at the dashboard.
+  // Keeps regular customers from panicking over a transient 30-sec
+  // sensor hiccup, while still letting any admin who flips the
+  // header debug toggle spot which devices need investigation.
+  // Hard sensor-error (bit 0x01) is NOT gated this way — that path
+  // always surfaces because it indicates an active probe fault, not
+  // a transient missing-pings condition.
+  const sensorOffline = rawSensorOffline && debugMode;
 
   // For DIP sensors: normally use the "highest wet probe" resolved level
   // so a faulty lower probe doesn't wreck the customer's view. In debug
@@ -198,12 +219,17 @@ export default function SensorCard({ deviceCode, deviceName, live, info, catalog
           info + sensorType context) and passed to TankViz so the
           third stat pill renders alongside LEVEL + VOLUME. Only
           ultrasonic devices with enough data get a depth value;
-          everything else passes null → pill hidden. */}
-      {sensorOffline ? (
-        <div className="text-center py-4">
-          <p className="text-sm text-red-500 font-medium">Sensor Offline</p>
-        </div>
-      ) : (
+          everything else passes null → pill hidden.
+
+          v2026-11: when sensorOffline is true (bit 0x20 — firmware has
+          seen 15+ consecutive failed bursts, ~30 sec of no valid pings)
+          we keep showing the last-known pct and volume so the customer
+          doesn't lose their reading, and overlay a "⚠ Check Sensor"
+          badge inside the tank. Device is still online talking to cloud,
+          only the sensor hardware has gone silent — this framing tells
+          the customer "go look at the sensor physically" without making
+          the whole tile useless. */}
+      <div className="relative">
         <TankViz
           confirmedPct={confirmedPct}
           sensorBits={sensorBits}
@@ -211,11 +237,8 @@ export default function SensorCard({ deviceCode, deviceName, live, info, catalog
           sensorError={sensorError}
           sensorType={sensorType}
           tankCapacityLitres={tankCapacityLitres}
-          waterDepthCm={sensorType === 2 && isOnline && !sensorError
+          waterDepthCm={sensorType === 2 && isOnline && !sensorError && !sensorOffline
             ? computeWaterDepthCm({
-                // Use sticky last-good rawCm so Depth pill stays in sync
-                // with the pct we're actually rendering (both come from
-                // the same remembered-value cache above).
                 rawCm:        typeof liveRawCm === "number" ? liveRawCm : lastGoodRawCmRef.current,
                 pct:          confirmedPct,
                 tankHeightCm: info?.tankHeightCm,
@@ -224,7 +247,14 @@ export default function SensorCard({ deviceCode, deviceName, live, info, catalog
               })
             : null}
         />
-      )}
+        {sensorOffline && (
+          <div className="pointer-events-none absolute inset-0 flex items-start justify-center pt-2">
+            <span className="rounded-full bg-amber-100 border border-amber-300 text-amber-900 text-[11px] font-semibold px-2.5 py-1 shadow-sm">
+              ⚠ Check Sensor
+            </span>
+          </div>
+        )}
+      </div>
 
       {/* Sensor type label */}
       <div className="flex items-center justify-between text-xs text-gray-400">
