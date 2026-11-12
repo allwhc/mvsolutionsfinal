@@ -1,8 +1,8 @@
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { doc, getDoc, updateDoc } from "firebase/firestore";
 import { db } from "../firebase/config";
-import { listenToDeviceHistory, clearDeviceHistory, clearPumpFault, pausePump, resumePump } from "../firebase/rtdb";
+import { listenToDeviceHistory, clearDeviceHistory, clearPumpFault, pausePump, resumePump, cancelPumpCommand, PUMP_COMMAND_KEYS } from "../firebase/rtdb";
 import PanelSettingsTab from "../components/PumpDetail/PanelSettingsTab";
 import ForceRunButton from "../components/PumpDetail/ForceRunButton";
 import AnalyticsTab from "../components/PumpDetail/AnalyticsTab";
@@ -79,24 +79,60 @@ function TerraceDot({ state }) {
 // which firmware consumes + resets all fault state (same reset the AP
 // page's "CLEAR ERROR & RESUME" button performs). Three-state UX:
 // idle / sending / sent (brief). Any error surfaces inline.
-function ClearFaultButton({ code }) {
-  const [state, setState] = useState("idle");
+// Fix B: ack-timeout for /commands/clearFault.
+// Previously showed "✓ Clear command sent" for 3 s with NO verification
+// the pump actually cleared — so if device was offline, user saw a
+// green tick but the fault stayed, and the command sat queued in RTDB
+// to execute hours later on reconnect (the bug pattern we're closing).
+// Now: watches live.pumpState to flip away from "fault" within 60 s;
+// if not, cancels the queued cmd + bubbles up to mark the device
+// offline on the parent via onTimeout.
+function ClearFaultButton({ code, live, onTimeout }) {
+  const [state, setState] = useState("idle");          // idle | sending | awaiting
   const [err,   setErr]   = useState("");
+  const timerRef = useRef(null);
+
+  const isFault = live?.pumpState === "fault";
+
+  // Confirmation: the moment live.pumpState stops being "fault" while
+  // we were awaiting, we're done.
+  useEffect(() => {
+    if (state === "awaiting" && !isFault) {
+      if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
+      setState("idle");
+    }
+  }, [state, isFault]);
+
+  useEffect(() => () => {
+    if (timerRef.current) clearTimeout(timerRef.current);
+  }, []);
+
   async function handleClick() {
-    if (!code || state === "sending") return;
+    if (!code || state !== "idle") return;
     setErr("");
     setState("sending");
     try {
       await clearPumpFault(code);
-      setState("sent");
-      setTimeout(() => setState("idle"), 3000);
+      setState("awaiting");
+      if (timerRef.current) clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(() => {
+        // Fix B: no ack within 60 s → cancel the queued cmd and tell
+        // the parent to mark device offline until it reconnects.
+        onTimeout?.("clearFault");
+        setState("idle");
+        timerRef.current = null;
+      }, 60_000);
     } catch (e) {
       console.error("clear fault failed:", e);
       setErr("Failed to send — try again");
       setState("idle");
     }
   }
-  const label = state === "sending" ? "Sending…" : state === "sent" ? "✓ Clear command sent" : "🔄 Clear Fault & Resume";
+
+  const label = state === "sending"  ? "Sending…"
+              : state === "awaiting" ? "Waiting for pump to clear fault…"
+              :                        "🔄 Clear Fault & Resume";
+
   return (
     <div className="mb-3 max-w-sm mx-auto">
       <button
@@ -118,37 +154,80 @@ function ClearFaultButton({ code }) {
 // If paused state is live-reported true, flips to Resume. Pause blocks
 // all auto starts; Force Run clears pause as a side effect. State is
 // RAM-only on firmware, so a device reboot wakes unpaused.
-function PausePumpButton({ code, live, isOnline, canEdit }) {
-  const [state, setState] = useState("idle");
+// Fix B: ack-timeout for pump pause/resume commands. Previously showed
+// "✓ Pause sent" for 3 s with no verification. Now awaits the actual
+// live.pumpPaused / live.operMode flip within 60 s; on timeout, cancels
+// the queued cmd and bubbles up so parent marks device offline.
+//
+// Note: `paused` is derived from the latest live snapshot. While we're
+// "awaiting", clicking again is impossible (button is disabled), so the
+// direction (pause→resume vs resume→pause) is locked at click time via
+// pendingDirection — prevents a race where live.ts updates mid-await
+// and flips the label from "Waiting to pause" to "Waiting to resume".
+function PausePumpButton({ code, live, isOnline, canEdit, onTimeout }) {
+  const [state, setState] = useState("idle");               // idle | sending | awaiting
   const [err,   setErr]   = useState("");
-  const paused     = !!live?.pumpPaused || live?.operMode === "paused";
-  const motorRunning = live?.pumpState === "auto";   // schedule-driven = "auto"; manual has its own UI
+  const [pendingDirection, setPendingDirection] = useState(null); // "pause" | "resume"
+  const timerRef = useRef(null);
+
+  const paused       = !!live?.pumpPaused || live?.operMode === "paused";
+  const motorRunning = live?.pumpState === "auto";  // schedule-driven = "auto"; manual has its own UI
+
+  // Confirmation: we're done when live state reflects the intent.
+  useEffect(() => {
+    if (state !== "awaiting") return;
+    const confirmedPause  = pendingDirection === "pause"  && paused;
+    const confirmedResume = pendingDirection === "resume" && !paused;
+    if (confirmedPause || confirmedResume) {
+      if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
+      setState("idle");
+      setPendingDirection(null);
+    }
+  }, [state, pendingDirection, paused]);
+
+  useEffect(() => () => {
+    if (timerRef.current) clearTimeout(timerRef.current);
+  }, []);
+
   // Hide entirely unless we have a reason to show something
   if (!isOnline || !canEdit) return null;
-  if (!paused && !motorRunning) return null;
+  if (!paused && !motorRunning && state === "idle") return null;
 
   async function handleClick() {
-    if (!code || state === "sending") return;
+    if (!code || state !== "idle") return;
     setErr("");
+    const direction = paused ? "resume" : "pause";
+    setPendingDirection(direction);
     setState("sending");
     try {
-      if (paused) {
+      if (direction === "resume") {
         await resumePump(code);
       } else {
         await pausePump(code);
       }
-      setState("sent");
-      setTimeout(() => setState("idle"), 3000);
+      setState("awaiting");
+      if (timerRef.current) clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(() => {
+        onTimeout?.(direction);   // "pause" or "resume" — match PUMP_COMMAND_KEYS
+        setState("idle");
+        setPendingDirection(null);
+        timerRef.current = null;
+      }, 60_000);
     } catch (e) {
       console.error("pause/resume failed:", e);
       setErr("Failed to send — try again");
       setState("idle");
+      setPendingDirection(null);
     }
   }
-  const label = state === "sending" ? "Sending…"
-              : state === "sent"    ? (paused ? "✓ Resume sent" : "✓ Pause sent")
-              : paused              ? "▶ Resume Pump"
-              :                       "⏸ Pause Current Pump Operation";
+
+  const label = state === "sending"  ? "Sending…"
+              : state === "awaiting" ? (pendingDirection === "pause"
+                                         ? "Pausing pump…"
+                                         : "Resuming pump…")
+              : paused               ? "▶ Resume Pump"
+              :                        "⏸ Pause Current Pump Operation";
+
   return (
     <div className="mb-3 max-w-sm mx-auto">
       <button
@@ -162,7 +241,7 @@ function PausePumpButton({ code, live, isOnline, canEdit }) {
       >
         {label}
       </button>
-      {paused && (
+      {paused && state === "idle" && (
         <p className="text-xs text-amber-700 mt-1 text-center">
           Pump paused — auto / schedule / fill-until-full suppressed. Resume or Force Run to re-enable.
         </p>
@@ -172,7 +251,7 @@ function PausePumpButton({ code, live, isOnline, canEdit }) {
   );
 }
 
-function LiveSchematic({ code, live, info, catalog }) {
+function LiveSchematic({ code, live, info, catalog, onCommandTimeout }) {
   const pumpState    = live?.pumpState || "off";
   const sourceState  = live?.sourceState  || "dry";
   const hasSource    = info?.hasSource ?? live?.hasSource ?? false;
@@ -262,7 +341,7 @@ function LiveSchematic({ code, live, info, catalog }) {
                 <div className="text-xs opacity-90">{banner.body}</div>
               </div>
             )}
-            {clearableFault && <ClearFaultButton code={code} />}
+            {clearableFault && <ClearFaultButton code={code} live={live} onTimeout={onCommandTimeout} />}
           </div>
         );
       })()}
@@ -947,10 +1026,66 @@ function CleaningPanel({ code, catalog, hasSource, refresh }) {
 }
 
 // ─── Main page ─────────────────────────────────────────────────────
+// Friendly label for the Fix-B cancel banner. Keys match the keys of
+// PUMP_COMMAND_KEYS in rtdb.js — adding a new command means adding both
+// a row there AND a label here, otherwise the banner renders the raw
+// key. Deliberately not internationalised yet; we have one language.
+function describeCancelReason(kind) {
+  switch (kind) {
+    case "forceRunStart": return "Force Run start";
+    case "forceRunStop":  return "Force Run stop";
+    case "clearFault":    return "Clear Fault";
+    case "pause":         return "Pause Pump";
+    case "resume":        return "Resume Pump";
+    default:              return kind;
+  }
+}
+
 export default function PumpDetail({ code, live, info, isOnline }) {
   const navigate = useNavigate();
   const [tab, setTab] = useState("live");
   const [history, setHistory] = useState([]);
+
+  // ─── Fix B: dashboard-side ack-timeout "forced offline" state ─────
+  // When a command sent from this page doesn't get confirmed within
+  // 60 s (see button components), we delete the queued cmd AND flip
+  // the UI into a client-side-only offline state until a FRESH /live
+  // write comes in (= device genuinely reconnected and started
+  // publishing again).
+  //
+  // Implementation: store the live.ts that was in effect when the
+  // timeout fired. isOnlineEffective ignores the parent isOnline until
+  // we see a live.ts newer than that marker. That self-heals as soon
+  // as the device publishes anything — no manual clear button needed.
+  //
+  // Caveat (honest): this is per-dashboard-session state. A second
+  // tab, or a reload, would still see the 10-min staleness window.
+  // Full fix would be firmware-side TTL (Fix A) — logged for later.
+  const [forcedOfflineAtTs, setForcedOfflineAtTs] = useState(0);
+  const [lastCancelReason,  setLastCancelReason]  = useState(""); // "forceRunStart" | "forceRunStop" | "clearFault" | "pause" | "resume"
+
+  // Live-ts in seconds (what firmware writes). Compare directly against
+  // the marker so once the device actually reconnects we recover.
+  const liveTsSec = Number(live?.ts) ? Math.floor(Number(live.ts) / 1000) : 0;
+  const forcedOffline = forcedOfflineAtTs > 0 && liveTsSec <= forcedOfflineAtTs;
+  const isOnlineEffective = isOnline && !forcedOffline;
+
+  // Callback passed to every pump-command button. Called when their
+  // local 60-sec timer expires without a /live state transition. One
+  // centralised handler so all five commands share identical behaviour.
+  const handleCommandTimeout = async (kind) => {
+    const keys = PUMP_COMMAND_KEYS[kind];
+    if (keys) {
+      try { await cancelPumpCommand(code, keys); }
+      catch (e) { console.error("cancel cmd failed:", e); }
+    }
+    setForcedOfflineAtTs(liveTsSec);
+    setLastCancelReason(kind);
+    // Auto-clear the banner after 30 s so it doesn't stick around
+    // forever if the device never recovers in this tab.
+    setTimeout(() => setLastCancelReason(""), 30_000);
+  };
+
   // Panel Settings tab tracks its own unsaved-edits state and pushes
   // it up here so tab clicks can guard against silent loss. requestTab
   // wraps setTab with a confirmation prompt when settings are dirty.
@@ -1087,8 +1222,8 @@ export default function PumpDetail({ code, live, info, isOnline }) {
           <div className="text-xs text-gray-500 mt-0.5">{code} · {info?.firmwareVersion || "—"}</div>
         </div>
         <div className="flex items-center gap-2 flex-shrink-0">
-          <span className={`w-2.5 h-2.5 rounded-full ${isOnline ? "bg-green-500" : "bg-gray-300"}`} />
-          <span className="text-sm text-gray-600">{isOnline ? "Online" : "Offline"}</span>
+          <span className={`w-2.5 h-2.5 rounded-full ${isOnlineEffective ? "bg-green-500" : "bg-gray-300"}`} />
+          <span className="text-sm text-gray-600">{isOnlineEffective ? "Online" : "Offline"}</span>
         </div>
       </div>
 
@@ -1160,23 +1295,35 @@ export default function PumpDetail({ code, live, info, isOnline }) {
       {/* Tab content */}
       {tab === "live" && (
         <>
-          <LiveSchematic code={code} live={live} info={info} catalog={catalog} />
+          <LiveSchematic code={code} live={live} info={info} catalog={catalog} onCommandTimeout={handleCommandTimeout} />
           {/* v119.0.0: Pause / Resume — above Force Run per Vishal's
               spec. Visible only when pump is actually running under
               auto / schedule (or already paused). */}
-          <PausePumpButton code={code} live={live} isOnline={isOnline} canEdit={true} />
+          <PausePumpButton code={code} live={live} isOnline={isOnlineEffective} canEdit={true} onTimeout={handleCommandTimeout} />
           {/* Force Run — full-width button under the schematic. Hidden
               entirely when device is offline (see component). Owner-only
               gate is enforced there too. */}
-          <ForceRunButton code={code} live={live} isOnline={isOnline} canEdit={true} settings={info?.appliedConfig} />
+          <ForceRunButton code={code} live={live} isOnline={isOnlineEffective} canEdit={true} settings={info?.appliedConfig} onTimeout={handleCommandTimeout} />
+          {/* Fix B: honest banner when a recent command was auto-cancelled
+              due to lack of device ack. Replaces the spinner that used to
+              hang forever when the device was actually offline. */}
+          {lastCancelReason && (
+            <div className="bg-amber-50 border border-amber-300 text-amber-900 rounded-lg p-3 text-sm">
+              <div className="font-semibold mb-0.5">Device did not respond</div>
+              <div className="text-xs">
+                The {describeCancelReason(lastCancelReason)} command was cancelled because the pump didn't confirm within 60 seconds.
+                The device is now shown as offline here until it reconnects and publishes a fresh reading.
+              </div>
+            </div>
+          )}
           <PumpAlertsPanel code={code} catalog={catalog} info={info} refresh={refreshCatalog} />
           <CleaningPanel code={code} catalog={catalog} hasSource={hasSource} refresh={refreshCatalog} />
-          <DeviceInfoPanel code={code} info={info} live={live} catalog={catalog} isOnline={isOnline} />
+          <DeviceInfoPanel code={code} info={info} live={live} catalog={catalog} isOnline={isOnlineEffective} />
         </>
       )}
       {tab === "history"   && <HistoryTable code={code} history={history} canClear={true} />}
       {tab === "analytics" && <AnalyticsTab code={code} history={history} analyticsOn={analyticsOn} catalog={catalog} info={info} live={live} canEdit={true} refresh={refreshCatalog} />}
-      {tab === "settings"  && <PanelSettingsTab code={code} info={info} live={live} isOnline={isOnline} canEdit={true} onDirtyChange={setSettingsDirty} />}
+      {tab === "settings"  && <PanelSettingsTab code={code} info={info} live={live} isOnline={isOnlineEffective} canEdit={true} onDirtyChange={setSettingsDirty} />}
     </div>
   );
 }

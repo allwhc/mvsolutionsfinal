@@ -631,3 +631,29 @@ export async function resumePump(deviceCode) {
     pumpResumeRequestedAt: Math.floor(Date.now() / 1000),
   });
 }
+
+// Fix B — ack-timeout cancel. When a pump command sent from the
+// dashboard isn't confirmed by a fresh /live write within 60 s, we
+// treat the device as unreachable and delete the queued command node
+// so the firmware doesn't execute it hours later when WiFi returns.
+// Setting a key to null via update() is the firebase-rtdb idiomatic
+// delete. Takes an array of keys so one call cancels paired flags
+// (forceRunMinutes + forceRunRequestedAt, etc.).
+export async function cancelPumpCommand(deviceCode, keys) {
+  if (!deviceCode || !Array.isArray(keys) || keys.length === 0) return;
+  const patch = {};
+  keys.forEach((k) => { patch[k] = null; });
+  await update(ref(rtdb, `devices/${deviceCode}/commands`), patch);
+}
+
+// Pre-mapped key sets per command type so callers don't have to remember
+// which keys the five command writers above actually set. Kept in one
+// place so adding a new command key means updating both the writer AND
+// this mapping — grep-friendly.
+export const PUMP_COMMAND_KEYS = {
+  forceRunStart: ["forceRunMinutes", "forceRunRequestedAt"],
+  forceRunStop:  ["forceRunStop",    "forceRunStopRequestedAt"],
+  clearFault:    ["clearFault",      "clearFaultRequestedAt"],
+  pause:         ["pumpPause",       "pumpPauseRequestedAt"],
+  resume:        ["pumpResume",      "pumpResumeRequestedAt"],
+};

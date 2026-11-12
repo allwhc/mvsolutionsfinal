@@ -23,10 +23,13 @@ import { useState, useEffect, useRef } from "react";
 import { forceRunPump, stopForceRunPump } from "../../firebase/rtdb";
 import { FORCE_RUN_PRESETS } from "../../utils/panelConfigValidation";
 
-// If the pump doesn't change state within this many seconds after
-// we sent the command, warn the customer (but don't force-unlock —
-// firmware might just be slow; state might yet arrive).
-const CONFIRM_TIMEOUT_MS = 30_000;
+// Fix B (post-mortem on the "device was offline but dashboard showed
+// online, user pressed Force Run, device executed 1-2 hours later on
+// reconnect" bug): if the pump doesn't change state within this many
+// seconds the command is cancelled from RTDB and the parent is notified
+// to mark the device offline in this dashboard session. 60 s is enough
+// for a healthy device's ~10 s command poll + round trip, with 4× margin.
+const CONFIRM_TIMEOUT_MS = 60_000;
 
 // v118.0.7: client-side pre-check mirrors the firmware's canStartForceRun()
 // guard set — see Wired_NAVI_v2_Ultrasonic_cloud.ino. Running the same
@@ -68,7 +71,7 @@ function preflightForceRun(live, settings, wantsUntilFull) {
   return { ok: true };
 }
 
-export default function ForceRunButton({ code, live, isOnline, canEdit, settings }) {
+export default function ForceRunButton({ code, live, isOnline, canEdit, settings, onTimeout }) {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [stopOpen,   setStopOpen]   = useState(false);
   const [selectedMinutes, setSelectedMinutes] = useState(15);
@@ -130,7 +133,12 @@ export default function ForceRunButton({ code, live, isOnline, canEdit, settings
     setPending({ kind: "start", sentAt: Date.now(), timedOut: false });
     if (timeoutRef.current) clearTimeout(timeoutRef.current);
     timeoutRef.current = setTimeout(() => {
-      setPending((p) => (p ? { ...p, timedOut: true } : p));
+      // Fix B: cancel queued cmd + bubble up so parent flips device
+      // offline in UI. The ForceRun button clears its pending state;
+      // the parent's amber "Device did not respond" banner takes over.
+      onTimeout?.("forceRunStart");
+      setPending(null);
+      timeoutRef.current = null;
     }, CONFIRM_TIMEOUT_MS);
     try {
       await forceRunPump(code, selectedMinutes);
@@ -147,7 +155,9 @@ export default function ForceRunButton({ code, live, isOnline, canEdit, settings
     setPending({ kind: "stop", sentAt: Date.now(), timedOut: false });
     if (timeoutRef.current) clearTimeout(timeoutRef.current);
     timeoutRef.current = setTimeout(() => {
-      setPending((p) => (p ? { ...p, timedOut: true } : p));
+      onTimeout?.("forceRunStop");
+      setPending(null);
+      timeoutRef.current = null;
     }, CONFIRM_TIMEOUT_MS);
     try {
       await stopForceRunPump(code);
@@ -163,13 +173,14 @@ export default function ForceRunButton({ code, live, isOnline, canEdit, settings
   // Locked state — pending command hasn't been confirmed by live.pumpState yet.
   // Render a disabled button with spinner + progress text so it's crystal
   // clear something IS in flight and clicking again would be redundant.
+  // Fix B: no more "timedOut" sub-state — on timeout the pending object
+  // is cleared outright and the parent renders the "device did not
+  // respond" banner. This component just shows "waiting for pump to
+  // confirm" during the 60-sec window.
   if (pending) {
     const isStart = pending.kind === "start";
     const label = isStart ? "Starting force run…" : "Stopping force run…";
     const bg = isStart ? "bg-amber-400" : "bg-red-500";
-    const subtitle = pending.timedOut
-      ? "Still waiting — check that the panel has WiFi. The command will apply when it reconnects."
-      : "Command sent. Waiting for the pump to confirm…";
     return (
       <div className="w-full">
         <button
@@ -179,8 +190,8 @@ export default function ForceRunButton({ code, live, isOnline, canEdit, settings
           <Spinner />
           <span>{label}</span>
         </button>
-        <p className={`text-xs mt-2 text-center ${pending.timedOut ? "text-amber-700" : "text-gray-500"}`}>
-          {subtitle}
+        <p className="text-xs mt-2 text-center text-gray-500">
+          Command sent. Waiting for the pump to confirm (up to 60 s)…
         </p>
       </div>
     );
